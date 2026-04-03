@@ -201,15 +201,6 @@ class WindowsAudioCapture(AudioCaptureStrategy):
         print(f"DEBUG: [Windows] Mixed stereo audio saved to {self.output_file}", file=sys.stderr)
         return self.output_file
 
-class MacosAudioCapture(AudioCaptureStrategy):
-    """ScreenCaptureKit implementation for macOS system audio."""
-    def start_recording(self):
-        print("DEBUG: [macOS] Starting ScreenCaptureKit capture...", file=sys.stderr)
-
-    def stop_recording(self) -> str:
-        print("DEBUG: [macOS] Stopping capture...", file=sys.stderr)
-        return "temp_macos_audio.wav"
-
 # ---------------------------------------------------------
 # FACTORY METHOD: Instantiates the correct strategy
 # ---------------------------------------------------------
