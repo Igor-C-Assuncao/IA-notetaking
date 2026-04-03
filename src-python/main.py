@@ -6,22 +6,25 @@ from audio_capture import AudioCaptureFactory
 
 def send_event(event_type: str, payload: dict):
     """
-    Observer Pattern: Emits events for Rust/Tauri to capture.
+    Observer Pattern: Emits events for Rust/Tauri to capture via stdout.
     """
     message = {"event": event_type, "data": payload}
     print(json.dumps(message))
     sys.stdout.flush()
 
 def main():
+    # Allow React time to mount and start listening to IPC events
+    time.sleep(2)
     send_event("SYSTEM_READY", {"status": "Python engine is ready and listening."})
 
-    # Instantiate the correct audio strategy for the current OS
+    # Instantiate the correct audio strategy based on the OS
     try:
         audio_capturer = AudioCaptureFactory.get_strategy()
     except Exception as e:
         send_event("ERROR", {"message": str(e)})
         return
 
+    # Main loop listening for IPC commands from Rust
     for line in sys.stdin:
         try:
             command = json.loads(line.strip())
@@ -30,19 +33,24 @@ def main():
             if action == "START_RECORDING":
                 send_event("RECORDING_STATUS", {"is_recording": True})
                 
-                # Using our Strategy Pattern
+                # Start the background loopback capture
                 audio_capturer.start_recording()
                 
-                # Simulating VAD for now
-                time.sleep(2)
+                # Simulating Voice Activity Detection (VAD)
+                time.sleep(1)
                 send_event("VAD_SPEECH_DETECTED", {"confidence": 0.98})
 
             elif action == "STOP_RECORDING":
                 send_event("RECORDING_STATUS", {"is_recording": False})
                 
-                # Stop recording and get the file path
+                # Stop recording and retrieve the generated file path
                 saved_file_path = audio_capturer.stop_recording()
-                send_event("PIPELINE_STATUS", {"step": "transcribing", "file": saved_file_path})
+                
+                # Emit the status including the file path so React can read it
+                send_event("PIPELINE_STATUS", {
+                    "step": "transcribing", 
+                    "file": saved_file_path
+                })
 
         except json.JSONDecodeError:
             send_event("ERROR", {"message": "Invalid JSON command received."})
