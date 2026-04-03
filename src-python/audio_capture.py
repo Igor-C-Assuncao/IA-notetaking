@@ -3,6 +3,7 @@ import sys
 import os
 import threading
 import wave
+import numpy as np
 import pyaudiowpatch as pyaudio
 from abc import ABC, abstractmethod
 
@@ -10,101 +11,194 @@ from abc import ABC, abstractmethod
 # STRATEGY PATTERN: The abstract interface
 # ---------------------------------------------------------
 class AudioCaptureStrategy(ABC):
+    """
+    Abstract base class defining the contract for all audio capture strategies.
+    """
     @abstractmethod
     def start_recording(self):
+        """Starts capturing system and microphone audio."""
         pass
 
     @abstractmethod
     def stop_recording(self) -> str:
+        """Stops capturing and returns the absolute path to the saved audio file."""
         pass
 
 # ---------------------------------------------------------
 # CONCRETE STRATEGIES: OS-specific implementations
 # ---------------------------------------------------------
 class WindowsAudioCapture(AudioCaptureStrategy):
-    """WASAPI loopback implementation using PyAudioWPatch (Robust for Windows)."""
+    """
+    Robust Windows implementation recording Loopback and Mic into a Stereo file.
+    Initializes PyAudio sequentially to prevent PortAudio C-level thread crashes,
+    and uses thread joining to prevent stream-close deadlocks.
+    """
     
     def __init__(self):
         self.is_recording = False
-        self.record_thread = None
-        self.frames = []
         
-        # Paths
+        # Audio Engine references
+        self.p = None
+        self.loopback_stream = None
+        self.mic_stream = None
+        
+        # Thread references (CRITICAL for preventing deadlocks)
+        self.loopback_thread = None
+        self.mic_thread = None
+        
+        # Buffers
+        self.loopback_frames = []
+        self.mic_frames = []
+        
+        # Standard configuration for Speech-to-Text models
+        self.master_sample_rate = 48000
+        self.loopback_channels = 2
+        self.mic_channels = 1
+        
         current_dir = os.path.dirname(os.path.abspath(__file__))
-        self.output_file = os.path.join(current_dir, "temp_system_audio.wav")
-        
-        # Audio configurations will be dynamically set based on the device
-        self.channels = 2
-        self.sample_rate = 44100
-        self.sample_width = 2
+        self.output_file = os.path.join(current_dir, "temp_meeting_audio.wav")
 
     def start_recording(self):
         if self.is_recording:
             return
 
         self.is_recording = True
-        self.frames = []
+        self.loopback_frames = []
+        self.mic_frames = []
         
-        self.record_thread = threading.Thread(target=self._record_loopback, daemon=True)
-        self.record_thread.start()
-        print("DEBUG: [Windows] Started PyAudioWPatch loopback capture...", file=sys.stderr)
+        # 1. Initialize PyAudio ONCE in the main thread
+        self.p = pyaudio.PyAudio()
+
+        # 2. Safely open the Loopback stream
+        try:
+            loopback_device = self.p.get_default_wasapi_loopback()
+            self.loopback_channels = loopback_device["maxInputChannels"]
+            
+            self.loopback_stream = self.p.open(
+                format=pyaudio.paInt16,
+                channels=self.loopback_channels,
+                rate=self.master_sample_rate,
+                input=True,
+                input_device_index=loopback_device["index"],
+                frames_per_buffer=1024
+            )
+        except Exception as e:
+            print(f"DEBUG: [Windows Audio] Loopback stream failed to open: {str(e)}", file=sys.stderr)
+            self.loopback_stream = None
+
+        # 3. Safely open the Microphone stream
+        try:
+            mic_device = self.p.get_default_input_device_info()
+            self.mic_channels = mic_device["maxInputChannels"]
+            
+            self.mic_stream = self.p.open(
+                format=pyaudio.paInt16,
+                channels=self.mic_channels,
+                rate=self.master_sample_rate,
+                input=True,
+                input_device_index=mic_device["index"],
+                frames_per_buffer=1024
+            )
+        except Exception as e:
+            print(f"DEBUG: [Windows Audio] Microphone stream failed to open: {str(e)}", file=sys.stderr)
+            self.mic_stream = None
+
+        # 4. Spawn threads and SAVE their references to join them later
+        if self.loopback_stream:
+            self.loopback_thread = threading.Thread(target=self._record_loopback, daemon=True)
+            self.loopback_thread.start()
+        
+        if self.mic_stream:
+            self.mic_thread = threading.Thread(target=self._record_mic, daemon=True)
+            self.mic_thread.start()
+            
+        print("DEBUG: [Windows] Started Dual-Channel Capture successfully.", file=sys.stderr)
 
     def _record_loopback(self):
-        """Captures system audio using the default WASAPI loopback device."""
-        p = pyaudio.PyAudio()
-        stream = None
+        """Continuously reads data from the loopback stream into memory."""
         try:
-            # Fetch the default WASAPI loopback device safely
-            default_loopback = p.get_default_wasapi_loopback()
-            
-            self.sample_rate = int(default_loopback["defaultSampleRate"])
-            self.channels = default_loopback["maxInputChannels"]
-            self.sample_width = p.get_sample_size(pyaudio.paInt16)
-            
-            # Open the stream
-            stream = p.open(format=pyaudio.paInt16,
-                            channels=self.channels,
-                            rate=self.sample_rate,
-                            input=True,
-                            input_device_index=default_loopback["index"],
-                            frames_per_buffer=1024)
-            
-            while self.is_recording:
-                # exception_on_overflow=False prevents crashes if processing lags
-                data = stream.read(1024, exception_on_overflow=False)
-                self.frames.append(data)
+            while self.is_recording and self.loopback_stream:
+                data = self.loopback_stream.read(1024, exception_on_overflow=False)
+                audio_data = np.frombuffer(data, dtype=np.int16)
                 
+                if self.loopback_channels > 1:
+                    audio_data = np.reshape(audio_data, (-1, self.loopback_channels))
+                    audio_data = np.mean(audio_data, axis=1).astype(np.int16)
+                    
+                self.loopback_frames.append(audio_data)
         except Exception as e:
-            print(f"DEBUG: [Windows Audio Error] PyAudio failed: {str(e)}", file=sys.stderr)
-        finally:
-            if stream is not None:
-                stream.stop_stream()
-                stream.close()
-            p.terminate()
+            print(f"DEBUG: [Windows Loopback Error] {str(e)}", file=sys.stderr)
+
+    def _record_mic(self):
+        """Continuously reads data from the microphone stream into memory."""
+        try:
+            while self.is_recording and self.mic_stream:
+                data = self.mic_stream.read(1024, exception_on_overflow=False)
+                audio_data = np.frombuffer(data, dtype=np.int16)
+                
+                if self.mic_channels > 1:
+                    audio_data = np.reshape(audio_data, (-1, self.mic_channels))
+                    audio_data = np.mean(audio_data, axis=1).astype(np.int16)
+                    
+                self.mic_frames.append(audio_data)
+        except Exception as e:
+            print(f"DEBUG: [Windows Mic Error] {str(e)}", file=sys.stderr)
 
     def stop_recording(self) -> str:
         if not self.is_recording:
             return self.output_file
 
         self.is_recording = False
+        print("DEBUG: [Windows] Waiting for capture threads to finish reading...", file=sys.stderr)
         
-        if self.record_thread:
-            self.record_thread.join(timeout=2.0)
+        # 1. CRITICAL FIX: Wait for threads to exit their read() loops safely
+        if self.loopback_thread and self.loopback_thread.is_alive():
+            self.loopback_thread.join(timeout=2.0)
             
-        print("DEBUG: [Windows] Stopping capture and saving file...", file=sys.stderr)
+        if self.mic_thread and self.mic_thread.is_alive():
+            self.mic_thread.join(timeout=2.0)
 
-        if len(self.frames) > 0:
-            # Save the WAV file using the standard 'wave' module
-            with wave.open(self.output_file, 'wb') as wf:
-                wf.setnchannels(self.channels)
-                wf.setsampwidth(self.sample_width)
-                wf.setframerate(self.sample_rate)
-                wf.writeframes(b''.join(self.frames))
-                
-            print(f"DEBUG: [Windows] File successfully saved to {self.output_file}", file=sys.stderr)
-        else:
-            print("DEBUG: [Windows WARNING] No audio frames captured.", file=sys.stderr)
+        print("DEBUG: [Windows] Closing streams and saving...", file=sys.stderr)
+        
+        # 2. Now it is safe to close streams and terminate PyAudio
+        if self.loopback_stream:
+            self.loopback_stream.stop_stream()
+            self.loopback_stream.close()
             
+        if self.mic_stream:
+            self.mic_stream.stop_stream()
+            self.mic_stream.close()
+            
+        if self.p:
+            self.p.terminate()
+
+        # 3. Check if we captured anything
+        if not self.loopback_frames and not self.mic_frames:
+            print("DEBUG: [Windows WARNING] No audio captured.", file=sys.stderr)
+            return self.output_file
+
+        # 4. Build numpy arrays
+        mic_full = np.concatenate(self.mic_frames) if self.mic_frames else np.array([], dtype=np.int16)
+        loopback_full = np.concatenate(self.loopback_frames) if self.loopback_frames else np.array([], dtype=np.int16)
+
+        # 5. Synchronize array lengths by padding with silence
+        max_len = max(len(mic_full), len(loopback_full))
+        if len(mic_full) < max_len:
+            mic_full = np.pad(mic_full, (0, max_len - len(mic_full)), mode='constant')
+        if len(loopback_full) < max_len:
+            loopback_full = np.pad(loopback_full, (0, max_len - len(loopback_full)), mode='constant')
+
+        # 6. Stack channels: Left = Mic, Right = System
+        stereo_mix = np.column_stack((mic_full, loopback_full))
+
+        # 7. Save Stereo WAV
+        with wave.open(self.output_file, 'wb') as wf:
+            wf.setnchannels(2)
+            wf.setsampwidth(2)
+            wf.setframerate(self.master_sample_rate)
+            wf.writeframes(stereo_mix.tobytes())
+            
+        print(f"DEBUG: [Windows] Mixed stereo audio saved to {self.output_file}", file=sys.stderr)
         return self.output_file
 
 class MacosAudioCapture(AudioCaptureStrategy):
@@ -120,6 +214,7 @@ class MacosAudioCapture(AudioCaptureStrategy):
 # FACTORY METHOD: Instantiates the correct strategy
 # ---------------------------------------------------------
 class AudioCaptureFactory:
+    """Factory class to provide the correct audio capture strategy based on the OS."""
     @staticmethod
     def get_strategy() -> AudioCaptureStrategy:
         platform = sys.platform
