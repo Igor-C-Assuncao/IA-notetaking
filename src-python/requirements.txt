@@ -1,0 +1,3 @@
+
+pyaudiowpatch==0.2.12.post4
+numpy==1.26.4
