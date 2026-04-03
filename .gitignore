@@ -23,5 +23,7 @@ dist-ssr
 *.sln
 *.sw?
 
-
+src-python/temp*
 .env*
+
+src-python/__pycache__
