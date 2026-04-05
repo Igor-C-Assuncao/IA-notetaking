@@ -149,58 +149,46 @@ class WindowsAudioCapture(AudioCaptureStrategy):
             return self.output_file
 
         self.is_recording = False
-        print("DEBUG: [Windows] Waiting for capture threads to finish reading...", file=sys.stderr)
         
-        # 1. CRITICAL FIX: Wait for threads to exit their read() loops safely
-        if self.loopback_thread and self.loopback_thread.is_alive():
-            self.loopback_thread.join(timeout=2.0)
-            
-        if self.mic_thread and self.mic_thread.is_alive():
-            self.mic_thread.join(timeout=2.0)
+        if self.loopback_thread: self.loopback_thread.join(timeout=2.0)
+        if self.mic_thread: self.mic_thread.join(timeout=2.0)
 
-        print("DEBUG: [Windows] Closing streams and saving...", file=sys.stderr)
-        
-        # 2. Now it is safe to close streams and terminate PyAudio
-        if self.loopback_stream:
-            self.loopback_stream.stop_stream()
-            self.loopback_stream.close()
-            
-        if self.mic_stream:
-            self.mic_stream.stop_stream()
-            self.mic_stream.close()
-            
-        if self.p:
-            self.p.terminate()
-
-        # 3. Check if we captured anything
         if not self.loopback_frames and not self.mic_frames:
-            print("DEBUG: [Windows WARNING] No audio captured.", file=sys.stderr)
             return self.output_file
 
-        # 4. Build numpy arrays
+        # Build raw arrays
         mic_full = np.concatenate(self.mic_frames) if self.mic_frames else np.array([], dtype=np.int16)
         loopback_full = np.concatenate(self.loopback_frames) if self.loopback_frames else np.array([], dtype=np.int16)
 
-        # 5. Synchronize array lengths by padding with silence
+        # Sync lengths
         max_len = max(len(mic_full), len(loopback_full))
         if len(mic_full) < max_len:
             mic_full = np.pad(mic_full, (0, max_len - len(mic_full)), mode='constant')
         if len(loopback_full) < max_len:
             loopback_full = np.pad(loopback_full, (0, max_len - len(loopback_full)), mode='constant')
 
-        # 6. Stack channels: Left = Mic, Right = System
-        stereo_mix = np.column_stack((mic_full, loopback_full))
+        # NEW: Apply VAD to remove silence before saving
+        print("DEBUG: [AI] Running Silero VAD to trim silence...", file=sys.stderr)
+        stereo_raw = np.column_stack((mic_full, loopback_full))
+        
+        try:
+            vad = VADService()
+            # The VAD will analyze the combined signal and keep only speech segments
+            stereo_mix = vad.trim_silence(stereo_raw, self.master_sample_rate)
+        except Exception as e:
+            print(f"DEBUG: [AI VAD Error] Falling back to raw audio: {str(e)}", file=sys.stderr)
+            stereo_mix = stereo_raw
 
-        # 7. Save Stereo WAV
+        # Save to WAV
         with wave.open(self.output_file, 'wb') as wf:
             wf.setnchannels(2)
             wf.setsampwidth(2)
             wf.setframerate(self.master_sample_rate)
             wf.writeframes(stereo_mix.tobytes())
             
-        print(f"DEBUG: [Windows] Mixed stereo audio saved to {self.output_file}", file=sys.stderr)
+        print(f"DEBUG: [Windows] VAD-trimmed audio saved to {self.output_file}", file=sys.stderr)
         return self.output_file
-
+    
 class MacosAudioCapture(AudioCaptureStrategy):
     """ScreenCaptureKit implementation for macOS system audio."""
     def start_recording(self):
