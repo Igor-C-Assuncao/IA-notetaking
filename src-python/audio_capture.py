@@ -6,6 +6,7 @@ import wave
 import numpy as np
 import pyaudiowpatch as pyaudio
 from abc import ABC, abstractmethod
+from vad_service import VADService
 
 # ---------------------------------------------------------
 # STRATEGY PATTERN: The abstract interface

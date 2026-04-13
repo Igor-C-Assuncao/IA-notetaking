@@ -1,9 +1,20 @@
 // src-tauri/src/lib.rs
 use std::io::{BufRead, BufReader, Write}; // <-- Added Write
+use std::path::PathBuf;
 use std::process::{Command, Stdio, ChildStdin}; // <-- Added ChildStdin
 use std::sync::Mutex; // <-- Added Mutex to share stdin
 use std::thread;
 use tauri::{Emitter, Manager};
+
+fn python_executable_path() -> PathBuf {
+    let manifest_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+
+    if cfg!(target_os = "windows") {
+        manifest_dir.join("..").join(".venv").join("Scripts").join("python.exe")
+    } else {
+        manifest_dir.join("..").join(".venv").join("bin").join("python")
+    }
+}
 
 // ------------------------------------------------------------------------
 // NEW: Exposed command for React to call and send text to Python
@@ -29,8 +40,9 @@ pub fn run() {
         .setup(|app| {
             let app_handle = app.handle().clone();
             let app_handle_err = app.handle().clone(); 
+            let python_path = python_executable_path();
 
-            let mut child = Command::new("python")
+            let mut child = Command::new(python_path)
                 .arg("../src-python/main.py")
                 .stdin(Stdio::piped())
                 .stdout(Stdio::piped())
