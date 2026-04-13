@@ -2,7 +2,11 @@
 import sys
 import json
 import time
+
+# Internal services
 from audio_capture import AudioCaptureFactory
+from transcription_service import TranscriptionService
+from llm_service import LLMFactory
 
 def send_event(event_type: str, payload: dict):
     """
@@ -17,12 +21,19 @@ def main():
     time.sleep(2)
     send_event("SYSTEM_READY", {"status": "Python engine is ready and listening."})
 
-    # Instantiate the correct audio strategy based on the OS
+    # 1. Initialize Audio Capture
     try:
         audio_capturer = AudioCaptureFactory.get_strategy()
     except Exception as e:
-        send_event("ERROR", {"message": str(e)})
+        send_event("ERROR", {"message": f"Audio Error: {str(e)}"})
         return
+
+    # 2. Initialize AI Transcriber (WhisperX)
+    try:
+        transcriber = TranscriptionService()
+    except Exception as e:
+        send_event("ERROR", {"message": f"Failed to initialize WhisperX: {str(e)}"})
+        transcriber = None
 
     # Main loop listening for IPC commands from Rust
     for line in sys.stdin:
@@ -32,25 +43,42 @@ def main():
 
             if action == "START_RECORDING":
                 send_event("RECORDING_STATUS", {"is_recording": True})
-                
-                # Start the background loopback capture
                 audio_capturer.start_recording()
                 
-                # Simulating Voice Activity Detection (VAD)
-                time.sleep(1)
-                send_event("VAD_SPEECH_DETECTED", {"confidence": 0.98})
-
             elif action == "STOP_RECORDING":
                 send_event("RECORDING_STATUS", {"is_recording": False})
+                send_event("PIPELINE_STATUS", {"step": "Processing Audio (VAD)..."})
                 
-                # Stop recording and retrieve the generated file path
+                # STEP A: Stop recording and trim silence
                 saved_file_path = audio_capturer.stop_recording()
                 
-                # Emit the status including the file path so React can read it
-                send_event("PIPELINE_STATUS", {
-                    "step": "transcribing", 
-                    "file": saved_file_path
-                })
+                # STEP B: Transcribe audio
+                if transcriber:
+                    send_event("PIPELINE_STATUS", {"step": "Transcribing with WhisperX..."})
+                    transcription_result = transcriber.transcribe(saved_file_path)
+                    
+                    # Emit raw transcription so the UI can show it immediately
+                    send_event("TRANSCRIPTION_COMPLETED", {"text": transcription_result})
+                    
+                    # STEP C: Generate Structured Notes
+                    send_event("PIPELINE_STATUS", {"step": "Generating Notes with AI..."})
+                    
+                    # Extract LLM config from React command (Default to local Ollama)
+                    provider_name = command.get("llm_provider", "ollama")
+                    model_name = command.get("llm_model", "llama3")
+                    api_key = command.get("api_key", "")
+                    
+                    try:
+                        llm = LLMFactory.get_provider(provider_name, model_name)
+                        notes_markdown = llm.generate_notes(transcription_result, api_key)
+                        
+                        # Emit final structured notes
+                        send_event("NOTES_GENERATED", {"markdown": notes_markdown})
+                        send_event("PIPELINE_STATUS", {"step": "Done."})
+                    except Exception as e:
+                        send_event("ERROR", {"message": f"LLM Generation Error: {str(e)}"})
+                else:
+                    send_event("ERROR", {"message": "Transcriber is offline."})
 
         except json.JSONDecodeError:
             send_event("ERROR", {"message": "Invalid JSON command received."})
