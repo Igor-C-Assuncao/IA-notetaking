@@ -1,3 +1,11 @@
 pyaudiowpatch==0.2.12.post4; sys_platform == "win32"
 soundcard; sys_platform == "linux"
 numpy==1.26.4
+openai
+anthropic
+google-genai
+requests
+torch~=2.8.0
+torchaudio~=2.8.0
+torchvision~=0.23.0
+
