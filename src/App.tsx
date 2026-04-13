@@ -1,13 +1,14 @@
-// src/App.tsx
+// src/App.tsx (Trechos atualizados)
 import { useState, useEffect } from "react";
 import { listen } from "@tauri-apps/api/event";
-import { invoke } from "@tauri-apps/api/core"; // <-- NOVO
+import { invoke } from "@tauri-apps/api/core";
 import "./App.css";
 
 function App() {
   const [isRecording, setIsRecording] = useState(false);
   const [status, setStatus] = useState("Waiting for IPC connection...");
-  const [transcription, setTranscription] = useState(""); // <-- NOVO ESTADO
+  const [transcription, setTranscription] = useState("");
+  const [notes, setNotes] = useState(""); // <-- NOVO ESTADO PARA AS NOTAS
 
   useEffect(() => {
     const unlisten = listen<string>("python-event", (event) => {
@@ -19,14 +20,19 @@ function App() {
             break;
           case "RECORDING_STATUS":
             setIsRecording(parsed.data.is_recording);
-            if (parsed.data.is_recording) setTranscription(""); // Limpa a tela ao gravar de novo
+            if (parsed.data.is_recording) {
+              setTranscription(""); 
+              setNotes(""); // Limpa as notas ao iniciar nova gravação
+            }
             break;
           case "PIPELINE_STATUS":
-            setStatus(parsed.data.step); // Mostra "Processing..." ou "Transcribing..."
+            setStatus(parsed.data.step);
             break;
-          case "TRANSCRIPTION_COMPLETED": // <-- NOVO EVENTO RECEBIDO
-            setStatus("Ready.");
+          case "TRANSCRIPTION_COMPLETED":
             setTranscription(parsed.data.text);
+            break;
+          case "NOTES_GENERATED": // <-- NOVO EVENTO RECEBIDO
+            setNotes(parsed.data.markdown);
             break;
           case "ERROR":
             setStatus(`Error: ${parsed.data.message}`);
@@ -42,18 +48,21 @@ function App() {
     };
   }, []);
 
-  // NOVO: Função que lida com o clique do botão
   const toggleRecording = async () => {
     const action = isRecording ? "STOP_RECORDING" : "START_RECORDING";
     
-    // Altera a UI imediatamente
     setIsRecording(!isRecording);
     setStatus(isRecording ? "Stopping capture..." : "Recording loopback...");
 
     try {
-      // Chama a função Rust que criamos passando o JSON
+      // Por enquanto estamos mandando os valores default no payload
       await invoke("send_command_to_python", {
-        payload: JSON.stringify({ action: action })
+        payload: JSON.stringify({ 
+          action: action,
+          llm_provider: "ollama",
+          llm_model: "llama3",
+          api_key: ""
+        })
       });
     } catch (error) {
       console.error("Erro na ponte IPC:", error);
@@ -61,24 +70,26 @@ function App() {
     }
   };
 
+  // ... (O resto do render continua, adicione a div de notas no final)
   return (
     <main className="container">
-      <h1>🎙️ AI Notetaker</h1>
-      <div className="status-panel">
-        <p>Engine Status: <span>{status}</span></p>
-      </div>
-      <button 
-        className={isRecording ? "recording" : ""}
-        onClick={toggleRecording}
-      >
-        {isRecording ? "Stop Recording" : "Start Recording"}
-      </button>
-
-      {/* CAIXA DE TRANSCRIÇÃO */}
+      {/* ... Cabeçalho e Botões ... */}
+      
+      {/* Exibição da Transcrição */}
       {transcription && (
-        <div className="transcription-box" style={{ marginTop: '20px', padding: '15px', backgroundColor: '#1a1a1a', borderRadius: '8px', maxWidth: '350px' }}>
-          <h3>📝 Transcrição</h3>
+        <div className="transcription-box" style={{ marginTop: '20px', padding: '15px', backgroundColor: '#1a1a1a', borderRadius: '8px' }}>
+          <h3>📝 Transcrição Bruta</h3>
           <p style={{ textAlign: 'left', fontSize: '0.9em', lineHeight: '1.4' }}>{transcription}</p>
+        </div>
+      )}
+
+      {/* Exibição das Notas Geradas */}
+      {notes && (
+        <div className="notes-box" style={{ marginTop: '20px', padding: '15px', backgroundColor: '#2a2a2a', borderRadius: '8px', borderLeft: '4px solid #4CAF50' }}>
+          <h3 style={{ color: '#4CAF50' }}>✨ Resumo Inteligente (Markdown)</h3>
+          <pre style={{ textAlign: 'left', fontSize: '0.9em', whiteSpace: 'pre-wrap', fontFamily: 'inherit' }}>
+            {notes}
+          </pre>
         </div>
       )}
     </main>
