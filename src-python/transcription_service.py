@@ -4,50 +4,64 @@ import os
 import torch
 import whisperx
 
-# 1. NEW: Suppress excessive TensorFlow/oneDNN warnings
+# Suppress excessive TensorFlow/oneDNN warnings
 os.environ['TF_CPP_MIN_LOG_LEVEL'] = '3' 
 os.environ['TF_ENABLE_ONEDNN_OPTS'] = '0'
 
 class TranscriptionService:
     """
     Service responsible for converting audio files to text using WhisperX.
+    Includes cross-platform hardware detection (CUDA, MPS, CPU).
     """
     def __init__(self):
-        # 2. Check if CUDA is available after installing the correct PyTorch version
+        # ---------------------------------------------------------
+        # CROSS-PLATFORM HARDWARE DETECTION
+        # ---------------------------------------------------------
         if torch.cuda.is_available():
+            # Windows/Linux with NVIDIA GPU
             self.device = "cuda"
-            self.compute_type = "float16" # Fastest and uses less VRAM
+            self.compute_type = "float16" 
+            print("DEBUG: [AI] Hardware Detectado: NVIDIA GPU (CUDA).", file=sys.stderr)
+            
+        elif torch.backends.mps.is_available():
+            # macOS with Apple Silicon (M1/M2/M3)
+            # Note: WhisperX/CTranslate2 sometimes has quirks with float16 on Mac,
+            # float32 is a safer fallback for MPS if float16 crashes on certain Mac models.
+            self.device = "mps"
+            self.compute_type = "float16" 
+            print("DEBUG: [AI] Hardware Detectado: Apple Silicon (MPS).", file=sys.stderr)
+            
         else:
+            # Fallback for standard computers
             self.device = "cpu"
-            self.compute_type = "int8" # Safe fallback for CPU
-            print("DEBUG: [AI Warning] CUDA not found. Running on CPU (This will be very slow).", file=sys.stderr)
+            self.compute_type = "int8" 
+            print("DEBUG: [AI Warning] Nenhuma GPU compatível encontrada. Rodando via CPU.", file=sys.stderr)
         
-        print(f"DEBUG: [AI] Loading WhisperX model 'base' on {self.device.upper()} using {self.compute_type}...", file=sys.stderr)
+        print(f"DEBUG: [AI] Carregando modelo WhisperX 'base' via {self.device.upper()} usando {self.compute_type}...", file=sys.stderr)
         
         try:
-            # We use the "base" model for a good balance of speed and accuracy. 
             self.model = whisperx.load_model("base", self.device, compute_type=self.compute_type)
         except Exception as e:
-            print(f"DEBUG: [AI Error] Failed to load WhisperX model: {str(e)}", file=sys.stderr)
-            self.model = None
+            # Fallback de segurança: Se o modelo quebrar no MPS ou CUDA, tenta forçar CPU
+            print(f"DEBUG: [AI Error] Falha na GPU: {str(e)}. Tentando fallback seguro para CPU...", file=sys.stderr)
+            try:
+                self.device = "cpu"
+                self.compute_type = "int8"
+                self.model = whisperx.load_model("base", self.device, compute_type=self.compute_type)
+            except Exception as fallback_error:
+                print(f"DEBUG: [AI Critical Error] Falha total no carregamento do modelo: {str(fallback_error)}", file=sys.stderr)
+                self.model = None
 
     def transcribe(self, audio_path: str) -> str:
-        """
-        Loads the audio file, transcribes it, and returns the concatenated text.
-        """
+        # ... (O resto do método transcribe continua exatamente igual) ...
         if self.model is None:
             return "[Error: WhisperX model not loaded]"
 
         print(f"DEBUG: [AI] Transcribing audio file: {audio_path}", file=sys.stderr)
         
         try:
-            # whisperx loads the audio and automatically converts to mono 16kHz for the model
             audio = whisperx.load_audio(audio_path)
-            
-            # Perform the transcription
             result = self.model.transcribe(audio, batch_size=4)
-            
-            # Extract and concatenate the text from all segments
             segments = result.get("segments", [])
             full_text = " ".join([seg["text"].strip() for seg in segments])
             

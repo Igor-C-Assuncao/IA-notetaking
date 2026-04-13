@@ -1,4 +1,4 @@
-// src/App.tsx (Trechos atualizados)
+// src/App.tsx
 import { useState, useEffect } from "react";
 import { listen } from "@tauri-apps/api/event";
 import { invoke } from "@tauri-apps/api/core";
@@ -8,7 +8,7 @@ function App() {
   const [isRecording, setIsRecording] = useState(false);
   const [status, setStatus] = useState("Waiting for IPC connection...");
   const [transcription, setTranscription] = useState("");
-  const [notes, setNotes] = useState(""); // <-- NOVO ESTADO PARA AS NOTAS
+  const [notes, setNotes] = useState("");
 
   useEffect(() => {
     const unlisten = listen<string>("python-event", (event) => {
@@ -20,9 +20,10 @@ function App() {
             break;
           case "RECORDING_STATUS":
             setIsRecording(parsed.data.is_recording);
+            // Limpa a tela ao iniciar uma nova gravação
             if (parsed.data.is_recording) {
               setTranscription(""); 
-              setNotes(""); // Limpa as notas ao iniciar nova gravação
+              setNotes(""); 
             }
             break;
           case "PIPELINE_STATUS":
@@ -31,7 +32,7 @@ function App() {
           case "TRANSCRIPTION_COMPLETED":
             setTranscription(parsed.data.text);
             break;
-          case "NOTES_GENERATED": // <-- NOVO EVENTO RECEBIDO
+          case "NOTES_GENERATED":
             setNotes(parsed.data.markdown);
             break;
           case "ERROR":
@@ -55,7 +56,7 @@ function App() {
     setStatus(isRecording ? "Stopping capture..." : "Recording loopback...");
 
     try {
-      // Por enquanto estamos mandando os valores default no payload
+      // Injetando o comando com Ollama como provedor padrão para testes locais
       await invoke("send_command_to_python", {
         payload: JSON.stringify({ 
           action: action,
@@ -70,10 +71,20 @@ function App() {
     }
   };
 
-  // ... (O resto do render continua, adicione a div de notas no final)
   return (
     <main className="container">
-      {/* ... Cabeçalho e Botões ... */}
+      <h1>🎙️ AI Notetaker</h1>
+      
+      <div className="status-panel">
+        <p>Engine Status: <span>{status}</span></p>
+      </div>
+
+      <button 
+        className={isRecording ? "recording" : ""}
+        onClick={toggleRecording}
+      >
+        {isRecording ? "Stop Recording" : "Start Recording"}
+      </button>
       
       {/* Exibição da Transcrição */}
       {transcription && (
