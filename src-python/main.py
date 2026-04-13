@@ -13,18 +13,23 @@ def send_event(event_type: str, payload: dict):
     sys.stdout.flush()
 
 def main():
-    # Allow React time to mount and start listening to IPC events
     time.sleep(2)
     send_event("SYSTEM_READY", {"status": "Python engine is ready and listening."})
 
-    # Instantiate the correct audio strategy based on the OS
     try:
         audio_capturer = AudioCaptureFactory.get_strategy()
     except Exception as e:
         send_event("ERROR", {"message": str(e)})
         return
 
-    # Main loop listening for IPC commands from Rust
+    # PRE-LOAD AI MODELS: Initialize the transcriber so it's ready in memory
+    try:
+        from transcription_service import TranscriptionService
+        transcriber = TranscriptionService()
+    except Exception as e:
+        send_event("ERROR", {"message": f"Failed to initialize AI: {str(e)}"})
+        transcriber = None
+
     for line in sys.stdin:
         try:
             command = json.loads(line.strip())
@@ -32,25 +37,24 @@ def main():
 
             if action == "START_RECORDING":
                 send_event("RECORDING_STATUS", {"is_recording": True})
-                
-                # Start the background loopback capture
                 audio_capturer.start_recording()
                 
-                # Simulating Voice Activity Detection (VAD)
-                time.sleep(1)
-                send_event("VAD_SPEECH_DETECTED", {"confidence": 0.98})
-
             elif action == "STOP_RECORDING":
                 send_event("RECORDING_STATUS", {"is_recording": False})
+                send_event("PIPELINE_STATUS", {"step": "Processing Audio..."})
                 
-                # Stop recording and retrieve the generated file path
+                # 1. Stop recording and run VAD
                 saved_file_path = audio_capturer.stop_recording()
                 
-                # Emit the status including the file path so React can read it
-                send_event("PIPELINE_STATUS", {
-                    "step": "transcribing", 
-                    "file": saved_file_path
-                })
+                # 2. Run Transcription
+                if transcriber:
+                    send_event("PIPELINE_STATUS", {"step": "Transcribing with WhisperX..."})
+                    transcription_result = transcriber.transcribe(saved_file_path)
+                    
+                    # 3. Send final text back to React
+                    send_event("TRANSCRIPTION_COMPLETED", {"text": transcription_result})
+                else:
+                    send_event("ERROR", {"message": "Transcriber is offline."})
 
         except json.JSONDecodeError:
             send_event("ERROR", {"message": "Invalid JSON command received."})

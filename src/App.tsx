@@ -7,6 +7,7 @@ import "./App.css";
 function App() {
   const [isRecording, setIsRecording] = useState(false);
   const [status, setStatus] = useState("Waiting for IPC connection...");
+  const [transcription, setTranscription] = useState(""); // <-- NOVO ESTADO
 
   useEffect(() => {
     const unlisten = listen<string>("python-event", (event) => {
@@ -16,14 +17,16 @@ function App() {
           case "SYSTEM_READY":
             setStatus(parsed.data.status);
             break;
-          case "VAD_SPEECH_DETECTED":
-            setStatus(`Speech detected! Confidence: ${parsed.data.confidence}`);
-            break;
           case "RECORDING_STATUS":
             setIsRecording(parsed.data.is_recording);
+            if (parsed.data.is_recording) setTranscription(""); // Limpa a tela ao gravar de novo
             break;
-          case "PIPELINE_STATUS": // <-- NOVO: Mostra onde o arquivo salvou
-            setStatus(`Audio salvo em: ${parsed.data.file}`);
+          case "PIPELINE_STATUS":
+            setStatus(parsed.data.step); // Mostra "Processing..." ou "Transcribing..."
+            break;
+          case "TRANSCRIPTION_COMPLETED": // <-- NOVO EVENTO RECEBIDO
+            setStatus("Ready.");
+            setTranscription(parsed.data.text);
             break;
           case "ERROR":
             setStatus(`Error: ${parsed.data.message}`);
@@ -66,10 +69,18 @@ function App() {
       </div>
       <button 
         className={isRecording ? "recording" : ""}
-        onClick={toggleRecording} // <-- Chama a nossa nova função
+        onClick={toggleRecording}
       >
         {isRecording ? "Stop Recording" : "Start Recording"}
       </button>
+
+      {/* CAIXA DE TRANSCRIÇÃO */}
+      {transcription && (
+        <div className="transcription-box" style={{ marginTop: '20px', padding: '15px', backgroundColor: '#1a1a1a', borderRadius: '8px', maxWidth: '350px' }}>
+          <h3>📝 Transcrição</h3>
+          <p style={{ textAlign: 'left', fontSize: '0.9em', lineHeight: '1.4' }}>{transcription}</p>
+        </div>
+      )}
     </main>
   );
 }
