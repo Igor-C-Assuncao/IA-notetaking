@@ -27,3 +27,19 @@ src-python/temp*
 .env*
 
 src-python/__pycache__
+
+
+# Tauri Secure Store
+*.json
+!package.json
+!package-lock.json
+!tsconfig.json
+!tsconfig.node.json
+!src-tauri/tauri.conf.json
+!src-tauri/capabilities/default.json
+!src-tauri/.vscode/extensions.json
+settings.json
+
+# Local Database
+*.db
+notetaker.db

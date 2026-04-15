@@ -2,7 +2,7 @@ use rusqlite::Connection;
 use std::sync::{Arc, Mutex};
 use std::io::{Write, BufRead, BufReader};
 use std::process::{Command, Stdio, ChildStdin};
-use tauri::{State, Manager, Emitter};
+use tauri::{State, Emitter};
 
 // 1. Structure Definitions
 #[derive(serde::Serialize, serde::Deserialize, Clone)]
@@ -92,7 +92,13 @@ pub fn run() {
     let python_stdin_clone = Arc::clone(&python_stdin);
 
     tauri::Builder::default()
+        // --- REGISTER PLUGINS ---
         .plugin(tauri_plugin_opener::init())
+        .plugin(tauri_plugin_store::Builder::new().build())
+        .plugin(tauri_plugin_clipboard_manager::init())
+        .plugin(tauri_plugin_dialog::init())
+        .plugin(tauri_plugin_fs::init())
+        // ------------------------
         .manage(AppState {
             db: Mutex::new(conn),
             python_stdin,
@@ -100,8 +106,9 @@ pub fn run() {
         .setup(move |app| {
             let app_handle = app.handle().clone();
             
-            // Spawn the Python process (adjust the path if necessary for your environment)
+            // Spawn the Python process (forced to run from the root directory)
             let mut child = Command::new("python")
+                .current_dir("../")
                 .arg("src-python/main.py")
                 .stdin(Stdio::piped())
                 .stdout(Stdio::piped())
