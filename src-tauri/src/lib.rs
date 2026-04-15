@@ -98,17 +98,43 @@ pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_store::Builder::new().build())
-        // --- ADD THESE PLUGINS HERE ---
         .plugin(tauri_plugin_clipboard_manager::init())
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_fs::init())
-        // ------------------------------
         .manage(AppState {
             db: Mutex::new(conn),
             python_stdin,
         })
         .setup(move |app| {
-            // ... (keep your existing Python setup logic)
+            let app_handle = app.handle().clone();
+            
+            // Spawn the Python process (forced to run from the root directory)
+            let mut child = Command::new("python")
+                .current_dir("../")
+                .arg("src-python/main.py")
+                .stdin(Stdio::piped())
+                .stdout(Stdio::piped())
+                .stderr(Stdio::inherit())
+                .spawn()
+                .expect("Failed to start Python engine");
+
+            // Capture stdin so we can send commands later
+            let stdin = child.stdin.take().expect("Failed to open Python stdin");
+            *python_stdin_clone.lock().unwrap() = Some(stdin);
+
+            // Thread to read Python's stdout and send it to React
+            let stdout = child.stdout.take().expect("Failed to open Python stdout");
+            std::thread::spawn(move || {
+                let reader = BufReader::new(stdout);
+                for line in reader.lines() {
+                    if let Ok(content) = line {
+                        println!("[PYTHON STDOUT] {}", content);
+                        // Emit the event to the Frontend
+                        app_handle.emit("python-event", content).unwrap();
+                    }
+                }
+            });
+
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
@@ -119,4 +145,3 @@ pub fn run() {
         .run(tauri::generate_context!())
         .expect("Error while running tauri application");
 }
-
