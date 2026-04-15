@@ -8,6 +8,9 @@
   "permissions": [
     "core:default",
     "opener:default",
-    "store:default"
+    "store:default",
+    "clipboard-manager:default",
+    "dialog:default",
+    "fs:default"
   ]
 }

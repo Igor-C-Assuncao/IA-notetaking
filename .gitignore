@@ -39,3 +39,7 @@ src-python/__pycache__
 !src-tauri/capabilities/default.json
 !src-tauri/.vscode/extensions.json
 settings.json
+
+# Local Database
+*.db
+notetaker.db
