@@ -43,3 +43,11 @@ settings.json
 # Local Database
 *.db
 notetaker.db
+# Python Cache and Artifacts
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Temporary Audio Files
+*.wav
+temp_*.wav
