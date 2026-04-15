@@ -13,10 +13,11 @@
     "windows": [
       {
         "fullscreen": false,
-        "resizable": true,
+        "resizable": false,
+        "decorations": false,
         "title": "AI Notetaker",
         "width": 400,
-        "height": 600,
+        "height": 120,
         "alwaysOnTop": true
       }
     ],
