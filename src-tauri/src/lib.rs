@@ -3,6 +3,7 @@ use std::io::{BufRead, BufReader, Write};
 use std::process::{ChildStdin, Command, Stdio};
 use std::sync::{Arc, Mutex};
 use tauri::{Emitter, State};
+use tauri::{LogicalSize, Window};
 
 // 1. Structure Definitions
 #[derive(serde::Serialize, serde::Deserialize, Clone)]
@@ -74,6 +75,25 @@ fn send_command_to_python(state: State<'_, AppState>, payload: String) -> Result
     Err("Python process not initialized or stdin unavailable".to_string())
 }
 
+#[tauri::command]
+async fn set_compact_mode(window: Window) -> Result<(), String> {
+    window.set_size(LogicalSize::new(400.0, 120.0)).map_err(|e| e.to_string())?;
+    window.set_decorations(false).map_err(|e| e.to_string())?;
+    window.set_always_on_top(true).map_err(|e| e.to_string())?;
+    window.set_resizable(false).map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+#[tauri::command]
+async fn set_expanded_mode(window: Window) -> Result<(), String> {
+    window.set_size(LogicalSize::new(1024.0, 720.0)).map_err(|e| e.to_string())?;
+    window.set_decorations(true).map_err(|e| e.to_string())?;
+    window.set_always_on_top(false).map_err(|e| e.to_string())?;
+    window.set_resizable(true).map_err(|e| e.to_string())?;
+    window.center().map_err(|e| e.to_string())?;
+    Ok(())
+}
+
 // 5. Main Initialization Function
 
 
@@ -140,8 +160,11 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             save_meeting, 
             get_meetings, 
-            send_command_to_python
+            send_command_to_python,
+            set_compact_mode,
+            set_expanded_mode
         ])
         .run(tauri::generate_context!())
         .expect("Error while running tauri application");
 }
+
