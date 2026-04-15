@@ -1,93 +1,138 @@
-// src-tauri/src/lib.rs
-use std::io::{BufRead, BufReader, Write}; // <-- Added Write
-use std::path::PathBuf;
-use std::process::{Command, Stdio, ChildStdin}; // <-- Added ChildStdin
-use std::sync::Mutex; // <-- Added Mutex to share stdin
-use std::thread;
-use tauri::{Emitter, Manager};
+use rusqlite::Connection;
+use std::sync::{Arc, Mutex};
+use std::io::{Write, BufRead, BufReader};
+use std::process::{Command, Stdio, ChildStdin};
+use tauri::{State, Manager, Emitter};
 
-fn python_executable_path() -> PathBuf {
-    let manifest_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
-
-    if cfg!(target_os = "windows") {
-        manifest_dir.join("..").join(".venv").join("Scripts").join("python.exe")
-    } else {
-        manifest_dir.join("..").join(".venv").join("bin").join("python")
-    }
+// 1. Structure Definitions
+#[derive(serde::Serialize, serde::Deserialize, Clone)]
+struct Meeting {
+    id: Option<i32>,
+    date: String,
+    title: String,
+    raw_transcript: String,
+    markdown_summary: String,
 }
 
-// ------------------------------------------------------------------------
-// NEW: Exposed command for React to call and send text to Python
-// ------------------------------------------------------------------------
+// 2. Global Application State (Database + Python Stdin)
+struct AppState {
+    db: Mutex<Connection>,
+    python_stdin: Arc<Mutex<Option<ChildStdin>>>,
+}
+
+// 3. Database Commands
 #[tauri::command]
-fn send_command_to_python(payload: String, stdin_state: tauri::State<'_, Mutex<ChildStdin>>) {
-    // Tries to access Python's stdin handle
-    if let Ok(mut stdin) = stdin_state.lock() {
-        println!("[RUST DEBUG] React mandou enviar: {}", payload);
-        // Writes the message and appends a newline (\n),
-        // because Python is reading line by line (for line in sys.stdin)
-        if let Err(e) = writeln!(stdin, "{}", payload) {
-            println!("[RUST DEBUG] Erro ao escrever no stdin: {}", e);
-        }
-    }
+fn save_meeting(
+    state: State<'_, AppState>,
+    date: String,
+    title: String,
+    raw_transcript: String,
+    markdown_summary: String,
+) -> Result<(), String> {
+    let db = state.db.lock().unwrap();
+    db.execute(
+        "INSERT INTO meetings (date, title, raw_transcript, markdown_summary) VALUES (?1, ?2, ?3, ?4)",
+        (&date, &title, &raw_transcript, &markdown_summary),
+    ).map_err(|e| e.to_string())?;
+    Ok(())
 }
 
+#[tauri::command]
+fn get_meetings(state: State<'_, AppState>) -> Result<Vec<Meeting>, String> {
+    let db = state.db.lock().unwrap();
+    let mut stmt = db.prepare("SELECT id, date, title, raw_transcript, markdown_summary FROM meetings ORDER BY id DESC").map_err(|e| e.to_string())?;
+    
+    let meeting_iter = stmt.query_map([], |row| {
+        Ok(Meeting {
+            id: Some(row.get(0)?),
+            date: row.get(1)?,
+            title: row.get(2)?,
+            raw_transcript: row.get(3)?,
+            markdown_summary: row.get(4)?,
+        })
+    }).map_err(|e| e.to_string())?;
+    
+    let mut meetings = Vec::new();
+    for meeting in meeting_iter {
+        meetings.push(meeting.map_err(|e| e.to_string())?);
+    }
+    Ok(meetings)
+}
+
+// 4. IPC Command: Sends commands to Python via stdin
+#[tauri::command]
+fn send_command_to_python(state: State<'_, AppState>, payload: String) -> Result<(), String> {
+    println!("[RUST DEBUG] Sending to Python: {}", payload);
+    let stdin_lock = state.python_stdin.lock().unwrap();
+    
+    if let Some(mut stdin) = stdin_lock.as_ref() {
+        writeln!(stdin, "{}", payload).map_err(|e| e.to_string())?;
+        return Ok(());
+    }
+    Err("Python process not initialized or stdin unavailable".to_string())
+}
+
+// 5. Main Initialization Function
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
-    tauri::Builder::default()
-        // Registers the command so React can use it
-        .invoke_handler(tauri::generate_handler![send_command_to_python]) 
-        .setup(|app| {
-            let app_handle = app.handle().clone();
-            let app_handle_err = app.handle().clone(); 
-            let python_path = python_executable_path();
+    // Initialize Local Database
+    let conn = Connection::open("notetaker.db").expect("Failed to open local database");
+    conn.execute(
+        "CREATE TABLE IF NOT EXISTS meetings (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            date TEXT NOT NULL,
+            title TEXT NOT NULL,
+            raw_transcript TEXT NOT NULL,
+            markdown_summary TEXT NOT NULL
+        )",
+        [],
+    ).expect("Failed to create tables");
 
-            let mut child = Command::new(python_path)
-                .arg("../src-python/main.py")
+    let python_stdin = Arc::new(Mutex::new(None));
+    let python_stdin_clone = Arc::clone(&python_stdin);
+
+    tauri::Builder::default()
+        .plugin(tauri_plugin_opener::init())
+        .manage(AppState {
+            db: Mutex::new(conn),
+            python_stdin,
+        })
+        .setup(move |app| {
+            let app_handle = app.handle().clone();
+            
+            // Spawn the Python process (adjust the path if necessary for your environment)
+            let mut child = Command::new("python")
+                .arg("src-python/main.py")
                 .stdin(Stdio::piped())
                 .stdout(Stdio::piped())
-                .stderr(Stdio::piped())
+                .stderr(Stdio::inherit())
                 .spawn()
-                .expect("FALHA CRÍTICA");
+                .expect("Failed to start Python engine");
 
-            // ------------------------------------------------------------------------
-            // NEW: Stores STDIN in the app global state so the React button can access it
-            // ------------------------------------------------------------------------
-            let stdin = child.stdin.take().unwrap();
-            app.manage(Mutex::new(stdin));
+            // Capture stdin so we can send commands later
+            let stdin = child.stdin.take().expect("Failed to open Python stdin");
+            *python_stdin_clone.lock().unwrap() = Some(stdin);
 
-            let stdout = child.stdout.take().unwrap();
-            let stderr = child.stderr.take().unwrap(); 
-
-            // Thread 1: Listens to STDOUT (normal logs)
-            thread::spawn(move || {
+            // Thread to read Python's stdout and send it to React
+            let stdout = child.stdout.take().expect("Failed to open Python stdout");
+            std::thread::spawn(move || {
                 let reader = BufReader::new(stdout);
                 for line in reader.lines() {
-                    if let Ok(msg) = line {
-                        println!("[PYTHON STDOUT] {}", msg); 
-                        app_handle.emit("python-event", msg).unwrap(); 
-                    }
-                }
-            });
-
-            // Thread 2: Listens to STDERR (errors)
-            thread::spawn(move || {
-                let reader = BufReader::new(stderr);
-                for line in reader.lines() {
-                    if let Ok(err_msg) = line {
-                        println!("[PYTHON STDERR] {}", err_msg); 
-                        let safe_msg = err_msg.replace("\"", "\\\"");
-                        let json_err = format!(r#"{{"event": "ERROR", "data": {{"message": "[Python Error]: {}"}}}}"#, safe_msg);
-                        
-                        if !err_msg.starts_with("DEBUG:") {
-                            app_handle_err.emit("python-event", json_err).unwrap();
-                        }
+                    if let Ok(content) = line {
+                        println!("[PYTHON STDOUT] {}", content);
+                        // Emit the event to the Frontend
+                        app_handle.emit("python-event", content).unwrap();
                     }
                 }
             });
 
             Ok(())
         })
+        .invoke_handler(tauri::generate_handler![
+            save_meeting, 
+            get_meetings, 
+            send_command_to_python
+        ])
         .run(tauri::generate_context!())
-        .expect("error while running tauri application");
+        .expect("Error while running tauri application");
 }
