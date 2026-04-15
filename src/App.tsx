@@ -7,13 +7,9 @@ import { save } from "@tauri-apps/plugin-dialog";
 import { writeTextFile } from "@tauri-apps/plugin-fs";
 import "./App.css";
 
-<<<<<<< HEAD
-// Interface TypeScript para espelhar o Rust
-=======
 /**
  * Interface representing a meeting record from the database
  */
->>>>>>> 9fddd5801422561f41a8e35f039c77bf2cbb9532
 interface Meeting {
   id: number;
   date: string;
@@ -29,25 +25,9 @@ function App() {
   const [transcription, setTranscription] = useState("");
   const [notes, setNotes] = useState("");
   
-<<<<<<< HEAD
-  // Novos estados para o Histórico
-  const [meetingsHistory, setMeetingsHistory] = useState<Meeting[]>([]);
-  const [selectedMeetingId, setSelectedMeetingId] = useState<number | null>(null);
-
-  // Carrega o histórico ao abrir o app
-  const loadHistory = async () => {
-    try {
-      const meetings: Meeting[] = await invoke("get_meetings");
-      setMeetingsHistory(meetings);
-    } catch (error) {
-      console.error("Erro ao carregar histórico:", error);
-    }
-  };
-=======
   // --- HISTORY STATE ---
   const [meetingsHistory, setMeetingsHistory] = useState<Meeting[]>([]);
   const [selectedMeetingId, setSelectedMeetingId] = useState<number | null>(null);
->>>>>>> 9fddd5801422561f41a8e35f039c77bf2cbb9532
 
   // --- SETTINGS STATE (BYOK) ---
   const [showSettings, setShowSettings] = useState(false);
@@ -130,11 +110,7 @@ function App() {
             if (parsed.data.is_recording) {
               setTranscription(""); 
               setNotes(""); 
-<<<<<<< HEAD
-              setSelectedMeetingId(null); // Deseleciona o histórico para uma nova gravação
-=======
               setSelectedMeetingId(null);
->>>>>>> 9fddd5801422561f41a8e35f039c77bf2cbb9532
             }
             break;
           case "PIPELINE_STATUS":
@@ -147,19 +123,6 @@ function App() {
             const generatedNotes = parsed.data.markdown;
             setNotes(generatedNotes);
             
-<<<<<<< HEAD
-            // AUTOMATIZAÇÃO: Salva no banco de dados assim que as notas são geradas!
-            try {
-              await invoke("save_meeting", {
-                date: new Date().toLocaleString('pt-BR'),
-                title: `Reunião ${new Date().toLocaleDateString('pt-BR')}`,
-                rawTranscript: transcription, // Envia a transcrição atual do estado
-                markdownSummary: generatedNotes
-              });
-              await loadHistory(); // Atualiza a barra lateral
-            } catch (dbError) {
-              console.error("Erro ao salvar no banco:", dbError);
-=======
             // Save to database automatically
             try {
               await invoke("save_meeting", {
@@ -171,7 +134,6 @@ function App() {
               await loadHistory();
             } catch (dbError) {
               console.error("Database save error:", dbError);
->>>>>>> 9fddd5801422561f41a8e35f039c77bf2cbb9532
             }
             break;
           case "ERROR":
@@ -186,11 +148,7 @@ function App() {
     return () => {
       unlisten.then((f) => f());
     };
-<<<<<<< HEAD
-  }, [transcription]); // Adicionamos 'transcription' na dependência para ele enxergar o estado atualizado no momento de salvar
-=======
   }, [transcription]);
->>>>>>> 9fddd5801422561f41a8e35f039c77bf2cbb9532
 
   /**
    * Handles recording start/stop and sends settings to Python
@@ -236,23 +194,7 @@ function App() {
     }
   };
 
-  const handleSelectMeeting = (meeting: Meeting) => {
-    setSelectedMeetingId(meeting.id);
-    setTranscription(meeting.raw_transcript);
-    setNotes(meeting.markdown_summary);
-  };
-
   return (
-<<<<<<< HEAD
-    <div style={{ display: 'flex', height: '100vh', width: '100vw', margin: 0, padding: 0 }}>
-      
-      {/* --- SIDEBAR DE HISTÓRICO --- */}
-      <aside style={{ width: '280px', backgroundColor: '#1e1e1e', borderRight: '1px solid #333', padding: '20px', overflowY: 'auto' }}>
-        <h2 style={{ fontSize: '1.2rem', marginBottom: '20px' }}>📚 Meu Histórico</h2>
-        <div style={{ display: 'flex', flexDirection: 'column', gap: '10px' }}>
-          {meetingsHistory.length === 0 ? (
-            <p style={{ fontSize: '0.9em', color: '#888' }}>Nenhuma reunião salva ainda.</p>
-=======
     <div className="app-layout">
       {/* SIDEBAR: MEETING HISTORY */}
       <aside className="sidebar">
@@ -260,26 +202,10 @@ function App() {
         <div className="history-list">
           {meetingsHistory.length === 0 ? (
             <p className="empty-label">No sessions found</p>
->>>>>>> 9fddd5801422561f41a8e35f039c77bf2cbb9532
           ) : (
             meetingsHistory.map((meeting) => (
               <button 
                 key={meeting.id}
-<<<<<<< HEAD
-                onClick={() => handleSelectMeeting(meeting)}
-                style={{
-                  textAlign: 'left',
-                  padding: '10px',
-                  backgroundColor: selectedMeetingId === meeting.id ? '#4CAF50' : '#2a2a2a',
-                  color: 'white',
-                  border: 'none',
-                  borderRadius: '6px',
-                  cursor: 'pointer'
-                }}
-              >
-                <div style={{ fontWeight: 'bold' }}>{meeting.title}</div>
-                <div style={{ fontSize: '0.8em', opacity: 0.8 }}>{meeting.date}</div>
-=======
                 className={`history-item ${selectedMeetingId === meeting.id ? "active" : ""}`}
                 onClick={() => {
                   setSelectedMeetingId(meeting.id);
@@ -289,46 +215,12 @@ function App() {
               >
                 <span className="item-title">{meeting.title}</span>
                 <span className="item-date">{meeting.date}</span>
->>>>>>> 9fddd5801422561f41a8e35f039c77bf2cbb9532
               </button>
             ))
           )}
         </div>
       </aside>
 
-<<<<<<< HEAD
-      {/* --- ÁREA PRINCIPAL --- */}
-      <main className="container" style={{ flex: 1, padding: '40px', overflowY: 'auto' }}>
-        <h1>🎙️ AI Notetaker</h1>
-        
-        <div className="status-panel">
-          <p>Engine Status: <span>{status}</span></p>
-        </div>
-
-        <button 
-          className={isRecording ? "recording" : ""}
-          onClick={toggleRecording}
-          disabled={selectedMeetingId !== null && !isRecording} // Evita gravar por cima visualmente se estiver olhando o histórico
-        >
-          {isRecording ? "Stop Recording" : (selectedMeetingId ? "Start New Recording" : "Start Recording")}
-        </button>
-        
-        {/* Exibição da Transcrição */}
-        {transcription && (
-          <div className="transcription-box" style={{ marginTop: '20px', padding: '15px', backgroundColor: '#1a1a1a', borderRadius: '8px' }}>
-            <h3>📝 Transcrição Bruta</h3>
-            <p style={{ textAlign: 'left', fontSize: '0.9em', lineHeight: '1.4' }}>{transcription}</p>
-          </div>
-        )}
-
-        {/* Exibição das Notas Geradas */}
-        {notes && (
-          <div className="notes-box" style={{ marginTop: '20px', padding: '15px', backgroundColor: '#2a2a2a', borderRadius: '8px', borderLeft: '4px solid #4CAF50' }}>
-            <h3 style={{ color: '#4CAF50' }}>✨ Resumo Inteligente (Markdown)</h3>
-            <pre style={{ textAlign: 'left', fontSize: '0.9em', whiteSpace: 'pre-wrap', fontFamily: 'inherit' }}>
-              {notes}
-            </pre>
-=======
       {/* MAIN VIEW */}
       <main className="main-content">
         <button className="settings-trigger" onClick={() => setShowSettings(true)}>⚙️</button>
@@ -413,7 +305,6 @@ function App() {
                 <button className="btn-save" onClick={saveSettings}>Save Changes</button>
               </div>
             </div>
->>>>>>> 9fddd5801422561f41a8e35f039c77bf2cbb9532
           </div>
         )}
       </main>

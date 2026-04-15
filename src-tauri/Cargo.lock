@@ -3255,8 +3255,6 @@ dependencies = [
 ]
 
 [[package]]
-<<<<<<< HEAD
-=======
 name = "rfd"
 version = "0.16.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3281,7 +3279,6 @@ dependencies = [
 ]
 
 [[package]]
->>>>>>> 9fddd5801422561f41a8e35f039c77bf2cbb9532
 name = "rusqlite"
 version = "0.31.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
