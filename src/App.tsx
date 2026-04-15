@@ -8,6 +8,7 @@ import { writeTextFile } from "@tauri-apps/plugin-fs";
 import { MicrophoneStage, Gear, ArrowsOutSimple, ArrowsInSimple, Copy, Export } from "@phosphor-icons/react";
 import "./App.css";
 
+
 /**
  * Interface representing a meeting record from the database
  */
@@ -36,6 +37,7 @@ function App() {
   const [provider, setProvider] = useState("ollama");
   const [modelName, setModelName] = useState("llama3");
   const [apiKey, setApiKey] = useState("");
+  const [theme, setTheme] = useState("liquid-glass"); // Add this line
 
   /**
    * Load user preferences from the secure store on mount
@@ -50,10 +52,12 @@ function App() {
         const savedProvider = await store.get<string>("provider");
         const savedModel = await store.get<string>("modelName");
         const savedApiKey = await store.get<string>("apiKey");
+        const savedTheme = await store.get<string>("theme"); // Add this
 
         if (savedProvider) setProvider(savedProvider);
         if (savedModel) setModelName(savedModel);
         if (savedApiKey) setApiKey(savedApiKey);
+        if (savedTheme) setTheme(savedTheme); // Add this
       } catch (e) {
         console.error("Failed to load settings:", e);
       }
@@ -74,6 +78,7 @@ function App() {
       await store.set("provider", provider);
       await store.set("modelName", modelName);
       await store.set("apiKey", apiKey);
+      await store.set("theme", theme); 
       await store.save();
       
       setShowSettings(false);
@@ -151,6 +156,17 @@ function App() {
       unlisten.then((f) => f());
     };
   }, [transcription]);
+
+
+
+  /**
+   * Applies the selected theme to the HTML root element
+   */
+  useEffect(() => {
+    document.documentElement.setAttribute("data-theme", theme);
+  }, [theme]);
+
+
 
   /**
    * Handles recording start/stop and sends settings to Python
@@ -245,13 +261,12 @@ function App() {
             <div className="settings-modal">
               {/* Settings content is identical to expanded mode */}
               <h3>IA Configuration</h3>
+              {/* Add this new form-group for the theme */}
               <div className="form-group">
-                <label>LLM Provider</label>
-                <select value={provider} onChange={(e) => setProvider(e.target.value)}>
-                  <option value="ollama">Ollama (Local)</option>
-                  <option value="openai">OpenAI (Cloud)</option>
-                  <option value="gemini">Google Gemini</option>
-                  <option value="anthropic">Anthropic Claude</option>
+                <label>Theme</label>
+                <select value={theme} onChange={(e) => setTheme(e.target.value)}>
+                  <option value="liquid-glass">Liquid Glass (Dark)</option>
+                  <option value="minimalist-notebook">Minimalist Notebook (Light)</option>
                 </select>
               </div>
               <div className="form-group">
