@@ -5,6 +5,7 @@ import { load } from "@tauri-apps/plugin-store";
 import { writeText } from "@tauri-apps/plugin-clipboard-manager";
 import { save } from "@tauri-apps/plugin-dialog";
 import { writeTextFile } from "@tauri-apps/plugin-fs";
+import { MicrophoneStage, Gear, ArrowsOutSimple, ArrowsInSimple, Copy, Export } from "@phosphor-icons/react";
 import "./App.css";
 
 /**
@@ -24,6 +25,7 @@ function App() {
   const [status, setStatus] = useState("Initializing system...");
   const [transcription, setTranscription] = useState("");
   const [notes, setNotes] = useState("");
+  const [isExpanded, setIsExpanded] = useState(false); // New state for Window Mode
   
   // --- HISTORY STATE ---
   const [meetingsHistory, setMeetingsHistory] = useState<Meeting[]>([]);
@@ -175,6 +177,23 @@ function App() {
   };
 
   /**
+   * Toggles native window size between Compact and Expanded
+   */
+  const toggleWindowMode = async () => {
+    try {
+      if (isExpanded) {
+        await invoke("set_compact_mode");
+        setIsExpanded(false);
+      } else {
+        await invoke("set_expanded_mode");
+        setIsExpanded(true);
+      }
+    } catch (error) {
+      console.error("Failed to toggle window mode:", error);
+    }
+  };
+
+  /**
    * Clipboard and Export Actions
    */
   const handleCopyToClipboard = async () => {
@@ -194,6 +213,69 @@ function App() {
     }
   };
 
+  // --- COMPACT WIDGET VIEW ---
+  if (!isExpanded) {
+    return (
+      <div className="compact-widget" data-tauri-drag-region>
+        <div className="widget-controls" data-tauri-drag-region>
+          <button className="icon-btn" onClick={() => setShowSettings(true)} title="Settings">
+            <Gear size={24} weight="regular" />
+          </button>
+          
+          <button 
+            className={`record-btn-compact ${isRecording ? "recording" : ""}`}
+            onClick={toggleRecording}
+            title={isRecording ? "Stop Recording" : "Start Recording"}
+          >
+            <MicrophoneStage size={32} weight={isRecording ? "fill" : "regular"} />
+          </button>
+          
+          <button className="icon-btn" onClick={toggleWindowMode} title="Expand View">
+            <ArrowsOutSimple size={24} weight="bold" />
+          </button>
+        </div>
+        <div className="widget-status" data-tauri-drag-region>
+          <span className={`status-led ${isRecording ? "active" : ""}`}></span>
+          <p className="status-text">{status}</p>
+        </div>
+
+        {/* SETTINGS MODAL (Rendered conditionally even in compact mode) */}
+        {showSettings && (
+          <div className="modal-overlay">
+            <div className="settings-modal">
+              {/* Settings content is identical to expanded mode */}
+              <h3>IA Configuration</h3>
+              <div className="form-group">
+                <label>LLM Provider</label>
+                <select value={provider} onChange={(e) => setProvider(e.target.value)}>
+                  <option value="ollama">Ollama (Local)</option>
+                  <option value="openai">OpenAI (Cloud)</option>
+                  <option value="gemini">Google Gemini</option>
+                  <option value="anthropic">Anthropic Claude</option>
+                </select>
+              </div>
+              <div className="form-group">
+                <label>Model Name</label>
+                <input type="text" value={modelName} onChange={(e) => setModelName(e.target.value)} />
+              </div>
+              {provider !== "ollama" && (
+                <div className="form-group">
+                  <label>API Key</label>
+                  <input type="password" value={apiKey} placeholder="Enter your key..." onChange={(e) => setApiKey(e.target.value)} />
+                </div>
+              )}
+              <div className="modal-actions">
+                <button className="btn-cancel" onClick={() => setShowSettings(false)}>Cancel</button>
+                <button className="btn-save" onClick={saveSettings}>Save Changes</button>
+              </div>
+            </div>
+          </div>
+        )}
+      </div>
+    );
+  }
+
+  // --- EXPANDED MAIN VIEW ---
   return (
     <div className="app-layout">
       {/* SIDEBAR: MEETING HISTORY */}
@@ -223,7 +305,14 @@ function App() {
 
       {/* MAIN VIEW */}
       <main className="main-content">
-        <button className="settings-trigger" onClick={() => setShowSettings(true)}>⚙️</button>
+        <div className="top-bar">
+          <button className="icon-btn" onClick={() => setShowSettings(true)}>
+            <Gear size={24} />
+          </button>
+          <button className="icon-btn" onClick={toggleWindowMode} title="Collapse View">
+            <ArrowsInSimple size={24} weight="bold" />
+          </button>
+        </div>
 
         <h1>🎙️ AI Notetaker</h1>
         
@@ -237,6 +326,7 @@ function App() {
             onClick={toggleRecording}
             disabled={selectedMeetingId !== null && !isRecording}
           >
+            <MicrophoneStage size={20} weight={isRecording ? "fill" : "regular"} className="btn-icon" />
             {isRecording ? "Stop Recording" : (selectedMeetingId ? "New Session" : "Start Recording")}
           </button>
         </div>
@@ -244,8 +334,12 @@ function App() {
         {/* ACTION BAR */}
         {notes && (
           <div className="actions-bar">
-            <button onClick={handleCopyToClipboard}>📋 Copy to Clipboard</button>
-            <button onClick={handleExportAsMarkdown}>💾 Export as .MD</button>
+            <button onClick={handleCopyToClipboard}>
+              <Copy size={18} /> Copy to Clipboard
+            </button>
+            <button onClick={handleExportAsMarkdown}>
+              <Export size={18} /> Export as .MD
+            </button>
           </div>
         )}
 
@@ -272,7 +366,6 @@ function App() {
           <div className="modal-overlay">
             <div className="settings-modal">
               <h3>IA Configuration</h3>
-              
               <div className="form-group">
                 <label>LLM Provider</label>
                 <select value={provider} onChange={(e) => setProvider(e.target.value)}>
@@ -282,24 +375,16 @@ function App() {
                   <option value="anthropic">Anthropic Claude</option>
                 </select>
               </div>
-
               <div className="form-group">
                 <label>Model Name</label>
                 <input type="text" value={modelName} onChange={(e) => setModelName(e.target.value)} />
               </div>
-
               {provider !== "ollama" && (
                 <div className="form-group">
                   <label>API Key</label>
-                  <input 
-                    type="password" 
-                    value={apiKey} 
-                    placeholder="Enter your key..."
-                    onChange={(e) => setApiKey(e.target.value)} 
-                  />
+                  <input type="password" value={apiKey} placeholder="Enter your key..." onChange={(e) => setApiKey(e.target.value)} />
                 </div>
               )}
-
               <div className="modal-actions">
                 <button className="btn-cancel" onClick={() => setShowSettings(false)}>Cancel</button>
                 <button className="btn-save" onClick={saveSettings}>Save Changes</button>
