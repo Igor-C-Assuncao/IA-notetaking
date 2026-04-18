@@ -29,6 +29,8 @@ src-python/temp*
 src-python/__pycache__
 
 
+src-python/.venv
+
 # Tauri Secure Store
 *.json
 !package.json
