@@ -1,101 +1,126 @@
-🎙️ IA NoteTaking 
+<div align="center">
+  <img src="public/logo.png" alt="AI NoteTaking" width="160" />
 
+  <h1>AI NoteTaking</h1>
 
-[![License](https://img.shields.io/badge/License-Apache_2.0-blue.svg)](https://opensource.org/licenses/Apache-2.0)
-[![PRs Welcome](https://img.shields.io/badge/PRs-welcome-brightgreen.svg)](http://makeapullrequest.com)
-[![Tauri](https://img.shields.io/badge/Tauri-App-FFC131?logo=tauri&logoColor=white)](https://tauri.app/)
-[![Python](https://img.shields.io/badge/Python-Backend-3776AB?logo=python&logoColor=white)](https://www.python.org/)
+  <p>An open-source, invisible, privacy-first AI notetaker for your meetings.</p>
 
+  [![License](https://img.shields.io/badge/License-Apache_2.0-blue.svg)](https://opensource.org/licenses/Apache-2.0)
+  [![PRs Welcome](https://img.shields.io/badge/PRs-welcome-brightgreen.svg)](http://makeapullrequest.com)
+  [![Tauri](https://img.shields.io/badge/Tauri_2-App-FFC131?logo=tauri&logoColor=white)](https://tauri.app/)
+  [![Python](https://img.shields.io/badge/Python_3.10+-Backend-3776AB?logo=python&logoColor=white)](https://www.python.org/)
+  [![React](https://img.shields.io/badge/React-Frontend-61DAFB?logo=react&logoColor=black)](https://react.dev/)
+</div>
 
-**IA NoteTaking ** is an open-source, invisible, and privacy-first AI Notetaker. It captures audio from your microphone and system (loopback) during meetings to generate accurate transcripts and summaries, without the need to invite invasive "bots" to your calls (Zoom, Meet, Teams).
+---
 
-Built with a high-performance hybrid architecture (**Tauri + Rust + Python**) and utilizing rigorous software engineering patterns to make community contributions seamless.
+Captures audio from your microphone and system (loopback) during meetings, then generates accurate transcripts and structured summaries — without inviting invasive bots into your Zoom, Meet, or Teams calls.
 
-## ✨ Key Features
+Built with a high-performance hybrid architecture: **Tauri 2 + Rust + Python**.
 
-* **Invisible Capture (Loopback):** Records system and microphone audio natively, keeping invasive bots out of your meeting rooms.
-* **Privacy-First (Local-First):** Native support for running large language models 100% locally via **Ollama**, ensuring sensitive corporate data never leaves your machine.
-* **Bring Your Own Key (BYOK):** Don't want to run models locally? Enter your API keys in the settings and use state-of-the-art models (OpenAI, Google Gemini, Anthropic).
-* **Intelligent AI Pipeline:** Uses **Silero VAD** for voice activity detection (saving CPU/bandwidth) and orchestrates intelligent *Action Item* extraction using **LangGraph**.
-* **Cross-Platform:** Planned support for Windows (WASAPI) and macOS (ScreenCaptureKit).
+## Features
 
-## 🏗️ Architecture
+- **Invisible capture** — records system audio and microphone natively via loopback; no bots, no meeting links, no permissions requested from the host.
+- **Privacy-first, local-first** — full support for running LLMs 100% locally via [Ollama](https://ollama.com/), so sensitive data never leaves your machine.
+- **Bring your own key (BYOK)** — prefer the cloud? Drop in your API key for OpenAI, Google Gemini, or Anthropic Claude and switch at any time.
+- **Intelligent audio pipeline** — [Silero VAD](https://github.com/snakers4/silero-vad) filters silence before transcription, [WhisperX](https://github.com/m-bain/whisperX) handles speech-to-text, and a LangGraph agent extracts action items and generates the structured summary.
+- **Compact floating widget** — sits as a small always-on-top pill while you work; expands to the full view when you need to review notes or browse meeting history.
+- **Persistent history** — every session is saved locally in SQLite and available for review at any time.
+- **Two themes** — Liquid Glass (dark) and Minimalist Notebook (light).
 
-The project adopts a modular, sidecar-based architecture:
+## Architecture
 
-1. **Frontend (React/Vue/Svelte):** Lightweight and minimalist UI.
-2. **Core (Tauri / Rust):** Manages the app lifecycle, OS native permissions, and local data persistence (SQLite).
-3. **Audio & AI Engine (Python Sidecar):** An isolated Python process handling loopback capture, VAD, transcription (WhisperX), and LLM communication. It communicates with Tauri via IPC (Inter-Process Communication).
+```
+┌─────────────────────────────────────────────┐
+│  Frontend  (React + TypeScript + Vite)       │
+│  Compact widget  ·  Expanded view  ·  Themes │
+└────────────────────┬────────────────────────┘
+                     │  Tauri IPC (invoke / events)
+┌────────────────────▼────────────────────────┐
+│  Core  (Tauri 2 / Rust)                      │
+│  Window management  ·  SQLite  ·  IPC bridge │
+└────────────────────┬────────────────────────┘
+                     │  stdin / stdout
+┌────────────────────▼────────────────────────┐
+│  AI Engine  (Python sidecar)                 │
+│  Loopback capture  ·  VAD  ·  WhisperX       │
+│  LangGraph agent  ·  LLM providers           │
+└─────────────────────────────────────────────┘
+```
 
-## 🧩 Design Patterns
+### Design patterns
 
-To ensure the codebase remains scalable, testable, and easy for the community to contribute to, we actively adopt the following software engineering patterns:
+| Pattern | Where it's used |
+|---|---|
+| **Strategy** | BYOK system — `OllamaStrategy`, `OpenAIStrategy`, `GeminiStrategy`, `AnthropicStrategy` share a common `LLMProvider` interface and are swapped at runtime from user settings. |
+| **Factory Method** | Audio capture — `AudioCaptureFactory` evaluates the OS and instantiates either `WASAPICapture` (Windows) or `ScreenCaptureKitAdapter` (macOS). |
+| **Observer / Pub-Sub** | UI reactivity — the Python engine emits events (`VAD_SPEECH_DETECTED`, `TRANSCRIPTION_COMPLETED`, etc.) over IPC; the Tauri frontend listens and updates state in real time. |
+| **Pipeline / Chain of Responsibility** | Audio-to-notes flow — `Audio Mixer → Silero VAD → WhisperX → LangGraph Agent`. Each stage has a single responsibility and can be replaced independently. |
 
-* **Strategy Pattern:** Used at the core of our BYOK system. The application relies on a common `LLMProvider` interface. Depending on user settings, we instantiate different strategies at runtime, such as `OllamaStrategy` (local), `GeminiStrategy`, or `OpenAIStrategy` (cloud), without changing the core business logic.
-  
-* **Factory Method:** Applied when initializing audio capture. Since hardware access differs radically between operating systems, an `AudioCaptureFactory` evaluates the OS (Windows or macOS) and instantiates the correct class (`WASAPICapture` or `ScreenCaptureKitAdapter`), encapsulating OS complexity.
-
-* **Observer / Pub-Sub Pattern:** Fundamental for UI reactivity. The Python audio engine (producer) emits state events via IPC, such as `VAD_SPEECH_DETECTED` or `TRANSCRIPTION_PROGRESS`. The Tauri frontend (observer) listens to these events and updates the graphical interface in real-time (e.g., changing the system tray icon from "Idle" to "Recording").
-
-* **Pipeline / Chain of Responsibility:** Used in the audio-to-text processing flow. Raw data passes through a sequential, modular chain: `Audio Mixer` -> `Silero VAD (Silence Trimming)` -> `WhisperX (Transcription)` -> `LangGraph Agent (Extraction and Summary)`. Each node has a single responsibility and can be swapped out without breaking the pipeline.
-
-## 🚀 Getting Started (Development Environment)
+## Getting started
 
 ### Prerequisites
-* [Node.js](https://nodejs.org/) (v18+)
-* [Rust](https://www.rust-lang.org/tools/install)
-* [Python](https://www.python.org/) (3.10+) and a package manager (`uv` or `poetry`)
 
-### Installation
+- [Node.js](https://nodejs.org/) v18+
+- [Rust](https://www.rust-lang.org/tools/install) (stable)
+- [Python](https://www.python.org/) 3.10+
 
-1. Clone the repository:
-   ```bash
-   git clone [https://github.com/your-username/your-project.git](https://github.com/your-username/your-project.git)
-   cd your-project
-   ```
-   
-2. Install Frontend and Rust dependencies:
+### Install and run
 
-```Bash
+```bash
+# 1. Clone
+git clone https://github.com/your-username/ai-notetaking.git
+cd ai-notetaking
+
+# 2. Frontend and Rust dependencies
 npm install
-```
-3. Set up the Python environment (Backend):
 
-```Bash
+# 3. Python backend
 cd src-python
-pip install -r requirements.txt # or use poetry/uv
-```
+pip install -r requirements.txt
+cd ..
 
-4. Start the development environment:
-
-```Bash
+# 4. Start dev environment
 npm run tauri dev
 ```
 
-🗺️ Roadmap
-Our development is divided into Sprints. Here’s what’s coming up:
+### Build for production
 
-Sprint 1: IPC bridge setup (Tauri <-> Python)
+```bash
+npm run tauri build
+```
 
-Sprint 2: Audio capture engine (Windows Loopback / macOS ScreenCaptureKit)
+## Configuration
 
-Sprint 3: VAD integration, WhisperX, and Agent orchestration (LangGraph)
+Open the settings panel (gear icon on the widget) to configure:
 
-Sprint 4: BYOK interface, local storage, and user settings
+| Setting | Description |
+|---|---|
+| **Provider** | `Ollama` (local) · `OpenAI` · `Gemini` · `Anthropic` |
+| **Model** | Any model name supported by the selected provider |
+| **API Key** | Required for cloud providers; not stored for Ollama |
+| **Theme** | Liquid Glass (dark) or Minimalist Notebook (light) |
 
-Sprint 5: CI/CD, testing, and v1.0 Release
+Settings are persisted locally via `tauri-plugin-store`.
 
-🤝 Contributing
-Contributions are extremely welcome! If you are passionate about AI, desktop development, or audio engineering, please see our CONTRIBUTING.md to understand how to set up your environment and submit your first Pull Request.
+## Roadmap
 
-📄 License
-This project is licensed under the Apache License 2.0 - see the LICENSE file for details.
+| Sprint | Status | Scope |
+|---|---|---|
+| 0 — Foundation | ✅ Done | Project scaffold, Tauri + Python IPC bridge, SQLite |
+| 1 — Audio capture | ✅ Done | Loopback capture, WASAPI / ScreenCaptureKit factory |
+| 2 — VAD + Transcription | ✅ Done | Silero VAD, WhisperX integration |
+| 3 — AI pipeline | ✅ Done | LangGraph agent, action item extraction, summaries |
+| 4 — BYOK + Settings | ✅ Done | Multi-provider support, persistent settings, themes |
+| 5 — UI polish | ✅ Done | Compact widget, expanded view, meeting history |
+| 6 — Window UX | ✅ Done | Native drag region, window controls, popover window |
+| 7 — Testing | 🔜 Planned | Unit and integration tests |
+| 8 — v1.0 Release | 🔜 Planned | CI/CD, packaging, signed builds |
 
+## Contributing
 
-Agora que a vitrine inteira está pronta em inglês e padronizada para o GitHub, podemos finalmente ir para o código! 
+Contributions are welcome. If you are interested in AI, desktop development, or audio engineering, check out the open issues and submit a pull request. Please follow the existing code conventions and include a clear description of what your change does.
 
-Gostaria de começar configurando a ponte de comunicação (IPC) entre o Rust e o Python (**Card 1.4**), ou prefere já criar a lógica do Padrão Factory em Python para a captura de áudio (**Card 2.1**)?
+## License
 
-Com o repositório e a documentação base prontos, a verdadeira engenharia começa na comunicação entre a casca (Tauri/Rust) e o cérebro (Python). 
-
-Você quer que eu construa agora o código do **Card 1.4** mostrando como enviar mensagens do Python
+Licensed under the [Apache License 2.0](LICENSE).
