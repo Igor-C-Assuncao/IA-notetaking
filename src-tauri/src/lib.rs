@@ -1,8 +1,9 @@
 use rusqlite::Connection;
 use std::io::{BufRead, BufReader, Write};
+use std::path::PathBuf;
 use std::process::{ChildStdin, Command, Stdio};
 use std::sync::{Arc, Mutex};
-use tauri::{Emitter, State};
+use tauri::{AppHandle, Emitter, Manager, State, WebviewWindowBuilder, WebviewUrl};
 use tauri::{LogicalSize, Window};
 
 // 1. Structure Definitions
@@ -57,7 +58,7 @@ fn get_meetings(state: State<'_, AppState>) -> Result<Vec<Meeting>, String> {
 
     let mut meetings = Vec::new();
     for meeting in meeting_iter {
-        meetings.push(meeting.map_err(|e| e.to_string())?);
+        meetings.push(meeting.map_err(|e| e.to_string())?)
     }
     Ok(meetings)
 }
@@ -87,19 +88,74 @@ async fn set_compact_mode(window: Window) -> Result<(), String> {
 #[tauri::command]
 async fn set_expanded_mode(window: Window) -> Result<(), String> {
     window.set_size(LogicalSize::new(1024.0, 720.0)).map_err(|e| e.to_string())?;
-    window.set_decorations(true).map_err(|e| e.to_string())?;
+    window.set_decorations(false).map_err(|e| e.to_string())?;
     window.set_always_on_top(false).map_err(|e| e.to_string())?;
     window.set_resizable(true).map_err(|e| e.to_string())?;
     window.center().map_err(|e| e.to_string())?;
     Ok(())
 }
 
-// 5. Main Initialization Function
+// 5. Popover Window Commands
+//
+// Opens the settings popover as a separate frameless OS window, positioned
+// above the compact widget. If the window is already open, closes it (toggle).
+// Falls back to opening below the widget when there is not enough vertical
+// space above it (e.g. widget near the top of the screen).
+#[tauri::command]
+async fn open_popover_window(app: AppHandle, window: Window) -> Result<(), String> {
+    // Toggle: close if already open
+    if let Some(existing) = app.get_webview_window("popover") {
+        existing.close().map_err(|e| e.to_string())?;
+        return Ok(());
+    }
 
+    let pos = window.outer_position().map_err(|e| e.to_string())?;
+    let size = window.outer_size().map_err(|e| e.to_string())?;
 
+    let popover_w = 284.0_f64;
+    let popover_h = 344.0_f64;
+    let gap = 8.0_f64;
+
+    // Right-align with main window; clamp so it does not go off-screen left
+    let x = (pos.x as f64 + size.width as f64 - popover_w - 8.0).max(0.0);
+
+    // Prefer opening above; fall back to below when there is not enough room
+    let y = if pos.y as f64 >= popover_h + gap {
+        pos.y as f64 - popover_h - gap
+    } else {
+        pos.y as f64 + size.height as f64 + gap
+    };
+
+    WebviewWindowBuilder::new(
+        &app,
+        "popover",
+        WebviewUrl::App(PathBuf::from("index.html")),
+    )
+    .title("")
+    .decorations(false)
+    .always_on_top(true)
+    .resizable(false)
+    .inner_size(popover_w, popover_h)
+    .position(x, y)
+    .skip_taskbar(true)
+    .shadow(true)
+    .build()
+    .map_err(|e| e.to_string())?;
+
+    Ok(())
+}
+
+#[tauri::command]
+async fn close_popover_window(app: AppHandle) -> Result<(), String> {
+    if let Some(window) = app.get_webview_window("popover") {
+        window.close().map_err(|e| e.to_string())?;
+    }
+    Ok(())
+}
+
+// 6. Main Initialization Function
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
-    // Database initialization remains the same
     let conn = Connection::open("notetaker.db").expect("Failed to open local database");
     conn.execute(
         "CREATE TABLE IF NOT EXISTS meetings (
@@ -127,8 +183,7 @@ pub fn run() {
         })
         .setup(move |app| {
             let app_handle = app.handle().clone();
-            
-            // Spawn the Python process (forced to run from the root directory)
+
             let mut child = Command::new("python")
                 .current_dir("../")
                 .arg("src-python/main.py")
@@ -138,18 +193,15 @@ pub fn run() {
                 .spawn()
                 .expect("Failed to start Python engine");
 
-            // Capture stdin so we can send commands later
             let stdin = child.stdin.take().expect("Failed to open Python stdin");
             *python_stdin_clone.lock().unwrap() = Some(stdin);
 
-            // Thread to read Python's stdout and send it to React
             let stdout = child.stdout.take().expect("Failed to open Python stdout");
             std::thread::spawn(move || {
                 let reader = BufReader::new(stdout);
                 for line in reader.lines() {
                     if let Ok(content) = line {
                         println!("[PYTHON STDOUT] {}", content);
-                        // Emit the event to the Frontend
                         app_handle.emit("python-event", content).unwrap();
                     }
                 }
@@ -158,13 +210,14 @@ pub fn run() {
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
-            save_meeting, 
-            get_meetings, 
+            save_meeting,
+            get_meetings,
             send_command_to_python,
             set_compact_mode,
-            set_expanded_mode
+            set_expanded_mode,
+            open_popover_window,
+            close_popover_window,
         ])
         .run(tauri::generate_context!())
         .expect("Error while running tauri application");
 }
-

@@ -13,7 +13,7 @@
 [data-theme="liquid-glass"] {
   --font: -apple-system, BlinkMacSystemFont, "SF Pro Display", "Inter", system-ui, sans-serif;
 
-  --bg-app:    rgba(16, 14, 24, 0.52);
+  --bg-app: rgba(16, 14, 24, 0.90);
   --bg-panel:  rgba(20, 18, 30, 0.46);
   --bg-input:  rgba(255, 255, 255, 0.07);
   --bg-hover:  rgba(255, 255, 255, 0.08);
@@ -40,7 +40,7 @@
   --radius-md:   10px;
   --radius-sm:   7px;
 
-  --blur: blur(28px) saturate(180%);
+  --blur: blur(40px) saturate(160%); 
 
   /* Shadow replaces outer border for visual separation */
   --shadow-widget: 0 20px 56px -8px rgba(0,0,0,0.62),
@@ -236,7 +236,7 @@ input, select { font-family: inherit; }
   align-items: center;
   justify-content: center;
   gap: 6px;
-  pointer-events: none;
+  user-select: none; /* was pointer-events:none — drag region needs mouse events */
   font-size: 10px;
   font-weight: 500;
   color: var(--text-faint);
@@ -354,6 +354,31 @@ input, select { font-family: inherit; }
   background: var(--bg-app);
 }
 
+/* ── Standalone popover window ─────────────────────────────── */
+/* Rendered when window label is "popover". Fills the entire 284×344
+   frameless window; the OS shadow provides visual separation. */
+.popover-window {
+  width: 100vw;
+  height: 100vh;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  padding: 14px;
+  /* Remove the absolute-positioning from .compact-popover */
+  position: static;
+  bottom: unset;
+  right: unset;
+  /* Keep border-radius from popover-lg / popover-nb for rounded corners
+     against the transparent OS window shadow on macOS */
+}
+
+.popover-drag-handle {
+  height: 20px;
+  margin: -14px -14px 10px -14px; /* bleed to edges */
+  cursor: grab;
+  flex-shrink: 0;
+}
+
 /* ── Compact settings popover ──────────────────────────────── */
 .compact-popover {
   position: absolute;
@@ -456,9 +481,10 @@ input, select { font-family: inherit; }
 
 .popover-lg .popover-select,
 .popover-lg .popover-input {
-  background: rgba(255,255,255,0.08);
+  background: rgba(30, 28, 44, 0.92);
   border: 1px solid rgba(255,255,255,0.14);
   color: rgba(255,255,255,0.96);
+  color-scheme: dark;
 }
 
 .popover-nb .popover-select,
@@ -585,7 +611,7 @@ input, select { font-family: inherit; }
   align-items: center;
   justify-content: center;
   gap: 8px;
-  pointer-events: none;
+  user-select: none; /* was pointer-events:none — drag region needs mouse events */
 }
 
 .titlebar.win .titlebar-center {

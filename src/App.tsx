@@ -1,5 +1,5 @@
 import { useState, useEffect, useMemo, useRef } from "react";
-import { listen } from "@tauri-apps/api/event";
+import { listen, emit } from "@tauri-apps/api/event";
 import { invoke } from "@tauri-apps/api/core";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { load } from "@tauri-apps/plugin-store";
@@ -18,6 +18,13 @@ interface Meeting {
   title: string;
   raw_transcript: string;
   markdown_summary: string;
+}
+
+interface SettingsPayload {
+  provider: string;
+  modelName: string;
+  apiKey: string;
+  theme: string;
 }
 
 // ── OS detection ──────────────────────────────────────────────
@@ -81,7 +88,7 @@ function MacTrafficLights({ theme }: { theme: string }) {
 }
 
 // ── Windows Caption Buttons ───────────────────────────────────
-function WinCaptionButtons({ isLG }: { isLG: boolean }) {
+function WinCaptionButtons({ isLG, compactExpand }: { isLG: boolean; compactExpand?: () => void }) {
   const win = getCurrentWindow();
   const fg = isLG ? "rgba(255,255,255,0.85)" : "#1a1814";
   const hoverBg = isLG ? "rgba(255,255,255,0.09)" : "rgba(0,0,0,0.07)";
@@ -93,7 +100,14 @@ function WinCaptionButtons({ isLG }: { isLG: boolean }) {
           <path d="M0 5h10" />
         </svg>
       </WinBtn>
-      <WinBtn fg={fg} hoverBg={hoverBg} onClick={() => win.toggleMaximize()} title="Maximize">
+      {/* In compact mode, the "maximize" button expands to the full view instead
+          of the native maximize (which makes no sense on a 120px pill). */}
+      <WinBtn
+        fg={fg}
+        hoverBg={hoverBg}
+        onClick={compactExpand ?? (() => win.toggleMaximize())}
+        title={compactExpand ? "Expand" : "Maximize"}
+      >
         <svg width={10} height={10} viewBox="0 0 10 10" fill="none" stroke="currentColor" strokeWidth={1}>
           <rect x="0.5" y="0.5" width="9" height="9" />
         </svg>
@@ -207,21 +221,79 @@ function Toggle({ on, onChange }: { on: boolean; onChange: (v: boolean) => void 
   );
 }
 
-// ── Compact settings popover ──────────────────────────────────
-function CompactSettingsPopover({
-  provider, setProvider, modelName, setModelName,
-  apiKey, setApiKey, theme, setTheme, isLG,
-  onSave, onClose,
-}: {
-  provider: string; setProvider: (v: string) => void;
-  modelName: string; setModelName: (v: string) => void;
-  apiKey: string; setApiKey: (v: string) => void;
-  theme: string; setTheme: (v: string) => void;
-  isLG: boolean; onSave: () => void; onClose: () => void;
-}) {
+// ── Popover Window Content ────────────────────────────────────
+// Rendered when window label is "popover". Self-contained: loads settings
+// from store, emits "settings-changed" on save, closes itself on blur.
+function PopoverWindowContent() {
+  const [provider, setProvider] = useState("ollama");
+  const [modelName, setModelName] = useState("llama3");
+  const [apiKey, setApiKey] = useState("");
+  const [theme, setTheme] = useState("liquid-glass");
+  const isLG = theme !== "minimalist-notebook";
+  const win = getCurrentWindow();
+
+  // Load current settings from store on mount
+  useEffect(() => {
+    const init = async () => {
+      try {
+        const store = await load("settings.json", { autoSave: false, defaults: {} });
+        const sp = await store.get<string>("provider");
+        const sm = await store.get<string>("modelName");
+        const sk = await store.get<string>("apiKey");
+        const st = await store.get<string>("theme");
+        if (sp) setProvider(sp);
+        if (sm) setModelName(sm);
+        if (sk) setApiKey(sk);
+        if (st) setTheme(st);
+      } catch (e) {
+        console.error("Failed to load settings in popover:", e);
+      }
+    };
+    init();
+  }, []);
+
+  // Keep data-theme in sync for correct CSS variables
+  useEffect(() => {
+    document.documentElement.setAttribute("data-theme", theme);
+  }, [theme]);
+
+  // Close on window blur (click outside the popover)
+  // Delay slightly so the window has time to gain focus first
+  useEffect(() => {
+    let handler: (() => void) | null = null;
+    const timer = setTimeout(() => {
+      handler = () => win.close();
+      window.addEventListener("blur", handler);
+    }, 300);
+    return () => {
+      clearTimeout(timer);
+      if (handler) window.removeEventListener("blur", handler);
+    };
+  }, []);
+
+  const handleSave = async () => {
+    try {
+      const store = await load("settings.json", { autoSave: false, defaults: {} });
+      await store.set("provider", provider);
+      await store.set("modelName", modelName);
+      await store.set("apiKey", apiKey);
+      await store.set("theme", theme);
+      await store.save();
+      // Broadcast to all windows (main window listens for this)
+      await emit("settings-changed", { provider, modelName, apiKey, theme } satisfies SettingsPayload);
+      await win.close();
+    } catch (e) {
+      console.error("Failed to save settings from popover:", e);
+    }
+  };
+
   return (
-    <div className={`compact-popover ${isLG ? "popover-lg" : "popover-nb"}`}>
-      <div className="popover-arrow" />
+    <div
+      className={`popover-window ${isLG ? "popover-lg" : "popover-nb"}`}
+      data-tauri-drag-region
+    >
+      {/* Drag handle strip */}
+      <div className="popover-drag-handle" data-tauri-drag-region />
 
       <div className="popover-label">SETTINGS</div>
 
@@ -279,10 +351,8 @@ function CompactSettingsPopover({
 
       {/* Footer */}
       <div className="popover-footer">
-        <button className="popover-btn secondary" onClick={onClose}>Cancel</button>
-        <button className="popover-btn primary" onClick={() => { onSave(); onClose(); }}>
-          Save
-        </button>
+        <button className="popover-btn secondary" onClick={() => win.close()}>Cancel</button>
+        <button className="popover-btn primary" onClick={handleSave}>Save</button>
       </div>
     </div>
   );
@@ -362,7 +432,7 @@ function formatDuration(s: number): string {
   return `${String(m).padStart(2, "0")}:${String(sec).padStart(2, "0")}`;
 }
 
-// ── App ───────────────────────────────────────────────────────
+// ── App (main window) ─────────────────────────────────────────
 function App() {
   const os = useMemo(detectOS, []);
   const isWin = os === "win";
@@ -380,8 +450,6 @@ function App() {
   const [selectedMeetingId, setSelectedMeetingId] = useState<number | null>(null);
 
   const [showSettings, setShowSettings] = useState(false);
-  const [showPopover, setShowPopover] = useState(false);
-  const popoverRef = useRef<HTMLDivElement>(null);
 
   const [provider, setProvider] = useState("ollama");
   const [modelName, setModelName] = useState("llama3");
@@ -390,18 +458,6 @@ function App() {
 
   const isLG = theme !== "minimalist-notebook";
   const waveColor = isLG ? "rgba(255,255,255,0.92)" : "#1a1814";
-
-  // Close popover on outside click
-  useEffect(() => {
-    if (!showPopover) return;
-    const handler = (e: MouseEvent) => {
-      if (popoverRef.current && !popoverRef.current.contains(e.target as Node)) {
-        setShowPopover(false);
-      }
-    };
-    document.addEventListener("mousedown", handler);
-    return () => document.removeEventListener("mousedown", handler);
-  }, [showPopover]);
 
   // Recording timer
   useEffect(() => {
@@ -420,6 +476,7 @@ function App() {
       .join("\n");
   }, [transcription, search]);
 
+  // Load persisted settings and history on mount
   useEffect(() => {
     const init = async () => {
       try {
@@ -438,6 +495,20 @@ function App() {
     };
     init();
     loadHistory();
+  }, []);
+
+  // Listen for settings saved from the popover window
+  useEffect(() => {
+    const unlisten = listen<SettingsPayload>("settings-changed", (event) => {
+      const { provider: p, modelName: m, apiKey: k, theme: t } = event.payload;
+      setProvider(p);
+      setModelName(m);
+      setApiKey(k);
+      setTheme(t);
+      setStatus("Settings saved");
+      setTimeout(() => setStatus("Ready"), 2000);
+    });
+    return () => { unlisten.then((f) => f()); };
   }, []);
 
   const saveSettings = async () => {
@@ -538,14 +609,15 @@ function App() {
   if (!isExpanded) {
     return (
       <div className={`compact-widget ${isWin ? "win" : "mac"}`}>
-        {/* OS titlebar strip */}
+        {/* OS titlebar strip — drag region spans the full strip */}
         <div className="compact-os-strip" data-tauri-drag-region>
           {!isWin && <MacTrafficLights theme={theme} />}
           <div className="compact-os-title" data-tauri-drag-region>
             <LogoMark size={12} light={isLG} />
             <span>Ai NoteTaking</span>
           </div>
-          {isWin && <WinCaptionButtons isLG={isLG} />}
+          {/* On Windows, the "maximize" button expands to full view */}
+          {isWin && <WinCaptionButtons isLG={isLG} compactExpand={toggleWindowMode} />}
         </div>
 
         {/* Content row */}
@@ -561,21 +633,11 @@ function App() {
             </span>
           </div>
 
-          <div className="pill-right" ref={popoverRef} style={{ position: "relative" }}>
-            {showPopover && (
-              <CompactSettingsPopover
-                provider={provider} setProvider={setProvider}
-                modelName={modelName} setModelName={setModelName}
-                apiKey={apiKey} setApiKey={setApiKey}
-                theme={theme} setTheme={setTheme}
-                isLG={isLG}
-                onSave={saveSettings}
-                onClose={() => setShowPopover(false)}
-              />
-            )}
+          <div className="pill-right">
+            {/* Gear opens the popover as a separate OS window */}
             <button
-              className={`icon-btn-pill ${showPopover ? "active" : ""}`}
-              onClick={() => setShowPopover((v) => !v)}
+              className="icon-btn-pill"
+              onClick={() => invoke("open_popover_window")}
               title="Settings"
             >
               <GearIcon size={15} />
@@ -746,4 +808,13 @@ function App() {
   );
 }
 
-export default App;
+// ── Root — dispatches to PopoverWindowContent or App ──────────
+// Using the window label (set in Rust via WebviewWindowBuilder) avoids
+// any URL-parsing fragility and works identically in dev and production.
+function Root() {
+  const isPopover = getCurrentWindow().label === "popover";
+  if (isPopover) return <PopoverWindowContent />;
+  return <App />;
+}
+
+export default Root;

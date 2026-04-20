@@ -14,11 +14,13 @@
       {
         "fullscreen": false,
         "resizable": false,
-        "decorations": false,
+        "decorations": true,
         "title": "AI Notetaker",
         "width": 400,
         "height": 120,
-        "alwaysOnTop": true
+        "alwaysOnTop": true,
+        "transparent": true
+        
       }
     ],
     "security": {
