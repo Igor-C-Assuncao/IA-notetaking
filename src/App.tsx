@@ -1,17 +1,17 @@
-import { useState, useEffect } from "react";
-import { listen } from "@tauri-apps/api/event";
+import { useState, useEffect, useMemo, useRef } from "react";
+import { listen, emit } from "@tauri-apps/api/event";
 import { invoke } from "@tauri-apps/api/core";
+import { getCurrentWindow } from "@tauri-apps/api/window";
 import { load } from "@tauri-apps/plugin-store";
 import { writeText } from "@tauri-apps/plugin-clipboard-manager";
 import { save } from "@tauri-apps/plugin-dialog";
 import { writeTextFile } from "@tauri-apps/plugin-fs";
-import { MicrophoneStage, Gear, ArrowsOutSimple, ArrowsInSimple, Copy, Export } from "@phosphor-icons/react";
+import {
+  GearIcon, ArrowsOutSimpleIcon, ArrowsInSimpleIcon,
+  CopyIcon, ExportIcon, MagnifyingGlassIcon,
+} from "@phosphor-icons/react";
 import "./App.css";
 
-
-/**
- * Interface representing a meeting record from the database
- */
 interface Meeting {
   id: number;
   date: string;
@@ -20,396 +20,801 @@ interface Meeting {
   markdown_summary: string;
 }
 
-function App() {
-  // --- APPLICATION STATE ---
-  const [isRecording, setIsRecording] = useState(false);
-  const [status, setStatus] = useState("Initializing system...");
-  const [transcription, setTranscription] = useState("");
-  const [notes, setNotes] = useState("");
-  const [isExpanded, setIsExpanded] = useState(false); // New state for Window Mode
-  
-  // --- HISTORY STATE ---
-  const [meetingsHistory, setMeetingsHistory] = useState<Meeting[]>([]);
-  const [selectedMeetingId, setSelectedMeetingId] = useState<number | null>(null);
+interface SettingsPayload {
+  provider: string;
+  modelName: string;
+  apiKey: string;
+  theme: string;
+}
 
-  // --- SETTINGS STATE (BYOK) ---
-  const [showSettings, setShowSettings] = useState(false);
+// ── OS detection ──────────────────────────────────────────────
+function detectOS(): "mac" | "win" {
+  const p = (navigator.platform || "").toLowerCase();
+  const ua = (navigator.userAgent || "").toLowerCase();
+  if (p.startsWith("win") || ua.includes("windows")) return "win";
+  return "mac";
+}
+
+// ── macOS Traffic Lights ──────────────────────────────────────
+function MacTrafficLights({ theme }: { theme: string }) {
+  const [hover, setHover] = useState(false);
+  const win = getCurrentWindow();
+  const isNB = theme === "minimalist-notebook";
+
+  return (
+    <div
+      className="mac-traffic-lights"
+      onMouseEnter={() => setHover(true)}
+      onMouseLeave={() => setHover(false)}
+    >
+      <button
+        className="tl tl-red"
+        onClick={() => win.close()}
+        title="Close"
+        style={{ border: isNB ? "1px solid #1a1814" : "0.5px solid rgba(0,0,0,0.2)" }}
+      >
+        {hover && (
+          <svg width={8} height={8} viewBox="0 0 14 14" fill="none" stroke="rgba(0,0,0,0.55)" strokeWidth={1.6} strokeLinecap="round">
+            <path d="M4 4l6 6M10 4l-6 6" />
+          </svg>
+        )}
+      </button>
+      <button
+        className="tl tl-amber"
+        onClick={() => win.minimize()}
+        title="Minimize"
+        style={{ border: isNB ? "1px solid #1a1814" : "0.5px solid rgba(0,0,0,0.2)" }}
+      >
+        {hover && (
+          <svg width={8} height={8} viewBox="0 0 14 14" fill="none" stroke="rgba(0,0,0,0.55)" strokeWidth={1.6} strokeLinecap="round">
+            <path d="M3 7h8" />
+          </svg>
+        )}
+      </button>
+      <button
+        className="tl tl-green"
+        onClick={() => win.toggleMaximize()}
+        title="Maximize"
+        style={{ border: isNB ? "1px solid #1a1814" : "0.5px solid rgba(0,0,0,0.2)" }}
+      >
+        {hover && (
+          <svg width={8} height={8} viewBox="0 0 14 14" fill="none" stroke="rgba(0,0,0,0.55)" strokeWidth={1.6} strokeLinecap="round">
+            <path d="M4 4h6v6" /><path d="M10 10H4V4" transform="rotate(180 7 7)" />
+          </svg>
+        )}
+      </button>
+    </div>
+  );
+}
+
+// ── Windows Caption Buttons ───────────────────────────────────
+function WinCaptionButtons({ isLG, compactExpand }: { isLG: boolean; compactExpand?: () => void }) {
+  const win = getCurrentWindow();
+  const fg = isLG ? "rgba(255,255,255,0.85)" : "#1a1814";
+  const hoverBg = isLG ? "rgba(255,255,255,0.09)" : "rgba(0,0,0,0.07)";
+
+  return (
+    <div className="win-caption-buttons">
+      <WinBtn fg={fg} hoverBg={hoverBg} onClick={() => win.minimize()} title="Minimize">
+        <svg width={10} height={10} viewBox="0 0 10 10" fill="none" stroke="currentColor" strokeWidth={1}>
+          <path d="M0 5h10" />
+        </svg>
+      </WinBtn>
+      {/* In compact mode, the "maximize" button expands to the full view instead
+          of the native maximize (which makes no sense on a 120px pill). */}
+      <WinBtn
+        fg={fg}
+        hoverBg={hoverBg}
+        onClick={compactExpand ?? (() => win.toggleMaximize())}
+        title={compactExpand ? "Expand" : "Maximize"}
+      >
+        <svg width={10} height={10} viewBox="0 0 10 10" fill="none" stroke="currentColor" strokeWidth={1}>
+          <rect x="0.5" y="0.5" width="9" height="9" />
+        </svg>
+      </WinBtn>
+      <WinBtn fg={fg} hoverBg="#e81123" hoverFg="#fff" onClick={() => win.close()} title="Close">
+        <svg width={10} height={10} viewBox="0 0 10 10" fill="none" stroke="currentColor" strokeWidth={1}>
+          <path d="M0 0l10 10M10 0L0 10" />
+        </svg>
+      </WinBtn>
+    </div>
+  );
+}
+
+function WinBtn({
+  children, fg, hoverBg, hoverFg, onClick, title,
+}: {
+  children: React.ReactNode; fg: string; hoverBg: string; hoverFg?: string;
+  onClick: () => void; title?: string;
+}) {
+  const [h, setH] = useState(false);
+  return (
+    <button
+      className="win-btn"
+      title={title}
+      onClick={onClick}
+      onMouseEnter={() => setH(true)}
+      onMouseLeave={() => setH(false)}
+      style={{
+        background: h ? hoverBg : "transparent",
+        color: h && hoverFg ? hoverFg : fg,
+      }}
+    >
+      {children}
+    </button>
+  );
+}
+
+// ── Waveform ──────────────────────────────────────────────────
+function Waveform({
+  bars = 24, color = "#fff", active = true, height = 22, width = 160, opacity = 0.9,
+}: {
+  bars?: number; color?: string; active?: boolean; height?: number; width?: number; opacity?: number;
+}) {
+  const seeds = useMemo(
+    () =>
+      Array.from({ length: bars }, (_, i) => ({
+        h: 0.25 + ((Math.sin(i * 1.3) + Math.cos(i * 2.7)) * 0.5 + 0.5) * 0.75,
+        d: (i * 53) % 900,
+      })),
+    [bars]
+  );
+  const gap = Math.max(1, width / bars / 3);
+  return (
+    <div style={{ display: "flex", alignItems: "center", gap, height, width, opacity: active ? opacity : 0.3, flexShrink: 0 }}>
+      {seeds.map((s, i) => (
+        <div
+          key={i}
+          style={{
+            flex: 1, background: color, borderRadius: 99,
+            height: `${s.h * 100}%`, minHeight: 2,
+            animation: active ? `wf ${900 + (s.d % 600)}ms ease-in-out ${s.d}ms infinite alternate` : "none",
+          }}
+        />
+      ))}
+    </div>
+  );
+}
+
+// ── Status dot ────────────────────────────────────────────────
+function StatusDot({ isRecording, size = 8, isLG }: { isRecording: boolean; size?: number; isLG: boolean }) {
+  const color = isRecording ? (isLG ? "#ff4d5f" : "#c03838") : (isLG ? "#30d158" : "#2d5a3d");
+  return (
+    <span style={{ position: "relative", display: "inline-flex", width: size, height: size, flexShrink: 0 }}>
+      <span style={{
+        position: "absolute", inset: 0, borderRadius: 99, background: color,
+        boxShadow: isLG ? `0 0 8px ${color}` : "none",
+      }} />
+      {isRecording && (
+        <span style={{
+          position: "absolute", inset: -2, borderRadius: 99, background: color,
+          opacity: 0.35, animation: "dotPulse 1.6s ease-in-out infinite",
+        }} />
+      )}
+    </span>
+  );
+}
+
+// ── Logo ──────────────────────────────────────────────────────
+function LogoMark({ size = 24, light = false }: { size?: number; light?: boolean }) {
+  return (
+    <img
+      src={light ? "/logo-mark-white.png" : "/logo-mark.png"}
+      width={size} height={size}
+      style={{ display: "inline-block", objectFit: "contain", userSelect: "none", flexShrink: 0 }}
+      alt="Ai NoteTaking" draggable={false}
+    />
+  );
+}
+
+// ── Toggle switch ─────────────────────────────────────────────
+function Toggle({ on, onChange }: { on: boolean; onChange: (v: boolean) => void }) {
+  return (
+    <button
+      className={`toggle ${on ? "on" : ""}`}
+      onClick={() => onChange(!on)}
+      role="switch"
+      aria-checked={on}
+    >
+      <span className="toggle-thumb" />
+    </button>
+  );
+}
+
+// ── Popover Window Content ────────────────────────────────────
+// Rendered when window label is "popover". Self-contained: loads settings
+// from store, emits "settings-changed" on save, closes itself on blur.
+function PopoverWindowContent() {
   const [provider, setProvider] = useState("ollama");
   const [modelName, setModelName] = useState("llama3");
   const [apiKey, setApiKey] = useState("");
-  const [theme, setTheme] = useState("liquid-glass"); // Add this line
+  const [theme, setTheme] = useState("liquid-glass");
+  const isLG = theme !== "minimalist-notebook";
+  const win = getCurrentWindow();
 
-  /**
-   * Load user preferences from the secure store on mount
-   */
+  // Load current settings from store on mount
   useEffect(() => {
-    const loadSettings = async () => {
+    const init = async () => {
       try {
-        const store = await load("settings.json", {
-          autoSave: false,
-          defaults: {}
-        });
-        const savedProvider = await store.get<string>("provider");
-        const savedModel = await store.get<string>("modelName");
-        const savedApiKey = await store.get<string>("apiKey");
-        const savedTheme = await store.get<string>("theme"); // Add this
+        const store = await load("settings.json", { autoSave: false, defaults: {} });
+        const sp = await store.get<string>("provider");
+        const sm = await store.get<string>("modelName");
+        const sk = await store.get<string>("apiKey");
+        const st = await store.get<string>("theme");
+        if (sp) setProvider(sp);
+        if (sm) setModelName(sm);
+        if (sk) setApiKey(sk);
+        if (st) setTheme(st);
+      } catch (e) {
+        console.error("Failed to load settings in popover:", e);
+      }
+    };
+    init();
+  }, []);
 
-        if (savedProvider) setProvider(savedProvider);
-        if (savedModel) setModelName(savedModel);
-        if (savedApiKey) setApiKey(savedApiKey);
-        if (savedTheme) setTheme(savedTheme); // Add this
+  // Keep data-theme in sync for correct CSS variables
+  useEffect(() => {
+    document.documentElement.setAttribute("data-theme", theme);
+  }, [theme]);
+
+  // Close on window blur (click outside the popover)
+  // Delay slightly so the window has time to gain focus first
+  useEffect(() => {
+    let handler: (() => void) | null = null;
+    const timer = setTimeout(() => {
+      handler = () => win.close();
+      window.addEventListener("blur", handler);
+    }, 300);
+    return () => {
+      clearTimeout(timer);
+      if (handler) window.removeEventListener("blur", handler);
+    };
+  }, []);
+
+  const handleSave = async () => {
+    try {
+      const store = await load("settings.json", { autoSave: false, defaults: {} });
+      await store.set("provider", provider);
+      await store.set("modelName", modelName);
+      await store.set("apiKey", apiKey);
+      await store.set("theme", theme);
+      await store.save();
+      // Broadcast to all windows (main window listens for this)
+      await emit("settings-changed", { provider, modelName, apiKey, theme } satisfies SettingsPayload);
+      await win.close();
+    } catch (e) {
+      console.error("Failed to save settings from popover:", e);
+    }
+  };
+
+  return (
+    <div
+      className={`popover-window ${isLG ? "popover-lg" : "popover-nb"}`}
+      data-tauri-drag-region
+    >
+      {/* Drag handle strip */}
+      <div className="popover-drag-handle" data-tauri-drag-region />
+
+      <div className="popover-label">SETTINGS</div>
+
+      {/* Provider */}
+      <div className="popover-row">
+        <label className="popover-row-label">Provider</label>
+        <select
+          className="popover-select"
+          value={provider}
+          onChange={(e) => setProvider(e.target.value)}
+        >
+          <option value="ollama">Ollama (Local)</option>
+          <option value="openai">OpenAI</option>
+          <option value="gemini">Gemini</option>
+          <option value="anthropic">Anthropic</option>
+        </select>
+      </div>
+
+      {/* Model */}
+      <div className="popover-row">
+        <label className="popover-row-label">Model</label>
+        <input
+          className="popover-input"
+          type="text"
+          value={modelName}
+          onChange={(e) => setModelName(e.target.value)}
+        />
+      </div>
+
+      {/* API key */}
+      {provider !== "ollama" && (
+        <div className="popover-row">
+          <label className="popover-row-label">API Key</label>
+          <input
+            className="popover-input"
+            type="password"
+            value={apiKey}
+            placeholder="sk-…"
+            onChange={(e) => setApiKey(e.target.value)}
+          />
+        </div>
+      )}
+
+      {/* Theme toggle */}
+      <div className="popover-toggle-row">
+        <div>
+          <div className="popover-toggle-label">Notebook theme</div>
+          <div className="popover-toggle-hint">Switch to light / paper style</div>
+        </div>
+        <Toggle
+          on={theme === "minimalist-notebook"}
+          onChange={(v) => setTheme(v ? "minimalist-notebook" : "liquid-glass")}
+        />
+      </div>
+
+      {/* Footer */}
+      <div className="popover-footer">
+        <button className="popover-btn secondary" onClick={() => win.close()}>Cancel</button>
+        <button className="popover-btn primary" onClick={handleSave}>Save</button>
+      </div>
+    </div>
+  );
+}
+
+// ── Full settings modal (expanded mode) ───────────────────────
+function SettingsModal({
+  provider, setProvider, modelName, setModelName,
+  apiKey, setApiKey, theme, setTheme,
+  onSave, onCancel,
+}: {
+  provider: string; setProvider: (v: string) => void;
+  modelName: string; setModelName: (v: string) => void;
+  apiKey: string; setApiKey: (v: string) => void;
+  theme: string; setTheme: (v: string) => void;
+  onSave: () => void; onCancel: () => void;
+}) {
+  return (
+    <div className="modal-overlay">
+      <div className="settings-modal">
+        <h3>IA Configuration</h3>
+        <div className="form-group">
+          <label>Theme</label>
+          <select value={theme} onChange={(e) => setTheme(e.target.value)}>
+            <option value="liquid-glass">Liquid Glass (Dark)</option>
+            <option value="minimalist-notebook">Notebook Paper (Light)</option>
+          </select>
+        </div>
+        <div className="form-group">
+          <label>LLM Provider</label>
+          <select value={provider} onChange={(e) => setProvider(e.target.value)}>
+            <option value="ollama">Ollama (Local)</option>
+            <option value="openai">OpenAI</option>
+            <option value="gemini">Google Gemini</option>
+            <option value="anthropic">Anthropic Claude</option>
+          </select>
+        </div>
+        <div className="form-group">
+          <label>Model Name</label>
+          <input type="text" value={modelName} onChange={(e) => setModelName(e.target.value)} />
+        </div>
+        {provider !== "ollama" && (
+          <div className="form-group">
+            <label>API Key</label>
+            <input type="password" value={apiKey} placeholder="Enter your key…" onChange={(e) => setApiKey(e.target.value)} />
+          </div>
+        )}
+        <div className="modal-actions">
+          <button className="btn-cancel" onClick={onCancel}>Cancel</button>
+          <button className="btn-save" onClick={onSave}>Save Changes</button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ── Parse helpers ─────────────────────────────────────────────
+function parseActionItems(md: string): string[] {
+  return md
+    .split("\n")
+    .filter((l) => /^[\-\*]\s*\[\s*\]/.test(l.trim()))
+    .map((l) => l.replace(/^[\-\*]\s*\[\s*\]\s*/, "").trim())
+    .filter(Boolean);
+}
+
+function parseTldr(md: string): string | null {
+  const m = md.match(/##\s*tl[;:]?dr\s*\n+([\s\S]*?)(?=\n##|$)/i);
+  return m ? m[1].trim() : null;
+}
+
+function formatDuration(s: number): string {
+  const h = Math.floor(s / 3600);
+  const m = Math.floor((s % 3600) / 60);
+  const sec = s % 60;
+  if (h > 0)
+    return `${String(h).padStart(2, "0")}:${String(m).padStart(2, "0")}:${String(sec).padStart(2, "0")}`;
+  return `${String(m).padStart(2, "0")}:${String(sec).padStart(2, "0")}`;
+}
+
+// ── App (main window) ─────────────────────────────────────────
+function App() {
+  const os = useMemo(detectOS, []);
+  const isWin = os === "win";
+
+  const [isRecording, setIsRecording] = useState(false);
+  const [status, setStatus] = useState("Initializing system…");
+  const [transcription, setTranscription] = useState("");
+  const [notes, setNotes] = useState("");
+  const [isExpanded, setIsExpanded] = useState(false);
+  const [recordingSeconds, setRecordingSeconds] = useState(0);
+  const [activeTab, setActiveTab] = useState<"transcript" | "summary" | "actions">("transcript");
+  const [search, setSearch] = useState("");
+
+  const [meetingsHistory, setMeetingsHistory] = useState<Meeting[]>([]);
+  const [selectedMeetingId, setSelectedMeetingId] = useState<number | null>(null);
+
+  const [showSettings, setShowSettings] = useState(false);
+
+  const [provider, setProvider] = useState("ollama");
+  const [modelName, setModelName] = useState("llama3");
+  const [apiKey, setApiKey] = useState("");
+  const [theme, setTheme] = useState("liquid-glass");
+
+  const isLG = theme !== "minimalist-notebook";
+  const waveColor = isLG ? "rgba(255,255,255,0.92)" : "#1a1814";
+
+  // Recording timer
+  useEffect(() => {
+    if (!isRecording) { setRecordingSeconds(0); return; }
+    const id = setInterval(() => setRecordingSeconds((s) => s + 1), 1000);
+    return () => clearInterval(id);
+  }, [isRecording]);
+
+  const actionItems = useMemo(() => (notes ? parseActionItems(notes) : []), [notes]);
+  const tldr = useMemo(() => (notes ? parseTldr(notes) : null), [notes]);
+  const filteredTranscript = useMemo(() => {
+    if (!transcription || !search.trim()) return transcription;
+    return transcription
+      .split("\n")
+      .filter((l) => l.toLowerCase().includes(search.toLowerCase()))
+      .join("\n");
+  }, [transcription, search]);
+
+  // Load persisted settings and history on mount
+  useEffect(() => {
+    const init = async () => {
+      try {
+        const store = await load("settings.json", { autoSave: false, defaults: {} });
+        const sp = await store.get<string>("provider");
+        const sm = await store.get<string>("modelName");
+        const sk = await store.get<string>("apiKey");
+        const st = await store.get<string>("theme");
+        if (sp) setProvider(sp);
+        if (sm) setModelName(sm);
+        if (sk) setApiKey(sk);
+        if (st) setTheme(st);
       } catch (e) {
         console.error("Failed to load settings:", e);
       }
     };
-    loadSettings();
+    init();
     loadHistory();
   }, []);
 
-  /**
-   * Persists current settings to the secure storage
-   */
+  // Listen for settings saved from the popover window
+  useEffect(() => {
+    const unlisten = listen<SettingsPayload>("settings-changed", (event) => {
+      const { provider: p, modelName: m, apiKey: k, theme: t } = event.payload;
+      setProvider(p);
+      setModelName(m);
+      setApiKey(k);
+      setTheme(t);
+      setStatus("Settings saved");
+      setTimeout(() => setStatus("Ready"), 2000);
+    });
+    return () => { unlisten.then((f) => f()); };
+  }, []);
+
   const saveSettings = async () => {
     try {
-      const store = await load("settings.json", {
-        autoSave: false,
-        defaults: {}
-      });
+      const store = await load("settings.json", { autoSave: false, defaults: {} });
       await store.set("provider", provider);
       await store.set("modelName", modelName);
       await store.set("apiKey", apiKey);
-      await store.set("theme", theme); 
+      await store.set("theme", theme);
       await store.save();
-      
       setShowSettings(false);
-      setStatus("Settings saved successfully");
+      setStatus("Settings saved");
     } catch (e) {
       console.error("Failed to save settings:", e);
-      setStatus("Error saving configuration");
     }
   };
 
-  /**
-   * Fetches the meeting list from the SQLite database
-   */
   const loadHistory = async () => {
     try {
       const meetings: Meeting[] = await invoke("get_meetings");
       setMeetingsHistory(meetings);
-    } catch (error) {
-      console.error("Database fetch error:", error);
+    } catch (e) {
+      console.error("DB fetch error:", e);
     }
   };
 
-  /**
-   * Event listener for Python backend messages
-   */
+  useEffect(() => {
+    document.documentElement.setAttribute("data-theme", theme);
+  }, [theme]);
+
   useEffect(() => {
     const unlisten = listen<string>("python-event", async (event) => {
       try {
         const parsed = JSON.parse(event.payload);
         switch (parsed.event) {
-          case "SYSTEM_READY":
-            setStatus(parsed.data.status);
-            break;
+          case "SYSTEM_READY": setStatus(parsed.data.status); break;
           case "RECORDING_STATUS":
             setIsRecording(parsed.data.is_recording);
             if (parsed.data.is_recording) {
-              setTranscription(""); 
-              setNotes(""); 
-              setSelectedMeetingId(null);
+              setTranscription(""); setNotes(""); setSelectedMeetingId(null); setActiveTab("transcript");
             }
             break;
-          case "PIPELINE_STATUS":
-            setStatus(parsed.data.step);
-            break;
+          case "PIPELINE_STATUS": setStatus(parsed.data.step); break;
           case "TRANSCRIPTION_COMPLETED":
-            setTranscription(parsed.data.text);
-            break;
-          case "NOTES_GENERATED":
-            const generatedNotes = parsed.data.markdown;
-            setNotes(generatedNotes);
-            
-            // Save to database automatically
+            setTranscription(parsed.data.text); setActiveTab("transcript"); break;
+          case "NOTES_GENERATED": {
+            const md = parsed.data.markdown;
+            setNotes(md); setActiveTab("summary");
             try {
               await invoke("save_meeting", {
                 date: new Date().toLocaleString(),
                 title: `Meeting ${new Date().toLocaleDateString()}`,
-                rawTranscript: transcription,
-                markdownSummary: generatedNotes
+                rawTranscript: transcription, markdownSummary: md,
               });
               await loadHistory();
-            } catch (dbError) {
-              console.error("Database save error:", dbError);
-            }
+            } catch (dbErr) { console.error("DB save error:", dbErr); }
             break;
-          case "ERROR":
-            setStatus(`Error: ${parsed.data.message}`);
-            break;
+          }
+          case "ERROR": setStatus(`Error: ${parsed.data.message}`); break;
         }
-      } catch (e) {
-        console.error("Payload parsing error", e);
-      }
+      } catch (e) { console.error("Event parse error:", e); }
     });
-
-    return () => {
-      unlisten.then((f) => f());
-    };
+    return () => { unlisten.then((f) => f()); };
   }, [transcription]);
 
-
-
-  /**
-   * Applies the selected theme to the HTML root element
-   */
-  useEffect(() => {
-    document.documentElement.setAttribute("data-theme", theme);
-  }, [theme]);
-
-
-
-  /**
-   * Handles recording start/stop and sends settings to Python
-   */
   const toggleRecording = async () => {
     const action = isRecording ? "STOP_RECORDING" : "START_RECORDING";
-    
     setIsRecording(!isRecording);
-    setStatus(isRecording ? "Stopping..." : `Recording via ${provider.toUpperCase()}`);
-
+    setStatus(isRecording ? "Stopping…" : `Recording via ${provider.toUpperCase()}`);
     try {
       await invoke("send_command_to_python", {
-        payload: JSON.stringify({ 
-          action: action,
-          llm_provider: provider,
-          llm_model: modelName,
-          api_key: apiKey
-        })
+        payload: JSON.stringify({ action, llm_provider: provider, llm_model: modelName, api_key: apiKey }),
       });
-    } catch (error) {
-      console.error("IPC bridge error:", error);
-      setStatus("Engine connection failed");
+    } catch (e) {
+      console.error("IPC error:", e); setStatus("Engine connection failed");
     }
   };
 
-  /**
-   * Toggles native window size between Compact and Expanded
-   */
   const toggleWindowMode = async () => {
     try {
-      if (isExpanded) {
-        await invoke("set_compact_mode");
-        setIsExpanded(false);
-      } else {
-        await invoke("set_expanded_mode");
-        setIsExpanded(true);
-      }
-    } catch (error) {
-      console.error("Failed to toggle window mode:", error);
-    }
+      if (isExpanded) { await invoke("set_compact_mode"); setIsExpanded(false); }
+      else { await invoke("set_expanded_mode"); setIsExpanded(true); }
+    } catch (e) { console.error("Window mode error:", e); }
   };
 
-  /**
-   * Clipboard and Export Actions
-   */
-  const handleCopyToClipboard = async () => {
+  const handleCopy = async () => {
     await writeText(notes);
     setStatus("Copied to clipboard!");
     setTimeout(() => setStatus("Ready"), 2000);
   };
 
-  const handleExportAsMarkdown = async () => {
-    const filePath = await save({
-      filters: [{ name: 'Markdown', extensions: ['md'] }],
-      defaultPath: `Notes_${new Date().getTime()}.md`
-    });
-    if (filePath) {
-      await writeTextFile(filePath, notes);
-      setStatus("File exported successfully");
-    }
+  const handleExport = async () => {
+    const path = await save({ filters: [{ name: "Markdown", extensions: ["md"] }], defaultPath: `Notes_${Date.now()}.md` });
+    if (path) { await writeTextFile(path, notes); setStatus("Exported successfully"); }
   };
 
-  // --- COMPACT WIDGET VIEW ---
+  // ── COMPACT WIDGET ──────────────────────────────────────────
   if (!isExpanded) {
     return (
-      <div className="compact-widget" data-tauri-drag-region>
-        <div className="widget-controls" data-tauri-drag-region>
-          <button className="icon-btn" onClick={() => setShowSettings(true)} title="Settings">
-            <Gear size={24} weight="regular" />
-          </button>
-          
-          <button 
-            className={`record-btn-compact ${isRecording ? "recording" : ""}`}
-            onClick={toggleRecording}
-            title={isRecording ? "Stop Recording" : "Start Recording"}
-          >
-            <MicrophoneStage size={32} weight={isRecording ? "fill" : "regular"} />
-          </button>
-          
-          <button className="icon-btn" onClick={toggleWindowMode} title="Expand View">
-            <ArrowsOutSimple size={24} weight="bold" />
-          </button>
-        </div>
-        <div className="widget-status" data-tauri-drag-region>
-          <span className={`status-led ${isRecording ? "active" : ""}`}></span>
-          <p className="status-text">{status}</p>
+      <div className={`compact-widget ${isWin ? "win" : "mac"}`}>
+        {/* OS titlebar strip — drag region spans the full strip */}
+        <div className="compact-os-strip" data-tauri-drag-region>
+          {!isWin && <MacTrafficLights theme={theme} />}
+          <div className="compact-os-title" data-tauri-drag-region>
+            <LogoMark size={12} light={isLG} />
+            <span>Ai NoteTaking</span>
+          </div>
+          {/* On Windows, the "maximize" button expands to full view */}
+          {isWin && <WinCaptionButtons isLG={isLG} compactExpand={toggleWindowMode} />}
         </div>
 
-        {/* SETTINGS MODAL (Rendered conditionally even in compact mode) */}
-        {showSettings && (
-          <div className="modal-overlay">
-            <div className="settings-modal">
-              {/* Settings content is identical to expanded mode */}
-              <h3>IA Configuration</h3>
-              {/* Add this new form-group for the theme */}
-              <div className="form-group">
-                <label>Theme</label>
-                <select value={theme} onChange={(e) => setTheme(e.target.value)}>
-                  <option value="liquid-glass">Liquid Glass (Dark)</option>
-                  <option value="minimalist-notebook">Minimalist Notebook (Light)</option>
-                </select>
-              </div>
-              <div className="form-group">
-                <label>Model Name</label>
-                <input type="text" value={modelName} onChange={(e) => setModelName(e.target.value)} />
-              </div>
-              {provider !== "ollama" && (
-                <div className="form-group">
-                  <label>API Key</label>
-                  <input type="password" value={apiKey} placeholder="Enter your key..." onChange={(e) => setApiKey(e.target.value)} />
-                </div>
-              )}
-              <div className="modal-actions">
-                <button className="btn-cancel" onClick={() => setShowSettings(false)}>Cancel</button>
-                <button className="btn-save" onClick={saveSettings}>Save Changes</button>
-              </div>
-            </div>
+        {/* Content row */}
+        <div className="pill-inner">
+          <div className="pill-left" data-tauri-drag-region>
+            <StatusDot isRecording={isRecording} size={8} isLG={isLG} />
           </div>
-        )}
+
+          <div className="pill-middle" data-tauri-drag-region>
+            <Waveform width={150} height={20} color={waveColor} active={isRecording} bars={28} />
+            <span className="timer-display">
+              {isRecording ? formatDuration(recordingSeconds) : "--:--"}
+            </span>
+          </div>
+
+          <div className="pill-right">
+            {/* Gear opens the popover as a separate OS window */}
+            <button
+              className="icon-btn-pill"
+              onClick={() => invoke("open_popover_window")}
+              title="Settings"
+            >
+              <GearIcon size={15} />
+            </button>
+            <button
+              className={`record-btn-pill ${isRecording ? "recording" : ""}`}
+              onClick={toggleRecording}
+              title={isRecording ? "Stop Recording" : "Start Recording"}
+            >
+              {isRecording ? <span className="stop-square" /> : <span className="record-circle" />}
+            </button>
+            <button className="icon-btn-pill" onClick={toggleWindowMode} title="Expand">
+              <ArrowsOutSimpleIcon size={14} />
+            </button>
+          </div>
+        </div>
       </div>
     );
   }
 
-  // --- EXPANDED MAIN VIEW ---
+  // ── EXPANDED VIEW ───────────────────────────────────────────
   return (
-    <div className="app-layout">
-      {/* SIDEBAR: MEETING HISTORY */}
-      <aside className="sidebar">
-        <h2>📚 History</h2>
-        <div className="history-list">
-          {meetingsHistory.length === 0 ? (
-            <p className="empty-label">No sessions found</p>
-          ) : (
-            meetingsHistory.map((meeting) => (
-              <button 
-                key={meeting.id}
-                className={`history-item ${selectedMeetingId === meeting.id ? "active" : ""}`}
-                onClick={() => {
-                  setSelectedMeetingId(meeting.id);
-                  setTranscription(meeting.raw_transcript);
-                  setNotes(meeting.markdown_summary);
-                }}
+    <div className={`app-layout ${isWin ? "win" : "mac"}`}>
+      {/* OS titlebar */}
+      <div className={`titlebar ${isWin ? "win" : "mac"}`} data-tauri-drag-region>
+        {!isWin && <MacTrafficLights theme={theme} />}
+
+        <div className="titlebar-center" data-tauri-drag-region>
+          <LogoMark size={18} light={isLG} />
+          <span className="titlebar-name">
+            Ai<span className="titlebar-sub"> NoteTaking</span>
+          </span>
+        </div>
+
+        <div className="titlebar-actions">
+          <button className="icon-btn" onClick={() => setShowSettings(true)} title="Settings">
+            <GearIcon size={16} />
+          </button>
+          <button className="icon-btn" onClick={toggleWindowMode} title="Collapse">
+            <ArrowsInSimpleIcon size={16} />
+          </button>
+          {isWin && <WinCaptionButtons isLG={isLG} />}
+        </div>
+      </div>
+
+      <div className="content-area">
+        {/* Sidebar */}
+        <aside className="sidebar">
+          <div className="sidebar-label">MEETINGS</div>
+          <div className={`history-item current ${isRecording ? "recording" : ""}`}>
+            <div className="history-item-header">
+              <StatusDot isRecording={isRecording} size={6} isLG={isLG} />
+              <span className="history-item-title">Current Session</span>
+            </div>
+            <span className="history-item-date">
+              {isRecording ? `Recording · ${formatDuration(recordingSeconds)}` : status}
+            </span>
+          </div>
+          {meetingsHistory.map((m) => (
+            <button
+              key={m.id}
+              className={`history-item ${selectedMeetingId === m.id ? "active" : ""}`}
+              onClick={() => {
+                setSelectedMeetingId(m.id);
+                setTranscription(m.raw_transcript);
+                setNotes(m.markdown_summary);
+                setActiveTab("transcript");
+              }}
+            >
+              <span className="history-item-title">{m.title}</span>
+              <span className="history-item-date">{m.date}</span>
+            </button>
+          ))}
+          {meetingsHistory.length === 0 && <p className="empty-label">No past meetings</p>}
+        </aside>
+
+        {/* Main */}
+        <main className="main-content">
+          <div className="meeting-header">
+            <div className="meeting-header-left">
+              <div className="meeting-title">
+                {selectedMeetingId
+                  ? meetingsHistory.find((m) => m.id === selectedMeetingId)?.title ?? "Meeting"
+                  : "Current Session"}
+              </div>
+              <div className="meeting-meta">
+                {isRecording ? `Recording · ${formatDuration(recordingSeconds)}` : status}
+              </div>
+            </div>
+            <div className="meeting-header-right">
+              {isRecording && <Waveform width={60} height={14} color={waveColor} active bars={14} />}
+              <button
+                className={`record-btn-expanded ${isRecording ? "recording" : ""}`}
+                onClick={toggleRecording}
+                disabled={selectedMeetingId !== null && !isRecording}
               >
-                <span className="item-title">{meeting.title}</span>
-                <span className="item-date">{meeting.date}</span>
+                {isRecording ? <span className="stop-square-sm" /> : <span className="record-circle-sm" />}
+                {isRecording ? "Stop" : selectedMeetingId ? "New Session" : "Record"}
               </button>
-            ))
+            </div>
+          </div>
+
+          <div className="tab-bar">
+            <div className="tabs">
+              {(["transcript", "summary", "actions"] as const).map((t) => (
+                <button key={t} className={`tab-btn ${activeTab === t ? "active" : ""}`} onClick={() => setActiveTab(t)}>
+                  {t === "transcript" && "Transcript"}
+                  {t === "summary" && "Summary"}
+                  {t === "actions" && `Action Items${actionItems.length ? ` · ${actionItems.length}` : ""}`}
+                </button>
+              ))}
+            </div>
+            <div className="search-box">
+              <MagnifyingGlassIcon size={12} />
+              <input value={search} onChange={(e) => setSearch(e.target.value)} placeholder="Search…" className="search-input" />
+            </div>
+          </div>
+
+          <div className="tab-content">
+            {activeTab === "transcript" && (
+              <div className="tab-panel">
+                {filteredTranscript
+                  ? <pre className="transcript-text">{filteredTranscript}</pre>
+                  : <div className="empty-state">
+                    {isRecording
+                      ? <><Waveform width={60} height={14} color={waveColor} active bars={14} /><span>Transcribing…</span></>
+                      : <span>Start recording to see the transcript here.</span>}
+                  </div>}
+              </div>
+            )}
+            {activeTab === "summary" && (
+              <div className="tab-panel">
+                {notes
+                  ? <>{tldr && <div className="tldr-card"><div className="tldr-label">TL;DR</div><p className="tldr-body">{tldr}</p></div>}<pre className="summary-text">{notes}</pre></>
+                  : <div className="empty-state"><span>Summary will appear here once recording is processed.</span></div>}
+              </div>
+            )}
+            {activeTab === "actions" && (
+              <div className="tab-panel">
+                {actionItems.length > 0
+                  ? <ul className="action-list">{actionItems.map((item, i) => (
+                    <li key={i} className="action-item"><span className="action-checkbox" /><span className="action-text">{item}</span></li>
+                  ))}</ul>
+                  : <div className="empty-state"><span>{notes ? "No action items found. Use `- [ ] task` format." : "Action items will appear here after processing."}</span></div>}
+              </div>
+            )}
+          </div>
+
+          {notes && (
+            <div className="footer-actions">
+              <button className="chip-btn" onClick={handleCopy}><CopyIcon size={13} /> Copy</button>
+              <button className="chip-btn" onClick={handleExport}><ExportIcon size={13} /> Export .MD</button>
+            </div>
           )}
-        </div>
-      </aside>
+        </main>
+      </div>
 
-      {/* MAIN VIEW */}
-      <main className="main-content">
-        <div className="top-bar">
-          <button className="icon-btn" onClick={() => setShowSettings(true)}>
-            <Gear size={24} />
-          </button>
-          <button className="icon-btn" onClick={toggleWindowMode} title="Collapse View">
-            <ArrowsInSimple size={24} weight="bold" />
-          </button>
-        </div>
-
-        <h1>🎙️ AI Notetaker</h1>
-        
-        <div className="status-panel">
-          <p>Status: <span>{status}</span></p>
-        </div>
-
-        <div className="control-section">
-          <button 
-            className={`record-btn ${isRecording ? "recording" : ""}`}
-            onClick={toggleRecording}
-            disabled={selectedMeetingId !== null && !isRecording}
-          >
-            <MicrophoneStage size={20} weight={isRecording ? "fill" : "regular"} className="btn-icon" />
-            {isRecording ? "Stop Recording" : (selectedMeetingId ? "New Session" : "Start Recording")}
-          </button>
-        </div>
-        
-        {/* ACTION BAR */}
-        {notes && (
-          <div className="actions-bar">
-            <button onClick={handleCopyToClipboard}>
-              <Copy size={18} /> Copy to Clipboard
-            </button>
-            <button onClick={handleExportAsMarkdown}>
-              <Export size={18} /> Export as .MD
-            </button>
-          </div>
-        )}
-
-        {/* TRANSCRIPTION VIEW */}
-        {transcription && (
-          <section className="transcription-container">
-            <h3>📝 Raw Transcript</h3>
-            <p className="text-content">{transcription}</p>
-          </section>
-        )}
-
-        {/* SUMMARY VIEW */}
-        {notes && (
-          <section className="summary-container">
-            <h3>✨ Smart Summary</h3>
-            <div className="markdown-content">
-              <pre>{notes}</pre>
-            </div>
-          </section>
-        )}
-
-        {/* SETTINGS MODAL */}
-        {showSettings && (
-          <div className="modal-overlay">
-            <div className="settings-modal">
-              <h3>IA Configuration</h3>
-              <div className="form-group">
-                <label>LLM Provider</label>
-                <select value={provider} onChange={(e) => setProvider(e.target.value)}>
-                  <option value="ollama">Ollama (Local)</option>
-                  <option value="openai">OpenAI (Cloud)</option>
-                  <option value="gemini">Google Gemini</option>
-                  <option value="anthropic">Anthropic Claude</option>
-                </select>
-              </div>
-              <div className="form-group">
-                <label>Model Name</label>
-                <input type="text" value={modelName} onChange={(e) => setModelName(e.target.value)} />
-              </div>
-              {provider !== "ollama" && (
-                <div className="form-group">
-                  <label>API Key</label>
-                  <input type="password" value={apiKey} placeholder="Enter your key..." onChange={(e) => setApiKey(e.target.value)} />
-                </div>
-              )}
-              <div className="modal-actions">
-                <button className="btn-cancel" onClick={() => setShowSettings(false)}>Cancel</button>
-                <button className="btn-save" onClick={saveSettings}>Save Changes</button>
-              </div>
-            </div>
-          </div>
-        )}
-      </main>
+      {showSettings && (
+        <SettingsModal
+          provider={provider} setProvider={setProvider}
+          modelName={modelName} setModelName={setModelName}
+          apiKey={apiKey} setApiKey={setApiKey}
+          theme={theme} setTheme={setTheme}
+          onSave={saveSettings} onCancel={() => setShowSettings(false)}
+        />
+      )}
     </div>
   );
 }
 
-export default App;
+// ── Root — dispatches to PopoverWindowContent or App ──────────
+// Using the window label (set in Rust via WebviewWindowBuilder) avoids
+// any URL-parsing fragility and works identically in dev and production.
+function Root() {
+  const isPopover = getCurrentWindow().label === "popover";
+  if (isPopover) return <PopoverWindowContent />;
+  return <App />;
+}
+
+export default Root;
