@@ -1,11 +1,15 @@
-import { useState, useEffect, useMemo } from "react";
+import { useState, useEffect, useMemo, useRef } from "react";
 import { listen } from "@tauri-apps/api/event";
 import { invoke } from "@tauri-apps/api/core";
+import { getCurrentWindow } from "@tauri-apps/api/window";
 import { load } from "@tauri-apps/plugin-store";
 import { writeText } from "@tauri-apps/plugin-clipboard-manager";
 import { save } from "@tauri-apps/plugin-dialog";
 import { writeTextFile } from "@tauri-apps/plugin-fs";
-import { GearIcon, ArrowsOutSimpleIcon, ArrowsInSimpleIcon, CopyIcon, ExportIcon, MagnifyingGlassIcon } from "@phosphor-icons/react";
+import {
+  GearIcon, ArrowsOutSimpleIcon, ArrowsInSimpleIcon,
+  CopyIcon, ExportIcon, MagnifyingGlassIcon,
+} from "@phosphor-icons/react";
 import "./App.css";
 
 interface Meeting {
@@ -14,6 +18,117 @@ interface Meeting {
   title: string;
   raw_transcript: string;
   markdown_summary: string;
+}
+
+// ── OS detection ──────────────────────────────────────────────
+function detectOS(): "mac" | "win" {
+  const p = (navigator.platform || "").toLowerCase();
+  const ua = (navigator.userAgent || "").toLowerCase();
+  if (p.startsWith("win") || ua.includes("windows")) return "win";
+  return "mac";
+}
+
+// ── macOS Traffic Lights ──────────────────────────────────────
+function MacTrafficLights({ theme }: { theme: string }) {
+  const [hover, setHover] = useState(false);
+  const win = getCurrentWindow();
+  const isNB = theme === "minimalist-notebook";
+
+  return (
+    <div
+      className="mac-traffic-lights"
+      onMouseEnter={() => setHover(true)}
+      onMouseLeave={() => setHover(false)}
+    >
+      <button
+        className="tl tl-red"
+        onClick={() => win.close()}
+        title="Close"
+        style={{ border: isNB ? "1px solid #1a1814" : "0.5px solid rgba(0,0,0,0.2)" }}
+      >
+        {hover && (
+          <svg width={8} height={8} viewBox="0 0 14 14" fill="none" stroke="rgba(0,0,0,0.55)" strokeWidth={1.6} strokeLinecap="round">
+            <path d="M4 4l6 6M10 4l-6 6" />
+          </svg>
+        )}
+      </button>
+      <button
+        className="tl tl-amber"
+        onClick={() => win.minimize()}
+        title="Minimize"
+        style={{ border: isNB ? "1px solid #1a1814" : "0.5px solid rgba(0,0,0,0.2)" }}
+      >
+        {hover && (
+          <svg width={8} height={8} viewBox="0 0 14 14" fill="none" stroke="rgba(0,0,0,0.55)" strokeWidth={1.6} strokeLinecap="round">
+            <path d="M3 7h8" />
+          </svg>
+        )}
+      </button>
+      <button
+        className="tl tl-green"
+        onClick={() => win.toggleMaximize()}
+        title="Maximize"
+        style={{ border: isNB ? "1px solid #1a1814" : "0.5px solid rgba(0,0,0,0.2)" }}
+      >
+        {hover && (
+          <svg width={8} height={8} viewBox="0 0 14 14" fill="none" stroke="rgba(0,0,0,0.55)" strokeWidth={1.6} strokeLinecap="round">
+            <path d="M4 4h6v6" /><path d="M10 10H4V4" transform="rotate(180 7 7)" />
+          </svg>
+        )}
+      </button>
+    </div>
+  );
+}
+
+// ── Windows Caption Buttons ───────────────────────────────────
+function WinCaptionButtons({ isLG }: { isLG: boolean }) {
+  const win = getCurrentWindow();
+  const fg = isLG ? "rgba(255,255,255,0.85)" : "#1a1814";
+  const hoverBg = isLG ? "rgba(255,255,255,0.09)" : "rgba(0,0,0,0.07)";
+
+  return (
+    <div className="win-caption-buttons">
+      <WinBtn fg={fg} hoverBg={hoverBg} onClick={() => win.minimize()} title="Minimize">
+        <svg width={10} height={10} viewBox="0 0 10 10" fill="none" stroke="currentColor" strokeWidth={1}>
+          <path d="M0 5h10" />
+        </svg>
+      </WinBtn>
+      <WinBtn fg={fg} hoverBg={hoverBg} onClick={() => win.toggleMaximize()} title="Maximize">
+        <svg width={10} height={10} viewBox="0 0 10 10" fill="none" stroke="currentColor" strokeWidth={1}>
+          <rect x="0.5" y="0.5" width="9" height="9" />
+        </svg>
+      </WinBtn>
+      <WinBtn fg={fg} hoverBg="#e81123" hoverFg="#fff" onClick={() => win.close()} title="Close">
+        <svg width={10} height={10} viewBox="0 0 10 10" fill="none" stroke="currentColor" strokeWidth={1}>
+          <path d="M0 0l10 10M10 0L0 10" />
+        </svg>
+      </WinBtn>
+    </div>
+  );
+}
+
+function WinBtn({
+  children, fg, hoverBg, hoverFg, onClick, title,
+}: {
+  children: React.ReactNode; fg: string; hoverBg: string; hoverFg?: string;
+  onClick: () => void; title?: string;
+}) {
+  const [h, setH] = useState(false);
+  return (
+    <button
+      className="win-btn"
+      title={title}
+      onClick={onClick}
+      onMouseEnter={() => setH(true)}
+      onMouseLeave={() => setH(false)}
+      style={{
+        background: h ? hoverBg : "transparent",
+        color: h && hoverFg ? hoverFg : fg,
+      }}
+    >
+      {children}
+    </button>
+  );
 }
 
 // ── Waveform ──────────────────────────────────────────────────
@@ -78,30 +193,102 @@ function LogoMark({ size = 24, light = false }: { size?: number; light?: boolean
   );
 }
 
-// ── Parse helpers ─────────────────────────────────────────────
-function parseActionItems(md: string): string[] {
-  return md
-    .split("\n")
-    .filter((l) => /^[\-\*]\s*\[\s*\]/.test(l.trim()))
-    .map((l) => l.replace(/^[\-\*]\s*\[\s*\]\s*/, "").trim())
-    .filter(Boolean);
+// ── Toggle switch ─────────────────────────────────────────────
+function Toggle({ on, onChange }: { on: boolean; onChange: (v: boolean) => void }) {
+  return (
+    <button
+      className={`toggle ${on ? "on" : ""}`}
+      onClick={() => onChange(!on)}
+      role="switch"
+      aria-checked={on}
+    >
+      <span className="toggle-thumb" />
+    </button>
+  );
 }
 
-function parseTldr(md: string): string | null {
-  const m = md.match(/##\s*tl[;:]?dr\s*\n+([\s\S]*?)(?=\n##|$)/i);
-  return m ? m[1].trim() : null;
+// ── Compact settings popover ──────────────────────────────────
+function CompactSettingsPopover({
+  provider, setProvider, modelName, setModelName,
+  apiKey, setApiKey, theme, setTheme, isLG,
+  onSave, onClose,
+}: {
+  provider: string; setProvider: (v: string) => void;
+  modelName: string; setModelName: (v: string) => void;
+  apiKey: string; setApiKey: (v: string) => void;
+  theme: string; setTheme: (v: string) => void;
+  isLG: boolean; onSave: () => void; onClose: () => void;
+}) {
+  return (
+    <div className={`compact-popover ${isLG ? "popover-lg" : "popover-nb"}`}>
+      <div className="popover-arrow" />
+
+      <div className="popover-label">SETTINGS</div>
+
+      {/* Provider */}
+      <div className="popover-row">
+        <label className="popover-row-label">Provider</label>
+        <select
+          className="popover-select"
+          value={provider}
+          onChange={(e) => setProvider(e.target.value)}
+        >
+          <option value="ollama">Ollama (Local)</option>
+          <option value="openai">OpenAI</option>
+          <option value="gemini">Gemini</option>
+          <option value="anthropic">Anthropic</option>
+        </select>
+      </div>
+
+      {/* Model */}
+      <div className="popover-row">
+        <label className="popover-row-label">Model</label>
+        <input
+          className="popover-input"
+          type="text"
+          value={modelName}
+          onChange={(e) => setModelName(e.target.value)}
+        />
+      </div>
+
+      {/* API key */}
+      {provider !== "ollama" && (
+        <div className="popover-row">
+          <label className="popover-row-label">API Key</label>
+          <input
+            className="popover-input"
+            type="password"
+            value={apiKey}
+            placeholder="sk-…"
+            onChange={(e) => setApiKey(e.target.value)}
+          />
+        </div>
+      )}
+
+      {/* Theme toggle */}
+      <div className="popover-toggle-row">
+        <div>
+          <div className="popover-toggle-label">Notebook theme</div>
+          <div className="popover-toggle-hint">Switch to light / paper style</div>
+        </div>
+        <Toggle
+          on={theme === "minimalist-notebook"}
+          onChange={(v) => setTheme(v ? "minimalist-notebook" : "liquid-glass")}
+        />
+      </div>
+
+      {/* Footer */}
+      <div className="popover-footer">
+        <button className="popover-btn secondary" onClick={onClose}>Cancel</button>
+        <button className="popover-btn primary" onClick={() => { onSave(); onClose(); }}>
+          Save
+        </button>
+      </div>
+    </div>
+  );
 }
 
-function formatDuration(s: number): string {
-  const h = Math.floor(s / 3600);
-  const m = Math.floor((s % 3600) / 60);
-  const sec = s % 60;
-  if (h > 0)
-    return `${String(h).padStart(2, "0")}:${String(m).padStart(2, "0")}:${String(sec).padStart(2, "0")}`;
-  return `${String(m).padStart(2, "0")}:${String(sec).padStart(2, "0")}`;
-}
-
-// ── Settings modal ────────────────────────────────────────────
+// ── Full settings modal (expanded mode) ───────────────────────
 function SettingsModal({
   provider, setProvider, modelName, setModelName,
   apiKey, setApiKey, theme, setTheme,
@@ -152,8 +339,34 @@ function SettingsModal({
   );
 }
 
+// ── Parse helpers ─────────────────────────────────────────────
+function parseActionItems(md: string): string[] {
+  return md
+    .split("\n")
+    .filter((l) => /^[\-\*]\s*\[\s*\]/.test(l.trim()))
+    .map((l) => l.replace(/^[\-\*]\s*\[\s*\]\s*/, "").trim())
+    .filter(Boolean);
+}
+
+function parseTldr(md: string): string | null {
+  const m = md.match(/##\s*tl[;:]?dr\s*\n+([\s\S]*?)(?=\n##|$)/i);
+  return m ? m[1].trim() : null;
+}
+
+function formatDuration(s: number): string {
+  const h = Math.floor(s / 3600);
+  const m = Math.floor((s % 3600) / 60);
+  const sec = s % 60;
+  if (h > 0)
+    return `${String(h).padStart(2, "0")}:${String(m).padStart(2, "0")}:${String(sec).padStart(2, "0")}`;
+  return `${String(m).padStart(2, "0")}:${String(sec).padStart(2, "0")}`;
+}
+
 // ── App ───────────────────────────────────────────────────────
 function App() {
+  const os = useMemo(detectOS, []);
+  const isWin = os === "win";
+
   const [isRecording, setIsRecording] = useState(false);
   const [status, setStatus] = useState("Initializing system…");
   const [transcription, setTranscription] = useState("");
@@ -167,6 +380,9 @@ function App() {
   const [selectedMeetingId, setSelectedMeetingId] = useState<number | null>(null);
 
   const [showSettings, setShowSettings] = useState(false);
+  const [showPopover, setShowPopover] = useState(false);
+  const popoverRef = useRef<HTMLDivElement>(null);
+
   const [provider, setProvider] = useState("ollama");
   const [modelName, setModelName] = useState("llama3");
   const [apiKey, setApiKey] = useState("");
@@ -175,6 +391,18 @@ function App() {
   const isLG = theme !== "minimalist-notebook";
   const waveColor = isLG ? "rgba(255,255,255,0.92)" : "#1a1814";
 
+  // Close popover on outside click
+  useEffect(() => {
+    if (!showPopover) return;
+    const handler = (e: MouseEvent) => {
+      if (popoverRef.current && !popoverRef.current.contains(e.target as Node)) {
+        setShowPopover(false);
+      }
+    };
+    document.addEventListener("mousedown", handler);
+    return () => document.removeEventListener("mousedown", handler);
+  }, [showPopover]);
+
   // Recording timer
   useEffect(() => {
     if (!isRecording) { setRecordingSeconds(0); return; }
@@ -182,7 +410,6 @@ function App() {
     return () => clearInterval(id);
   }, [isRecording]);
 
-  // Derived data
   const actionItems = useMemo(() => (notes ? parseActionItems(notes) : []), [notes]);
   const tldr = useMemo(() => (notes ? parseTldr(notes) : null), [notes]);
   const filteredTranscript = useMemo(() => {
@@ -193,7 +420,6 @@ function App() {
       .join("\n");
   }, [transcription, search]);
 
-  // Load settings on mount
   useEffect(() => {
     const init = async () => {
       try {
@@ -238,60 +464,41 @@ function App() {
     }
   };
 
-  // Apply theme to root
   useEffect(() => {
     document.documentElement.setAttribute("data-theme", theme);
   }, [theme]);
 
-  // Python backend events
   useEffect(() => {
     const unlisten = listen<string>("python-event", async (event) => {
       try {
         const parsed = JSON.parse(event.payload);
         switch (parsed.event) {
-          case "SYSTEM_READY":
-            setStatus(parsed.data.status);
-            break;
+          case "SYSTEM_READY": setStatus(parsed.data.status); break;
           case "RECORDING_STATUS":
             setIsRecording(parsed.data.is_recording);
             if (parsed.data.is_recording) {
-              setTranscription("");
-              setNotes("");
-              setSelectedMeetingId(null);
-              setActiveTab("transcript");
+              setTranscription(""); setNotes(""); setSelectedMeetingId(null); setActiveTab("transcript");
             }
             break;
-          case "PIPELINE_STATUS":
-            setStatus(parsed.data.step);
-            break;
+          case "PIPELINE_STATUS": setStatus(parsed.data.step); break;
           case "TRANSCRIPTION_COMPLETED":
-            setTranscription(parsed.data.text);
-            setActiveTab("transcript");
-            break;
+            setTranscription(parsed.data.text); setActiveTab("transcript"); break;
           case "NOTES_GENERATED": {
             const md = parsed.data.markdown;
-            setNotes(md);
-            setActiveTab("summary");
+            setNotes(md); setActiveTab("summary");
             try {
               await invoke("save_meeting", {
                 date: new Date().toLocaleString(),
                 title: `Meeting ${new Date().toLocaleDateString()}`,
-                rawTranscript: transcription,
-                markdownSummary: md,
+                rawTranscript: transcription, markdownSummary: md,
               });
               await loadHistory();
-            } catch (dbErr) {
-              console.error("DB save error:", dbErr);
-            }
+            } catch (dbErr) { console.error("DB save error:", dbErr); }
             break;
           }
-          case "ERROR":
-            setStatus(`Error: ${parsed.data.message}`);
-            break;
+          case "ERROR": setStatus(`Error: ${parsed.data.message}`); break;
         }
-      } catch (e) {
-        console.error("Event parse error:", e);
-      }
+      } catch (e) { console.error("Event parse error:", e); }
     });
     return () => { unlisten.then((f) => f()); };
   }, [transcription]);
@@ -305,23 +512,15 @@ function App() {
         payload: JSON.stringify({ action, llm_provider: provider, llm_model: modelName, api_key: apiKey }),
       });
     } catch (e) {
-      console.error("IPC error:", e);
-      setStatus("Engine connection failed");
+      console.error("IPC error:", e); setStatus("Engine connection failed");
     }
   };
 
   const toggleWindowMode = async () => {
     try {
-      if (isExpanded) {
-        await invoke("set_compact_mode");
-        setIsExpanded(false);
-      } else {
-        await invoke("set_expanded_mode");
-        setIsExpanded(true);
-      }
-    } catch (e) {
-      console.error("Window mode error:", e);
-    }
+      if (isExpanded) { await invoke("set_compact_mode"); setIsExpanded(false); }
+      else { await invoke("set_expanded_mode"); setIsExpanded(true); }
+    } catch (e) { console.error("Window mode error:", e); }
   };
 
   const handleCopy = async () => {
@@ -331,38 +530,54 @@ function App() {
   };
 
   const handleExport = async () => {
-    const path = await save({
-      filters: [{ name: "Markdown", extensions: ["md"] }],
-      defaultPath: `Notes_${Date.now()}.md`,
-    });
-    if (path) {
-      await writeTextFile(path, notes);
-      setStatus("Exported successfully");
-    }
+    const path = await save({ filters: [{ name: "Markdown", extensions: ["md"] }], defaultPath: `Notes_${Date.now()}.md` });
+    if (path) { await writeTextFile(path, notes); setStatus("Exported successfully"); }
   };
 
   // ── COMPACT WIDGET ──────────────────────────────────────────
   if (!isExpanded) {
     return (
-      <div className="compact-widget" data-tauri-drag-region>
+      <div className={`compact-widget ${isWin ? "win" : "mac"}`}>
+        {/* OS titlebar strip */}
+        <div className="compact-os-strip" data-tauri-drag-region>
+          {!isWin && <MacTrafficLights theme={theme} />}
+          <div className="compact-os-title" data-tauri-drag-region>
+            <LogoMark size={12} light={isLG} />
+            <span>Ai NoteTaking</span>
+          </div>
+          {isWin && <WinCaptionButtons isLG={isLG} />}
+        </div>
+
+        {/* Content row */}
         <div className="pill-inner">
-          {/* Left */}
           <div className="pill-left" data-tauri-drag-region>
             <StatusDot isRecording={isRecording} size={8} isLG={isLG} />
-            <LogoMark size={22} light={isLG} />
           </div>
 
-          {/* Middle: waveform + timer */}
           <div className="pill-middle" data-tauri-drag-region>
-            <Waveform width={140} height={20} color={waveColor} active={isRecording} bars={26} />
+            <Waveform width={150} height={20} color={waveColor} active={isRecording} bars={28} />
             <span className="timer-display">
               {isRecording ? formatDuration(recordingSeconds) : "--:--"}
             </span>
           </div>
 
-          {/* Right: controls */}
-          <div className="pill-right">
-            <button className="icon-btn-pill" onClick={() => setShowSettings(true)} title="Settings">
+          <div className="pill-right" ref={popoverRef} style={{ position: "relative" }}>
+            {showPopover && (
+              <CompactSettingsPopover
+                provider={provider} setProvider={setProvider}
+                modelName={modelName} setModelName={setModelName}
+                apiKey={apiKey} setApiKey={setApiKey}
+                theme={theme} setTheme={setTheme}
+                isLG={isLG}
+                onSave={saveSettings}
+                onClose={() => setShowPopover(false)}
+              />
+            )}
+            <button
+              className={`icon-btn-pill ${showPopover ? "active" : ""}`}
+              onClick={() => setShowPopover((v) => !v)}
+              title="Settings"
+            >
               <GearIcon size={15} />
             </button>
             <button
@@ -377,36 +592,24 @@ function App() {
             </button>
           </div>
         </div>
-
-        {showSettings && (
-          <SettingsModal
-            provider={provider} setProvider={setProvider}
-            modelName={modelName} setModelName={setModelName}
-            apiKey={apiKey} setApiKey={setApiKey}
-            theme={theme} setTheme={setTheme}
-            onSave={saveSettings} onCancel={() => setShowSettings(false)}
-          />
-        )}
       </div>
     );
   }
 
   // ── EXPANDED VIEW ───────────────────────────────────────────
   return (
-    <div className="app-layout">
-      {/* Titlebar */}
-      <div className="titlebar" data-tauri-drag-region>
-        <div className="traffic-lights">
-          <span className="tl tl-red" />
-          <span className="tl tl-amber" />
-          <span className="tl tl-green" />
-        </div>
-        <div className="titlebar-center">
+    <div className={`app-layout ${isWin ? "win" : "mac"}`}>
+      {/* OS titlebar */}
+      <div className={`titlebar ${isWin ? "win" : "mac"}`} data-tauri-drag-region>
+        {!isWin && <MacTrafficLights theme={theme} />}
+
+        <div className="titlebar-center" data-tauri-drag-region>
           <LogoMark size={18} light={isLG} />
           <span className="titlebar-name">
             Ai<span className="titlebar-sub"> NoteTaking</span>
           </span>
         </div>
+
         <div className="titlebar-actions">
           <button className="icon-btn" onClick={() => setShowSettings(true)} title="Settings">
             <GearIcon size={16} />
@@ -414,6 +617,7 @@ function App() {
           <button className="icon-btn" onClick={toggleWindowMode} title="Collapse">
             <ArrowsInSimpleIcon size={16} />
           </button>
+          {isWin && <WinCaptionButtons isLG={isLG} />}
         </div>
       </div>
 
@@ -421,8 +625,6 @@ function App() {
         {/* Sidebar */}
         <aside className="sidebar">
           <div className="sidebar-label">MEETINGS</div>
-
-          {/* Current session */}
           <div className={`history-item current ${isRecording ? "recording" : ""}`}>
             <div className="history-item-header">
               <StatusDot isRecording={isRecording} size={6} isLG={isLG} />
@@ -432,8 +634,6 @@ function App() {
               {isRecording ? `Recording · ${formatDuration(recordingSeconds)}` : status}
             </span>
           </div>
-
-          {/* History */}
           {meetingsHistory.map((m) => (
             <button
               key={m.id}
@@ -449,15 +649,11 @@ function App() {
               <span className="history-item-date">{m.date}</span>
             </button>
           ))}
-
-          {meetingsHistory.length === 0 && (
-            <p className="empty-label">No past meetings</p>
-          )}
+          {meetingsHistory.length === 0 && <p className="empty-label">No past meetings</p>}
         </aside>
 
         {/* Main */}
         <main className="main-content">
-          {/* Meeting header */}
           <div className="meeting-header">
             <div className="meeting-header-left">
               <div className="meeting-title">
@@ -466,15 +662,11 @@ function App() {
                   : "Current Session"}
               </div>
               <div className="meeting-meta">
-                {isRecording
-                  ? `Recording · ${formatDuration(recordingSeconds)}`
-                  : status}
+                {isRecording ? `Recording · ${formatDuration(recordingSeconds)}` : status}
               </div>
             </div>
             <div className="meeting-header-right">
-              {isRecording && (
-                <Waveform width={60} height={14} color={waveColor} active bars={14} />
-              )}
+              {isRecording && <Waveform width={60} height={14} color={waveColor} active bars={14} />}
               <button
                 className={`record-btn-expanded ${isRecording ? "recording" : ""}`}
                 onClick={toggleRecording}
@@ -486,15 +678,10 @@ function App() {
             </div>
           </div>
 
-          {/* Tab bar */}
           <div className="tab-bar">
             <div className="tabs">
               {(["transcript", "summary", "actions"] as const).map((t) => (
-                <button
-                  key={t}
-                  className={`tab-btn ${activeTab === t ? "active" : ""}`}
-                  onClick={() => setActiveTab(t)}
-                >
+                <button key={t} className={`tab-btn ${activeTab === t ? "active" : ""}`} onClick={() => setActiveTab(t)}>
                   {t === "transcript" && "Transcript"}
                   {t === "summary" && "Summary"}
                   {t === "actions" && `Action Items${actionItems.length ? ` · ${actionItems.length}` : ""}`}
@@ -503,88 +690,44 @@ function App() {
             </div>
             <div className="search-box">
               <MagnifyingGlassIcon size={12} />
-              <input
-                value={search}
-                onChange={(e) => setSearch(e.target.value)}
-                placeholder="Search…"
-                className="search-input"
-              />
+              <input value={search} onChange={(e) => setSearch(e.target.value)} placeholder="Search…" className="search-input" />
             </div>
           </div>
 
-          {/* Tab content */}
           <div className="tab-content">
-            {/* Transcript */}
             {activeTab === "transcript" && (
               <div className="tab-panel">
-                {filteredTranscript ? (
-                  <pre className="transcript-text">{filteredTranscript}</pre>
-                ) : (
-                  <div className="empty-state">
+                {filteredTranscript
+                  ? <pre className="transcript-text">{filteredTranscript}</pre>
+                  : <div className="empty-state">
                     {isRecording
                       ? <><Waveform width={60} height={14} color={waveColor} active bars={14} /><span>Transcribing…</span></>
-                      : <span>Start recording to see the transcript here.</span>
-                    }
-                  </div>
-                )}
+                      : <span>Start recording to see the transcript here.</span>}
+                  </div>}
               </div>
             )}
-
-            {/* Summary */}
             {activeTab === "summary" && (
               <div className="tab-panel">
-                {notes ? (
-                  <>
-                    {tldr && (
-                      <div className="tldr-card">
-                        <div className="tldr-label">TL;DR</div>
-                        <p className="tldr-body">{tldr}</p>
-                      </div>
-                    )}
-                    <pre className="summary-text">{notes}</pre>
-                  </>
-                ) : (
-                  <div className="empty-state">
-                    <span>Summary will appear here once recording is processed.</span>
-                  </div>
-                )}
+                {notes
+                  ? <>{tldr && <div className="tldr-card"><div className="tldr-label">TL;DR</div><p className="tldr-body">{tldr}</p></div>}<pre className="summary-text">{notes}</pre></>
+                  : <div className="empty-state"><span>Summary will appear here once recording is processed.</span></div>}
               </div>
             )}
-
-            {/* Actions */}
             {activeTab === "actions" && (
               <div className="tab-panel">
-                {actionItems.length > 0 ? (
-                  <ul className="action-list">
-                    {actionItems.map((item, i) => (
-                      <li key={i} className="action-item">
-                        <span className="action-checkbox" />
-                        <span className="action-text">{item}</span>
-                      </li>
-                    ))}
-                  </ul>
-                ) : (
-                  <div className="empty-state">
-                    <span>
-                      {notes
-                        ? "No action items found. Use `- [ ] task` format in your prompts."
-                        : "Action items will appear here after processing."}
-                    </span>
-                  </div>
-                )}
+                {actionItems.length > 0
+                  ? <ul className="action-list">{actionItems.map((item, i) => (
+                    <li key={i} className="action-item"><span className="action-checkbox" /><span className="action-text">{item}</span></li>
+                  ))}</ul>
+                  : <div className="empty-state"><span>{notes ? "No action items found. Use `- [ ] task` format." : "Action items will appear here after processing."}</span></div>}
               </div>
             )}
           </div>
 
-          {/* Footer actions */}
           {notes && (
             <div className="footer-actions">
-              <button className="chip-btn" onClick={handleCopy}>
-                <CopyIcon size={13} /> Copy
-              </button>
-              <button className="chip-btn" onClick={handleExport}>
-                <ExportIcon size={13} /> Export .MD
-              </button>
+              <button className="chip-btn" onClick={handleCopy}><CopyIcon size={13} /> Copy</button>
+              <button className="chip-btn" onClick={handleExport}><ExportIcon size={13} /> Export .MD</button>
             </div>
           )}
         </main>
