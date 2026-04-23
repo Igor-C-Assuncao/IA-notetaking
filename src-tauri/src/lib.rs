@@ -217,7 +217,12 @@ pub fn run() {
                 let reader = BufReader::new(stdout);
                 for line in reader.lines() {
                     if let Ok(content) = line {
-                        println!("[PYTHON STDOUT] {}", content);
+                        // Suppress VAD_TELEMETRY from the Rust console — it fires
+                        // ~10x/second and would flood the terminal. Still forward
+                        // to React so the UI can animate the level meter.
+                        if !content.contains("VAD_TELEMETRY") {
+                            println!("[PYTHON STDOUT] {}", content);
+                        }
                         app_handle.emit("python-event", content).unwrap();
                     }
                 }

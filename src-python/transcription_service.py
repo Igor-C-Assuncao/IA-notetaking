@@ -53,21 +53,26 @@ class TranscriptionService:
                 self.model = None
 
     def transcribe(self, audio_path: str) -> str:
-        # ... (O resto do método transcribe continua exatamente igual) ...
         if self.model is None:
             return "[Error: WhisperX model not loaded]"
 
+        if not os.path.exists(audio_path):
+            return f"[Transcription Error: audio file not found at {audio_path}]"
+
+        if os.path.getsize(audio_path) < 1024:
+            return "[Transcription Error: audio file is empty — recording may have been too short]"
+
         print(f"DEBUG: [AI] Transcribing audio file: {audio_path}", file=sys.stderr)
-        
+
         try:
             audio = whisperx.load_audio(audio_path)
             result = self.model.transcribe(audio, batch_size=4)
             segments = result.get("segments", [])
             full_text = " ".join([seg["text"].strip() for seg in segments])
-            
+
             print("DEBUG: [AI] Transcription completed successfully.", file=sys.stderr)
             return full_text.strip()
-            
+
         except Exception as e:
             error_msg = f"[Transcription Error: {str(e)}]"
             print(f"DEBUG: {error_msg}", file=sys.stderr)

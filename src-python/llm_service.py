@@ -158,7 +158,7 @@ class LLMFactory:
         
         # Set default models if none provided by the frontend
         if provider_name == "ollama" and not model_config:
-            model_config = "llama3"
+            model_config = "gemma4"
         elif provider_name == "openai" and not model_config:
             model_config = "gpt-4o"
         elif provider_name == "gemini" and not model_config:

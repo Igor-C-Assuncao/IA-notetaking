@@ -237,6 +237,7 @@ function PopoverWindowContent() {
   const [theme, setTheme] = useState("liquid-glass");
   const [devices, setDevices] = useState<AudioDevice[]>([]);
   const [selectedDevice, setSelectedDevice] = useState<number | null>(null);
+  const [audioLevel, setAudioLevel] = useState(0);
   const isLG = theme !== "minimalist-notebook";
   const win = getCurrentWindow();
 
@@ -261,18 +262,22 @@ function PopoverWindowContent() {
     };
     init();
     // Request device list from Python
-    invoke("request_audio_devices").catch(console.error);
+    if (devices.length === 0) {
+      invoke("request_audio_devices").catch(console.error);
+    }
   }, []);
 
-  // Listen for DEVICE_LIST events from Python (forwarded by Rust stdout reader)
+  // Listen for DEVICE_LIST and VAD_TELEMETRY events from Python
   useEffect(() => {
     const unlisten = listen<string>("python-event", (event) => {
       try {
         const parsed = JSON.parse(event.payload);
         if (parsed.event === "DEVICE_LIST") {
           setDevices(parsed.data.devices ?? []);
+        } else if (parsed.event === "VAD_TELEMETRY") {
+          setAudioLevel(parsed.data.level ?? 0);
         }
-      } catch {}
+      } catch { }
     });
     return () => { unlisten.then((f) => f()); };
   }, []);
@@ -339,6 +344,14 @@ function PopoverWindowContent() {
             </option>
           ))}
         </select>
+      </div>
+
+      {/* Level meter — only visible while recording */}
+      <div className="popover-level-meter">
+        <div
+          className="popover-level-bar"
+          style={{ width: `${Math.round(audioLevel * 100)}%` }}
+        />
       </div>
 
       {/* Provider */}
@@ -487,6 +500,7 @@ function App() {
   const [notes, setNotes] = useState("");
   const [isExpanded, setIsExpanded] = useState(false);
   const [recordingSeconds, setRecordingSeconds] = useState(0);
+  const [audioLevel, setAudioLevel] = useState(0);
   const [activeTab, setActiveTab] = useState<"transcript" | "summary" | "actions">("transcript");
   const [search, setSearch] = useState("");
 
@@ -589,6 +603,9 @@ function App() {
         const parsed = JSON.parse(event.payload);
         switch (parsed.event) {
           case "SYSTEM_READY": setStatus(parsed.data.status); break;
+          case "VAD_TELEMETRY":
+            setAudioLevel(parsed.data.level ?? 0);
+            break;
           case "RECORDING_STATUS":
             setIsRecording(parsed.data.is_recording);
             if (parsed.data.is_recording) {
@@ -690,6 +707,7 @@ function App() {
               className={`record-btn-pill ${isRecording ? "recording" : ""}`}
               onClick={toggleRecording}
               title={isRecording ? "Stop Recording" : "Start Recording"}
+              style={isRecording ? { transform: `scale(${1 + audioLevel * 0.12})`, transition: "transform 80ms ease-out" } : undefined}
             >
               {isRecording ? <span className="stop-square" /> : <span className="record-circle" />}
             </button>
