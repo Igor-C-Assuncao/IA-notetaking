@@ -4,9 +4,14 @@ import os
 import threading
 import wave
 import numpy as np
-import pyaudiowpatch as pyaudio
 from abc import ABC, abstractmethod
 from vad_service import VADService
+
+import sys
+if sys.platform == "win32":
+    import pyaudiowpatch as pyaudio
+else:
+    import pyaudio
 
 # ---------------------------------------------------------
 # STRATEGY PATTERN: The abstract interface

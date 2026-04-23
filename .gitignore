@@ -30,6 +30,7 @@ src-python/__pycache__
 
 
 src-python/.venv
+src-python/venv
 
 # Tauri Secure Store
 *.json

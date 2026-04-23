@@ -3,7 +3,7 @@ use std::io::{BufRead, BufReader, Write};
 use std::path::PathBuf;
 use std::process::{ChildStdin, Command, Stdio};
 use std::sync::{Arc, Mutex};
-use tauri::{AppHandle, Emitter, Manager, State, WebviewWindowBuilder, WebviewUrl};
+use tauri::{AppHandle, Emitter, Manager, State, WebviewUrl, WebviewWindowBuilder};
 use tauri::{LogicalSize, Window};
 
 // 1. Structure Definitions
@@ -78,7 +78,9 @@ fn send_command_to_python(state: State<'_, AppState>, payload: String) -> Result
 
 #[tauri::command]
 async fn set_compact_mode(window: Window) -> Result<(), String> {
-    window.set_size(LogicalSize::new(400.0, 120.0)).map_err(|e| e.to_string())?;
+    window
+        .set_size(LogicalSize::new(400.0, 120.0))
+        .map_err(|e| e.to_string())?;
     window.set_decorations(false).map_err(|e| e.to_string())?;
     window.set_always_on_top(true).map_err(|e| e.to_string())?;
     window.set_resizable(false).map_err(|e| e.to_string())?;
@@ -87,7 +89,9 @@ async fn set_compact_mode(window: Window) -> Result<(), String> {
 
 #[tauri::command]
 async fn set_expanded_mode(window: Window) -> Result<(), String> {
-    window.set_size(LogicalSize::new(1024.0, 720.0)).map_err(|e| e.to_string())?;
+    window
+        .set_size(LogicalSize::new(1024.0, 720.0))
+        .map_err(|e| e.to_string())?;
     window.set_decorations(false).map_err(|e| e.to_string())?;
     window.set_always_on_top(false).map_err(|e| e.to_string())?;
     window.set_resizable(true).map_err(|e| e.to_string())?;
@@ -166,7 +170,8 @@ pub fn run() {
             markdown_summary TEXT NOT NULL
         )",
         [],
-    ).expect("Failed to create tables");
+    )
+    .expect("Failed to create tables");
 
     let python_stdin = Arc::new(Mutex::new(None));
     let python_stdin_clone = Arc::clone(&python_stdin);
@@ -184,9 +189,9 @@ pub fn run() {
         .setup(move |app| {
             let app_handle = app.handle().clone();
 
-            let mut child = Command::new("python")
+            let mut child = Command::new("bash")
                 .current_dir("../")
-                .arg("src-python/main.py")
+                .arg("src-python/run.sh")
                 .stdin(Stdio::piped())
                 .stdout(Stdio::piped())
                 .stderr(Stdio::inherit())
