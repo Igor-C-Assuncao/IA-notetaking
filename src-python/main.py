@@ -47,7 +47,11 @@ def main():
 
             elif action == "START_RECORDING":
                 send_event("RECORDING_STATUS", {"is_recording": True})
-                audio_capturer.start_recording()
+
+                def on_telemetry(level: float):
+                    send_event("VAD_TELEMETRY", {"level": round(level, 3)})
+
+                audio_capturer.start_recording(telemetry_callback=on_telemetry)
                 
             elif action == "STOP_RECORDING":
                 send_event("RECORDING_STATUS", {"is_recording": False})

@@ -13,7 +13,7 @@
 [data-theme="liquid-glass"] {
   --font: -apple-system, BlinkMacSystemFont, "SF Pro Display", "Inter", system-ui, sans-serif;
 
-  --bg-app: rgba(16, 14, 24, 0.90);
+  --bg-app:    rgba(16, 14, 24, 0.52);
   --bg-panel:  rgba(20, 18, 30, 0.46);
   --bg-input:  rgba(255, 255, 255, 0.07);
   --bg-hover:  rgba(255, 255, 255, 0.08);
@@ -40,7 +40,7 @@
   --radius-md:   10px;
   --radius-sm:   7px;
 
-  --blur: blur(40px) saturate(160%); 
+  --blur: blur(28px) saturate(180%);
 
   /* Shadow replaces outer border for visual separation */
   --shadow-widget: 0 20px 56px -8px rgba(0,0,0,0.62),
@@ -379,6 +379,28 @@ input, select { font-family: inherit; }
   flex-shrink: 0;
 }
 
+/* ── Popover level meter ───────────────────────────────────── */
+.popover-level-meter {
+  height: 3px;
+  border-radius: 2px;
+  background: rgba(255,255,255,0.08);
+  overflow: hidden;
+  margin: 2px 0 8px;
+}
+
+[data-theme="minimalist-notebook"] .popover-level-meter {
+  background: var(--border);
+}
+
+.popover-level-bar {
+  height: 100%;
+  background: var(--green);
+  border-radius: 2px;
+  transition: width 80ms ease-out;
+  min-width: 0;
+  max-width: 100%;
+}
+
 /* ── Compact settings popover ──────────────────────────────── */
 .compact-popover {
   position: absolute;
@@ -481,10 +503,9 @@ input, select { font-family: inherit; }
 
 .popover-lg .popover-select,
 .popover-lg .popover-input {
-  background: rgba(30, 28, 44, 0.92);
+  background: rgba(255,255,255,0.08);
   border: 1px solid rgba(255,255,255,0.14);
   color: rgba(255,255,255,0.96);
-  color-scheme: dark;
 }
 
 .popover-nb .popover-select,

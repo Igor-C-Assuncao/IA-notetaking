@@ -51,8 +51,8 @@ class AudioCaptureStrategy(ABC):
     Abstract base class defining the contract for all audio capture strategies.
     """
     @abstractmethod
-    def start_recording(self):
-        """Starts capturing system and microphone audio."""
+    def start_recording(self, telemetry_callback=None):
+        """Starts capturing audio. Optional callback(level: float) for RMS telemetry."""
         pass
 
     @abstractmethod
@@ -72,33 +72,35 @@ class WindowsAudioCapture(AudioCaptureStrategy):
     
     def __init__(self):
         self.is_recording = False
-        
+        self.telemetry_callback = None
+
         # Audio Engine references
         self.p = None
         self.loopback_stream = None
         self.mic_stream = None
-        
+
         # Thread references (CRITICAL for preventing deadlocks)
         self.loopback_thread = None
         self.mic_thread = None
-        
+
         # Buffers
         self.loopback_frames = []
         self.mic_frames = []
-        
+
         # Standard configuration for Speech-to-Text models
         self.master_sample_rate = 48000
         self.loopback_channels = 2
         self.mic_channels = 1
-        
+
         current_dir = os.path.dirname(os.path.abspath(__file__))
         self.output_file = os.path.join(current_dir, "temp_meeting_audio.wav")
 
-    def start_recording(self):
+    def start_recording(self, telemetry_callback=None):
         if self.is_recording:
             return
 
         self.is_recording = True
+        self.telemetry_callback = telemetry_callback
         self.loopback_frames = []
         self.mic_frames = []
         
@@ -167,16 +169,24 @@ class WindowsAudioCapture(AudioCaptureStrategy):
 
     def _record_mic(self):
         """Continuously reads data from the microphone stream into memory."""
+        chunk_count = 0
         try:
             while self.is_recording and self.mic_stream:
                 data = self.mic_stream.read(1024, exception_on_overflow=False)
                 audio_data = np.frombuffer(data, dtype=np.int16)
-                
+
                 if self.mic_channels > 1:
                     audio_data = np.reshape(audio_data, (-1, self.mic_channels))
                     audio_data = np.mean(audio_data, axis=1).astype(np.int16)
-                    
+
                 self.mic_frames.append(audio_data)
+
+                # Emit RMS telemetry every 5th chunk
+                chunk_count += 1
+                if chunk_count % 5 == 0 and self.telemetry_callback:
+                    rms = float(np.sqrt(np.mean(audio_data.astype(np.float32) ** 2)))
+                    level = min(rms / 32768.0, 1.0)
+                    self.telemetry_callback(level)
         except Exception as e:
             print(f"DEBUG: [Windows Mic Error] {str(e)}", file=sys.stderr)
 
@@ -226,13 +236,106 @@ class WindowsAudioCapture(AudioCaptureStrategy):
         return self.output_file
     
 class MacosAudioCapture(AudioCaptureStrategy):
-    """ScreenCaptureKit implementation for macOS system audio."""
-    def start_recording(self):
-        print("DEBUG: [macOS] Starting ScreenCaptureKit capture...", file=sys.stderr)
+    """
+    macOS microphone capture via PyAudio.
+    System audio loopback (ScreenCaptureKit) is planned for Sprint 9 Card 9.4.
+    """
+
+    def __init__(self):
+        self.is_recording = False
+        self.telemetry_callback = None
+        self.p = None
+        self.mic_stream = None
+        self.mic_thread = None
+        self.mic_frames = []
+        self.sample_rate = 16000  # WhisperX works best at 16kHz
+        self.channels = 1
+
+        current_dir = os.path.dirname(os.path.abspath(__file__))
+        self.output_file = os.path.join(current_dir, "temp_meeting_audio.wav")
+
+    def start_recording(self, telemetry_callback=None):
+        if self.is_recording:
+            return
+
+        self.is_recording = True
+        self.telemetry_callback = telemetry_callback
+        self.mic_frames = []
+
+        try:
+            self.p = pyaudio.PyAudio()
+            self.mic_stream = self.p.open(
+                format=pyaudio.paInt16,
+                channels=self.channels,
+                rate=self.sample_rate,
+                input=True,
+                frames_per_buffer=1024,
+            )
+            self.mic_thread = threading.Thread(target=self._record, daemon=True)
+            self.mic_thread.start()
+            print("DEBUG: [macOS] Microphone capture started.", file=sys.stderr)
+        except Exception as e:
+            print(f"DEBUG: [macOS] Failed to start microphone: {e}", file=sys.stderr)
+            self.is_recording = False
+
+    def _record(self):
+        chunk_count = 0
+        try:
+            while self.is_recording and self.mic_stream:
+                data = self.mic_stream.read(1024, exception_on_overflow=False)
+                audio_data = np.frombuffer(data, dtype=np.int16)
+                self.mic_frames.append(audio_data)
+
+                # Emit RMS telemetry every 5th chunk
+                chunk_count += 1
+                if chunk_count % 5 == 0 and self.telemetry_callback:
+                    rms = float(np.sqrt(np.mean(audio_data.astype(np.float32) ** 2)))
+                    level = min(rms / 32768.0, 1.0)
+                    self.telemetry_callback(level)
+        except Exception as e:
+            print(f"DEBUG: [macOS Mic Error] {e}", file=sys.stderr)
 
     def stop_recording(self) -> str:
-        print("DEBUG: [macOS] Stopping capture...", file=sys.stderr)
-        return "temp_macos_audio.wav"
+        if not self.is_recording:
+            return self.output_file
+
+        self.is_recording = False
+        if self.mic_thread:
+            self.mic_thread.join(timeout=2.0)
+
+        if self.mic_stream:
+            try:
+                self.mic_stream.stop_stream()
+                self.mic_stream.close()
+            except Exception:
+                pass
+        if self.p:
+            self.p.terminate()
+
+        if not self.mic_frames:
+            print("DEBUG: [macOS] No audio frames captured.", file=sys.stderr)
+            return self.output_file
+
+        audio_full = np.concatenate(self.mic_frames)
+
+        print("DEBUG: [AI] Running Silero VAD to trim silence...", file=sys.stderr)
+        try:
+            vad = VADService()
+            audio_trimmed = vad.trim_silence(
+                audio_full.reshape(-1, 1), self.sample_rate
+            )
+        except Exception as e:
+            print(f"DEBUG: [AI VAD Error] Falling back to raw audio: {e}", file=sys.stderr)
+            audio_trimmed = audio_full.reshape(-1, 1)
+
+        with wave.open(self.output_file, "wb") as wf:
+            wf.setnchannels(1)
+            wf.setsampwidth(2)
+            wf.setframerate(self.sample_rate)
+            wf.writeframes(audio_trimmed.tobytes())
+
+        print(f"DEBUG: [macOS] Audio saved to {self.output_file}", file=sys.stderr)
+        return self.output_file
 
 # ---------------------------------------------------------
 # FACTORY METHOD: Instantiates the correct strategy
