@@ -262,7 +262,9 @@ function PopoverWindowContent() {
     };
     init();
     // Request device list from Python
-    invoke("request_audio_devices").catch(console.error);
+    if (devices.length === 0) {
+      invoke("request_audio_devices").catch(console.error);
+    }
   }, []);
 
   // Listen for DEVICE_LIST and VAD_TELEMETRY events from Python
@@ -275,7 +277,7 @@ function PopoverWindowContent() {
         } else if (parsed.event === "VAD_TELEMETRY") {
           setAudioLevel(parsed.data.level ?? 0);
         }
-      } catch {}
+      } catch { }
     });
     return () => { unlisten.then((f) => f()); };
   }, []);
