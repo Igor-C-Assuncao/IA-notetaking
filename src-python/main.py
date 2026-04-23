@@ -8,6 +8,9 @@ from audio_capture import AudioCaptureFactory, list_audio_devices
 from transcription_service import TranscriptionService
 from llm_service import LLMFactory
 
+
+
+
 def send_event(event_type: str, payload: dict):
     """
     Observer Pattern: Emits events for Rust/Tauri to capture via stdout.
@@ -94,4 +97,8 @@ def main():
             send_event("ERROR", {"message": f"Unexpected error: {str(e)}"})
 
 if __name__ == "__main__":
+    _devices_cached = list_audio_devices()  # ← adiciona aqui, linha 20
+    time.sleep(2)
+    send_event("SYSTEM_READY", {"status": "Python engine is ready and listening."})
+    send_event("DEVICE_LIST", {"devices": _devices_cached})  # ← troca list_audio_devices() por _devices_cached
     main()
