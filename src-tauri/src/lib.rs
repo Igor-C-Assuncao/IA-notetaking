@@ -3,7 +3,7 @@ use std::io::{BufRead, BufReader, Write};
 use std::path::PathBuf;
 use std::process::{ChildStdin, Command, Stdio};
 use std::sync::{Arc, Mutex};
-use tauri::{AppHandle, Emitter, Manager, State, WebviewUrl, WebviewWindowBuilder};
+use tauri::{AppHandle, Emitter, Manager, State, WebviewWindowBuilder, WebviewUrl};
 use tauri::{LogicalSize, Window};
 
 // 1. Structure Definitions
@@ -78,9 +78,7 @@ fn send_command_to_python(state: State<'_, AppState>, payload: String) -> Result
 
 #[tauri::command]
 async fn set_compact_mode(window: Window) -> Result<(), String> {
-    window
-        .set_size(LogicalSize::new(400.0, 120.0))
-        .map_err(|e| e.to_string())?;
+    window.set_size(LogicalSize::new(400.0, 120.0)).map_err(|e| e.to_string())?;
     window.set_decorations(false).map_err(|e| e.to_string())?;
     window.set_always_on_top(true).map_err(|e| e.to_string())?;
     window.set_resizable(false).map_err(|e| e.to_string())?;
@@ -89,17 +87,31 @@ async fn set_compact_mode(window: Window) -> Result<(), String> {
 
 #[tauri::command]
 async fn set_expanded_mode(window: Window) -> Result<(), String> {
-    window
-        .set_size(LogicalSize::new(1024.0, 720.0))
-        .map_err(|e| e.to_string())?;
-    window.set_decorations(false).map_err(|e| e.to_string())?;
+    window.set_size(LogicalSize::new(1024.0, 720.0)).map_err(|e| e.to_string())?;
+    window.set_decorations(true).map_err(|e| e.to_string())?;
     window.set_always_on_top(false).map_err(|e| e.to_string())?;
     window.set_resizable(true).map_err(|e| e.to_string())?;
     window.center().map_err(|e| e.to_string())?;
     Ok(())
 }
 
-// 5. Popover Window Commands
+// 5. Audio Device Enumeration
+// Sends LIST_DEVICES to Python and waits for the DEVICE_LIST event.
+// The event is already forwarded to React by the stdout reader thread,
+// so the frontend just needs to listen for "python-event" with DEVICE_LIST.
+// This command is a fire-and-forget trigger — no return value needed.
+#[tauri::command]
+fn request_audio_devices(state: State<'_, AppState>) -> Result<(), String> {
+    let stdin_lock = state.python_stdin.lock().unwrap();
+    if let Some(mut stdin) = stdin_lock.as_ref() {
+        let payload = serde_json::json!({"action": "LIST_DEVICES"});
+        writeln!(stdin, "{}", payload).map_err(|e| e.to_string())?;
+        return Ok(());
+    }
+    Err("Python process not available".to_string())
+}
+
+// 6. Popover Window Commands
 //
 // Opens the settings popover as a separate frameless OS window, positioned
 // above the compact widget. If the window is already open, closes it (toggle).
@@ -170,8 +182,7 @@ pub fn run() {
             markdown_summary TEXT NOT NULL
         )",
         [],
-    )
-    .expect("Failed to create tables");
+    ).expect("Failed to create tables");
 
     let python_stdin = Arc::new(Mutex::new(None));
     let python_stdin_clone = Arc::clone(&python_stdin);
@@ -189,9 +200,9 @@ pub fn run() {
         .setup(move |app| {
             let app_handle = app.handle().clone();
 
-            let mut child = Command::new("bash")
+            let mut child = Command::new("python")
                 .current_dir("../")
-                .arg("src-python/run.sh")
+                .arg("src-python/main.py")
                 .stdin(Stdio::piped())
                 .stdout(Stdio::piped())
                 .stderr(Stdio::inherit())
@@ -222,6 +233,7 @@ pub fn run() {
             set_expanded_mode,
             open_popover_window,
             close_popover_window,
+            request_audio_devices,
         ])
         .run(tauri::generate_context!())
         .expect("Error while running tauri application");

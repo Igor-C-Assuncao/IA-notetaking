@@ -4,7 +4,7 @@ import json
 import time
 
 # Internal services
-from audio_capture import AudioCaptureFactory
+from audio_capture import AudioCaptureFactory, list_audio_devices
 from transcription_service import TranscriptionService
 from llm_service import LLMFactory
 
@@ -20,6 +20,7 @@ def main():
     # Allow React time to mount and start listening to IPC events
     time.sleep(2)
     send_event("SYSTEM_READY", {"status": "Python engine is ready and listening."})
+    send_event("DEVICE_LIST", {"devices": list_audio_devices()})
 
     # 1. Initialize Audio Capture
     try:
@@ -41,7 +42,10 @@ def main():
             command = json.loads(line.strip())
             action = command.get("action")
 
-            if action == "START_RECORDING":
+            if action == "LIST_DEVICES":
+                send_event("DEVICE_LIST", {"devices": list_audio_devices()})
+
+            elif action == "START_RECORDING":
                 send_event("RECORDING_STATUS", {"is_recording": True})
                 audio_capturer.start_recording()
                 

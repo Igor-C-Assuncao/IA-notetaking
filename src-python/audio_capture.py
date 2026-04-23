@@ -4,14 +4,44 @@ import os
 import threading
 import wave
 import numpy as np
-from abc import ABC, abstractmethod
-from vad_service import VADService
-
-import sys
 if sys.platform == "win32":
     import pyaudiowpatch as pyaudio
 else:
     import pyaudio
+from abc import ABC, abstractmethod
+from vad_service import VADService
+
+
+def list_audio_devices() -> list:
+    """
+    Returns a list of available audio input devices on the current platform.
+    Each entry: {id, name, type}  where type is 'mic' or 'loopback'.
+    Safe to call at any time — opens and closes PyAudio internally.
+    """
+    devices = []
+    try:
+        p = pyaudio.PyAudio()
+        count = p.get_device_count()
+        for i in range(count):
+            try:
+                info = p.get_device_info_by_index(i)
+                if info.get("maxInputChannels", 0) < 1:
+                    continue
+                name = info.get("name", f"Device {i}")
+                # On Windows with pyaudiowpatch, loopback devices have
+                # 'Loopback' in the name or come from the wasapi loopback API.
+                is_loopback = "loopback" in name.lower()
+                devices.append({
+                    "id": i,
+                    "name": name,
+                    "type": "loopback" if is_loopback else "mic",
+                })
+            except Exception:
+                continue
+        p.terminate()
+    except Exception as e:
+        print(f"DEBUG: [AudioDevices] Failed to enumerate devices: {e}", file=sys.stderr)
+    return devices
 
 # ---------------------------------------------------------
 # STRATEGY PATTERN: The abstract interface

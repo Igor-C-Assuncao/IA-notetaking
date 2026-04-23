@@ -221,6 +221,12 @@ function Toggle({ on, onChange }: { on: boolean; onChange: (v: boolean) => void 
   );
 }
 
+interface AudioDevice {
+  id: number;
+  name: string;
+  type: "mic" | "loopback";
+}
+
 // ── Popover Window Content ────────────────────────────────────
 // Rendered when window label is "popover". Self-contained: loads settings
 // from store, emits "settings-changed" on save, closes itself on blur.
@@ -229,6 +235,8 @@ function PopoverWindowContent() {
   const [modelName, setModelName] = useState("llama3");
   const [apiKey, setApiKey] = useState("");
   const [theme, setTheme] = useState("liquid-glass");
+  const [devices, setDevices] = useState<AudioDevice[]>([]);
+  const [selectedDevice, setSelectedDevice] = useState<number | null>(null);
   const isLG = theme !== "minimalist-notebook";
   const win = getCurrentWindow();
 
@@ -241,15 +249,32 @@ function PopoverWindowContent() {
         const sm = await store.get<string>("modelName");
         const sk = await store.get<string>("apiKey");
         const st = await store.get<string>("theme");
+        const sd = await store.get<number>("selectedDeviceId");
         if (sp) setProvider(sp);
         if (sm) setModelName(sm);
         if (sk) setApiKey(sk);
         if (st) setTheme(st);
+        if (sd != null) setSelectedDevice(sd);
       } catch (e) {
         console.error("Failed to load settings in popover:", e);
       }
     };
     init();
+    // Request device list from Python
+    invoke("request_audio_devices").catch(console.error);
+  }, []);
+
+  // Listen for DEVICE_LIST events from Python (forwarded by Rust stdout reader)
+  useEffect(() => {
+    const unlisten = listen<string>("python-event", (event) => {
+      try {
+        const parsed = JSON.parse(event.payload);
+        if (parsed.event === "DEVICE_LIST") {
+          setDevices(parsed.data.devices ?? []);
+        }
+      } catch {}
+    });
+    return () => { unlisten.then((f) => f()); };
   }, []);
 
   // Keep data-theme in sync for correct CSS variables
@@ -278,8 +303,8 @@ function PopoverWindowContent() {
       await store.set("modelName", modelName);
       await store.set("apiKey", apiKey);
       await store.set("theme", theme);
+      if (selectedDevice !== null) await store.set("selectedDeviceId", selectedDevice);
       await store.save();
-      // Broadcast to all windows (main window listens for this)
       await emit("settings-changed", { provider, modelName, apiKey, theme } satisfies SettingsPayload);
       await win.close();
     } catch (e) {
@@ -296,6 +321,25 @@ function PopoverWindowContent() {
       <div className="popover-drag-handle" data-tauri-drag-region />
 
       <div className="popover-label">SETTINGS</div>
+
+      {/* Input device picker */}
+      <div className="popover-row">
+        <label className="popover-row-label">Input</label>
+        <select
+          className="popover-select"
+          value={selectedDevice ?? ""}
+          onChange={(e) => setSelectedDevice(Number(e.target.value))}
+        >
+          {devices.length === 0 && (
+            <option value="">Loading devices…</option>
+          )}
+          {devices.map((d) => (
+            <option key={d.id} value={d.id}>
+              {d.name}{d.type === "loopback" ? " (loopback)" : ""}
+            </option>
+          ))}
+        </select>
+      </div>
 
       {/* Provider */}
       <div className="popover-row">
