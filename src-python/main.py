@@ -54,6 +54,7 @@ def main():
                     "auto_summarize": command.get("auto_summarize", True),
                     "speaker_diarization": command.get("speaker_diarization", False),
                     "language": command.get("language", "auto"),
+                    "system_prompt": command.get("system_prompt", ""),
                     "llm_provider": command.get("llm_provider", "ollama"),
                     "llm_model": command.get("llm_model", "llama3"),
                     "api_key": command.get("api_key", ""),
@@ -94,7 +95,11 @@ def main():
                     
                     try:
                         llm = LLMFactory.get_provider(provider_name, model_name)
-                        notes_markdown = llm.generate_notes(transcription_result, api_key)
+                        notes_markdown = llm.generate_notes(
+                            transcription_result,
+                            api_key=api_key,
+                            system_prompt=current_config.get("system_prompt", "") or None,
+                        )
                         
                         # Emit final structured notes
                         send_event("NOTES_GENERATED", {"markdown": notes_markdown})

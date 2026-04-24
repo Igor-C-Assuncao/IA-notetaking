@@ -609,12 +609,14 @@ function PopoverWindowContent() {
 function SettingsModal({
   provider, setProvider, modelName, setModelName,
   apiKey, setApiKey, theme, setTheme,
+  systemPrompt, setSystemPrompt,
   onSave, onCancel,
 }: {
   provider: string; setProvider: (v: string) => void;
   modelName: string; setModelName: (v: string) => void;
   apiKey: string; setApiKey: (v: string) => void;
   theme: string; setTheme: (v: string) => void;
+  systemPrompt: string; setSystemPrompt: (v: string) => void;
   onSave: () => void; onCancel: () => void;
 }) {
   return (
@@ -647,6 +649,16 @@ function SettingsModal({
             <input type="password" value={apiKey} placeholder="Enter your key…" onChange={(e) => setApiKey(e.target.value)} />
           </div>
         )}
+        <div className="form-group">
+          <label>Custom System Prompt <span className="form-hint">Optional — guides the AI output style</span></label>
+          <textarea
+            className="system-prompt-textarea"
+            value={systemPrompt}
+            onChange={(e) => setSystemPrompt(e.target.value)}
+            placeholder={"Examples:\n• Bullet points only\n• Focus on action items\n• Translate output to Portuguese\n• Keep summary under 200 words"}
+            rows={4}
+          />
+        </div>
         <div className="modal-actions">
           <button className="btn-cancel" onClick={onCancel}>Cancel</button>
           <button className="btn-save" onClick={onSave}>Save Changes</button>
@@ -704,6 +716,7 @@ function App() {
   const [apiKey, setApiKey] = useState("");
   const [theme, setTheme] = useState("liquid-glass");
   const [language, setLanguage] = useState("auto");
+  const [systemPrompt, setSystemPrompt] = useState("");
   const [systemAudio, setSystemAudio] = useState(false);
   const [autoSummarize, setAutoSummarize] = useState(true);
   const [speakerDiarization, setSpeakerDiarization] = useState(false);
@@ -738,10 +751,12 @@ function App() {
         const sm = await store.get<string>("modelName");
         const sk = await store.get<string>("apiKey");
         const st = await store.get<string>("theme");
+        const ssp = await store.get<string>("systemPrompt");
         if (sp) setProvider(sp);
         if (sm) setModelName(sm);
         if (sk) setApiKey(sk);
         if (st) setTheme(st);
+        if (ssp) setSystemPrompt(ssp);
       } catch (e) {
         console.error("Failed to load settings:", e);
       }
@@ -778,6 +793,7 @@ function App() {
       await store.set("modelName", modelName);
       await store.set("apiKey", apiKey);
       await store.set("theme", theme);
+      await store.set("systemPrompt", systemPrompt);
       await store.save();
       setShowSettings(false);
       setStatus("Settings saved");
@@ -852,6 +868,7 @@ function App() {
           system_audio: systemAudio,
           auto_summarize: autoSummarize,
           speaker_diarization: speakerDiarization,
+          system_prompt: systemPrompt,
         }),
       });
     } catch (e) {
@@ -1074,6 +1091,7 @@ function App() {
           modelName={modelName} setModelName={setModelName}
           apiKey={apiKey} setApiKey={setApiKey}
           theme={theme} setTheme={setTheme}
+          systemPrompt={systemPrompt} setSystemPrompt={setSystemPrompt}
           onSave={saveSettings} onCancel={() => setShowSettings(false)}
         />
       )}

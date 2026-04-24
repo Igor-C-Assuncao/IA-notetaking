@@ -23,10 +23,12 @@ class MeetingWorkflowEngine:
     Constructs and executes a multi-node AI workflow to process transcripts.
     Supports local (Ollama) and cloud (OpenAI, Gemini, Anthropic) models.
     """
-    def __init__(self, provider_name: str, model_name: str, api_key: str = None):
+    def __init__(self, provider_name: str, model_name: str, api_key: str = None, system_prompt: str = None):
         self.provider_name = provider_name.lower()
         self.model_name = model_name
         self.api_key = api_key
+        # Custom system prompt injected as prefix on the final summary node
+        self.system_prompt = system_prompt.strip() if system_prompt else None
         self.llm = self._initialize_llm()
 
     def _initialize_llm(self):
@@ -89,7 +91,8 @@ class MeetingWorkflowEngine:
     # --- NODE 3: Final Markdown Formatting ---
     def generate_summary_node(self, state: AgentState):
         print("DEBUG: [LangGraph] Node 3: Generating final Markdown summary...", file=sys.stderr)
-        prompt = (
+
+        base_prompt = (
             "You are an executive assistant. Construct a highly professional meeting summary in Markdown.\n\n"
             "REQUIREMENTS:\n"
             "1. Start with '## 📝 Executive Summary' (1 paragraph overview).\n"
@@ -97,8 +100,15 @@ class MeetingWorkflowEngine:
             "3. End with '## 🎯 Action Items' (insert the provided action items directly).\n\n"
             "Use the provided cleaned transcript and action items to build this. Output ONLY the Markdown."
         )
+
+        # Prepend custom system prompt if provided by the user
+        if self.system_prompt:
+            prompt = f"{self.system_prompt}\n\n{base_prompt}"
+        else:
+            prompt = base_prompt
+
         content_block = f"TRANSCRIPT:\n{state['clean_transcript']}\n\nACTION ITEMS:\n{state['action_items']}"
-        
+
         response = self.llm.invoke([
             SystemMessage(content=prompt),
             HumanMessage(content=content_block)
@@ -141,9 +151,12 @@ class LangGraphStrategy:
         self.provider_name = provider_name
         self.model_name = model_name
 
-    def generate_notes(self, transcription: str, api_key: str = None) -> str:
+    def generate_notes(self, transcription: str, api_key: str = None, system_prompt: str = None) -> str:
         try:
-            engine = MeetingWorkflowEngine(self.provider_name, self.model_name, api_key)
+            engine = MeetingWorkflowEngine(
+                self.provider_name, self.model_name,
+                api_key=api_key, system_prompt=system_prompt
+            )
             return engine.run(transcription)
         except Exception as e:
             return f"[LangGraph Error: {str(e)}]"
@@ -158,7 +171,7 @@ class LLMFactory:
         
         # Set default models if none provided by the frontend
         if provider_name == "ollama" and not model_config:
-            model_config = "gemma4"
+            model_config = "llama3"
         elif provider_name == "openai" and not model_config:
             model_config = "gpt-4o"
         elif provider_name == "gemini" and not model_config:
