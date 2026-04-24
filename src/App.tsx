@@ -27,13 +27,61 @@ interface DiarizedSegment {
   text: string;
 }
 
+// Deterministic color from speaker name — same speaker always gets same color
+const SPEAKER_PALETTE = [
+  "#6C8EBF", "#82B366", "#D6A520", "#AE4132",
+  "#7B5EA7", "#2D9B8A", "#C0714F", "#4A7C9E",
+];
+
+function speakerColor(name: string): string {
+  let hash = 0;
+  for (let i = 0; i < name.length; i++) hash = name.charCodeAt(i) + ((hash << 5) - hash);
+  return SPEAKER_PALETTE[Math.abs(hash) % SPEAKER_PALETTE.length];
+}
+
+function speakerInitials(name: string): string {
+  return name
+    .replace("SPEAKER_", "S")
+    .split(/[\s_]+/)
+    .map((w) => w[0]?.toUpperCase() ?? "")
+    .slice(0, 2)
+    .join("");
+}
+
+function formatTimestamp(seconds: number): string {
+  const h = Math.floor(seconds / 3600);
+  const m = Math.floor((seconds % 3600) / 60);
+  const s = Math.floor(seconds % 60);
+  if (h > 0) return `${String(h).padStart(2, "0")}:${String(m).padStart(2, "0")}:${String(s).padStart(2, "0")}`;
+  return `${String(m).padStart(2, "0")}:${String(s).padStart(2, "0")}`;
+}
+
+// ── TranscriptLine ─────────────────────────────────────────────
+function TranscriptLine({ seg, isLG }: { seg: DiarizedSegment; isLG: boolean }) {
+  const color = speakerColor(seg.speaker);
+  const initials = speakerInitials(seg.speaker);
+  return (
+    <div className="transcript-line">
+      <div className="transcript-avatar" style={{ background: color }} title={seg.speaker}>
+        {initials}
+      </div>
+      <div className="transcript-line-body">
+        <div className="transcript-line-meta">
+          <span className="transcript-speaker" style={{ color }}>{seg.speaker}</span>
+          <span className="transcript-timestamp">{formatTimestamp(seg.start)}</span>
+        </div>
+        <p className="transcript-line-text">{seg.text}</p>
+      </div>
+    </div>
+  );
+}
+
 interface SettingsPayload {
   provider: string;
   modelName: string;
   apiKey: string;
   theme: string;
   language: string;
-  hfToken: string;
   systemAudio: boolean;
   autoSummarize: boolean;
   speakerDiarization: boolean;
@@ -297,7 +345,6 @@ function PopoverWindowContent() {
   const [autoSummarize, setAutoSummarize] = useState(true);
   const [speakerDiarization, setSpeakerDiarization] = useState(false);
   const [alwaysOnTop, setAlwaysOnTop] = useState(true);
-  const [hfToken, setHfToken] = useState("");
   const [showShortcuts, setShowShortcuts] = useState(false);
   const isLG = theme !== "minimalist-notebook";
   const win = getCurrentWindow();
@@ -318,7 +365,6 @@ function PopoverWindowContent() {
         const as_ = await store.get<boolean>("autoSummarize");
         const sd2 = await store.get<boolean>("speakerDiarization");
         const aot = await store.get<boolean>("alwaysOnTop");
-        const sht = await store.get<string>("hfToken");
         if (sp) setProvider(sp);
         if (sm) setModelName(sm);
         if (scm) setCustomModel(scm);
@@ -330,7 +376,6 @@ function PopoverWindowContent() {
         if (as_ != null) setAutoSummarize(as_);
         if (sd2 != null) setSpeakerDiarization(sd2);
         if (aot != null) setAlwaysOnTop(aot);
-        if (sht) setHfToken(sht);
       } catch (e) {
         console.error("Failed to load settings in popover:", e);
       }
@@ -393,12 +438,11 @@ function PopoverWindowContent() {
       await store.set("autoSummarize", autoSummarize);
       await store.set("speakerDiarization", speakerDiarization);
       await store.set("alwaysOnTop", alwaysOnTop);
-      await store.set("hfToken", hfToken);
       if (selectedDevice !== null) await store.set("selectedDeviceId", selectedDevice);
       await store.save();
       await emit("settings-changed", {
         provider, modelName: effectiveModel, apiKey, theme, language,
-        hfToken, systemAudio, autoSummarize, speakerDiarization, alwaysOnTop,
+        systemAudio, autoSummarize, speakerDiarization, alwaysOnTop,
       } satisfies SettingsPayload);
       await win.close();
     } catch (e) {
@@ -568,18 +612,6 @@ function PopoverWindowContent() {
           </div>
           <Toggle on={speakerDiarization} onChange={setSpeakerDiarization} />
         </div>
-        {speakerDiarization && (
-          <div className="popover-row" style={{ marginTop: -4 }}>
-            <label className="popover-row-label">HF Token</label>
-            <input
-              className="popover-input"
-              type="password"
-              value={hfToken}
-              placeholder="hf_…"
-              onChange={(e) => setHfToken(e.target.value)}
-            />
-          </div>
-        )}
         <div className="popover-toggle-row">
           <div>
             <div className="popover-toggle-label">Always on top</div>
@@ -723,6 +755,7 @@ function App() {
   const [isRecording, setIsRecording] = useState(false);
   const [status, setStatus] = useState("Initializing system…");
   const [transcription, setTranscription] = useState("");
+  const [diarizedSegments, setDiarizedSegments] = useState<DiarizedSegment[] | null>(null);
   const [notes, setNotes] = useState("");
   const [isExpanded, setIsExpanded] = useState(false);
   const [recordingSeconds, setRecordingSeconds] = useState(0);
@@ -741,12 +774,10 @@ function App() {
   const [theme, setTheme] = useState("liquid-glass");
   const [language, setLanguage] = useState("auto");
   const [systemPrompt, setSystemPrompt] = useState("");
-  const [hfToken, setHfToken] = useState("");
   const [systemAudio, setSystemAudio] = useState(false);
   const [autoSummarize, setAutoSummarize] = useState(true);
   const [speakerDiarization, setSpeakerDiarization] = useState(false);
   const [alwaysOnTop, setAlwaysOnTop] = useState(true);
-  const [diarizedSegments, setDiarizedSegments] = useState<DiarizedSegment[] | null>(null);
 
   const isLG = theme !== "minimalist-notebook";
   const waveColor = isLG ? "rgba(255,255,255,0.92)" : "#1a1814";
@@ -767,6 +798,15 @@ function App() {
       .filter((l) => l.toLowerCase().includes(search.toLowerCase()))
       .join("\n");
   }, [transcription, search]);
+
+  const filteredSegments = useMemo(() => {
+    if (!diarizedSegments) return null;
+    if (!search.trim()) return diarizedSegments;
+    return diarizedSegments.filter((s) =>
+      s.text.toLowerCase().includes(search.toLowerCase()) ||
+      s.speaker.toLowerCase().includes(search.toLowerCase())
+    );
+  }, [diarizedSegments, search]);
 
   // Load persisted settings and history on mount
   useEffect(() => {
@@ -795,12 +835,17 @@ function App() {
   useEffect(() => {
     const unlisten = listen<SettingsPayload>("settings-changed", (event) => {
       const { provider: p, modelName: m, apiKey: k, theme: t,
-              language: l, hfToken: hft,
+              language: l,
               systemAudio: sa, autoSummarize: as_, speakerDiarization: sd, alwaysOnTop: aot } = event.payload;
-      setProvider(p); setModelName(m); setApiKey(k); setTheme(t);
-      setLanguage(l); setHfToken(hft);
-      setSystemAudio(sa); setAutoSummarize(as_);
-      setSpeakerDiarization(sd); setAlwaysOnTop(aot);
+      setProvider(p);
+      setModelName(m);
+      setApiKey(k);
+      setTheme(t);
+      setLanguage(l);
+      setSystemAudio(sa);
+      setAutoSummarize(as_);
+      setSpeakerDiarization(sd);
+      setAlwaysOnTop(aot);
       setStatus("Settings saved");
       setTimeout(() => setStatus("Ready"), 2000);
     });
@@ -856,7 +901,7 @@ function App() {
           case "PIPELINE_STATUS": setStatus(parsed.data.step); break;
           case "TRANSCRIPTION_COMPLETED":
             setTranscription(parsed.data.text);
-            setDiarizedSegments(parsed.data.diarized ? parsed.data.segments : null);
+            setDiarizedSegments(parsed.data.diarized ? (parsed.data.segments ?? null) : null);
             setActiveTab("transcript");
             break;
           case "NOTES_GENERATED": {
@@ -891,7 +936,6 @@ function App() {
           llm_model: modelName,
           api_key: apiKey,
           language,
-          hf_token: hfToken,
           system_audio: systemAudio,
           auto_summarize: autoSummarize,
           speaker_diarization: speakerDiarization,
@@ -1076,13 +1120,21 @@ function App() {
           <div className="tab-content">
             {activeTab === "transcript" && (
               <div className="tab-panel">
-                {filteredTranscript
-                  ? <pre className="transcript-text">{filteredTranscript}</pre>
-                  : <div className="empty-state">
+                {filteredSegments ? (
+                  <div className="transcript-diarized">
+                    {filteredSegments.map((seg, i) => (
+                      <TranscriptLine key={i} seg={seg} isLG={isLG} />
+                    ))}
+                  </div>
+                ) : filteredTranscript ? (
+                  <pre className="transcript-text">{filteredTranscript}</pre>
+                ) : (
+                  <div className="empty-state">
                     {isRecording
                       ? <><Waveform width={60} height={14} color={waveColor} active bars={14} /><span>Transcribing…</span></>
                       : <span>Start recording to see the transcript here.</span>}
-                  </div>}
+                  </div>
+                )}
               </div>
             )}
             {activeTab === "summary" && (
