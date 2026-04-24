@@ -14,6 +14,9 @@ struct Meeting {
     title: String,
     raw_transcript: String,
     markdown_summary: String,
+    speakers: Option<String>,     // JSON array of speaker names
+    tags: Option<String>,         // JSON array of tag strings
+    structured_summary: Option<String>, // Full structured JSON from LLM
 }
 
 // 2. Global Application State (Database + Python Stdin)
@@ -30,11 +33,18 @@ fn save_meeting(
     title: String,
     raw_transcript: String,
     markdown_summary: String,
+    speakers: Option<String>,
+    tags: Option<String>,
+    structured_summary: Option<String>,
 ) -> Result<(), String> {
     let db = state.db.lock().unwrap();
     db.execute(
-        "INSERT INTO meetings (date, title, raw_transcript, markdown_summary) VALUES (?1, ?2, ?3, ?4)",
-        (&date, &title, &raw_transcript, &markdown_summary),
+        "INSERT INTO meetings (date, title, raw_transcript, markdown_summary, speakers, tags, structured_summary)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+        rusqlite::params![
+            &date, &title, &raw_transcript, &markdown_summary,
+            &speakers, &tags, &structured_summary,
+        ],
     ).map_err(|e| e.to_string())?;
     Ok(())
 }
@@ -42,7 +52,10 @@ fn save_meeting(
 #[tauri::command]
 fn get_meetings(state: State<'_, AppState>) -> Result<Vec<Meeting>, String> {
     let db = state.db.lock().unwrap();
-    let mut stmt = db.prepare("SELECT id, date, title, raw_transcript, markdown_summary FROM meetings ORDER BY id DESC").map_err(|e| e.to_string())?;
+    let mut stmt = db.prepare(
+        "SELECT id, date, title, raw_transcript, markdown_summary, speakers, tags, structured_summary
+         FROM meetings ORDER BY id DESC"
+    ).map_err(|e| e.to_string())?;
 
     let meeting_iter = stmt
         .query_map([], |row| {
@@ -52,6 +65,9 @@ fn get_meetings(state: State<'_, AppState>) -> Result<Vec<Meeting>, String> {
                 title: row.get(2)?,
                 raw_transcript: row.get(3)?,
                 markdown_summary: row.get(4)?,
+                speakers: row.get(5)?,
+                tags: row.get(6)?,
+                structured_summary: row.get(7)?,
             })
         })
         .map_err(|e| e.to_string())?;
@@ -173,16 +189,37 @@ async fn close_popover_window(app: AppHandle) -> Result<(), String> {
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     let conn = Connection::open("notetaker.db").expect("Failed to open local database");
+
+    // Create table with full schema (new installs)
     conn.execute(
         "CREATE TABLE IF NOT EXISTS meetings (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            date TEXT NOT NULL,
-            title TEXT NOT NULL,
-            raw_transcript TEXT NOT NULL,
-            markdown_summary TEXT NOT NULL
+            id               INTEGER PRIMARY KEY AUTOINCREMENT,
+            date             TEXT NOT NULL,
+            title            TEXT NOT NULL,
+            raw_transcript   TEXT NOT NULL,
+            markdown_summary TEXT NOT NULL,
+            speakers         TEXT,
+            tags             TEXT,
+            structured_summary TEXT
         )",
         [],
-    ).expect("Failed to create tables");
+    ).expect("Failed to create meetings table");
+
+    // Migration for existing databases — ALTER TABLE ignores duplicate column errors
+    let migrations = [
+        "ALTER TABLE meetings ADD COLUMN speakers TEXT",
+        "ALTER TABLE meetings ADD COLUMN tags TEXT",
+        "ALTER TABLE meetings ADD COLUMN structured_summary TEXT",
+    ];
+    for sql in &migrations {
+        // SQLite returns "duplicate column name" error if column already exists.
+        // We treat that as a no-op — any other error is a real problem.
+        if let Err(e) = conn.execute(sql, []) {
+            if !e.to_string().contains("duplicate column name") {
+                eprintln!("[DB Migration Warning] {}: {}", sql, e);
+            }
+        }
+    }
 
     let python_stdin = Arc::new(Mutex::new(None));
     let python_stdin_clone = Arc::clone(&python_stdin);
