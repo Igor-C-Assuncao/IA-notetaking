@@ -8,9 +8,6 @@ from audio_capture import AudioCaptureFactory, list_audio_devices
 from transcription_service import TranscriptionService
 from llm_service import LLMFactory
 
-
-
-
 def send_event(event_type: str, payload: dict):
     """
     Observer Pattern: Emits events for Rust/Tauri to capture via stdout.
@@ -51,33 +48,44 @@ def main():
             elif action == "START_RECORDING":
                 send_event("RECORDING_STATUS", {"is_recording": True})
 
+                # Store recording config for use when STOP_RECORDING arrives
+                current_config = {
+                    "system_audio": command.get("system_audio", False),
+                    "auto_summarize": command.get("auto_summarize", True),
+                    "speaker_diarization": command.get("speaker_diarization", False),
+                    "llm_provider": command.get("llm_provider", "ollama"),
+                    "llm_model": command.get("llm_model", "llama3"),
+                    "api_key": command.get("api_key", ""),
+                }
+
                 def on_telemetry(level: float):
                     send_event("VAD_TELEMETRY", {"level": round(level, 3)})
 
                 audio_capturer.start_recording(telemetry_callback=on_telemetry)
-                
+
             elif action == "STOP_RECORDING":
                 send_event("RECORDING_STATUS", {"is_recording": False})
                 send_event("PIPELINE_STATUS", {"step": "Processing Audio (VAD)..."})
-                
+
                 # STEP A: Stop recording and trim silence
                 saved_file_path = audio_capturer.stop_recording()
-                
+
                 # STEP B: Transcribe audio
                 if transcriber:
                     send_event("PIPELINE_STATUS", {"step": "Transcribing with WhisperX..."})
                     transcription_result = transcriber.transcribe(saved_file_path)
-                    
-                    # Emit raw transcription so the UI can show it immediately
                     send_event("TRANSCRIPTION_COMPLETED", {"text": transcription_result})
-                    
-                    # STEP C: Generate Structured Notes
+
+                    # STEP C: Generate Notes — only if auto_summarize is enabled
+                    if not current_config.get("auto_summarize", True):
+                        send_event("PIPELINE_STATUS", {"step": "Done."})
+                        continue
+
                     send_event("PIPELINE_STATUS", {"step": "Generating Notes with AI..."})
-                    
-                    # Extract LLM config from React command (Default to local Ollama)
-                    provider_name = command.get("llm_provider", "ollama")
-                    model_name = command.get("llm_model", "llama3")
-                    api_key = command.get("api_key", "")
+
+                    provider_name = current_config.get("llm_provider", "ollama")
+                    model_name = current_config.get("llm_model", "llama3")
+                    api_key = current_config.get("api_key", "")
                     
                     try:
                         llm = LLMFactory.get_provider(provider_name, model_name)
@@ -97,8 +105,4 @@ def main():
             send_event("ERROR", {"message": f"Unexpected error: {str(e)}"})
 
 if __name__ == "__main__":
-    _devices_cached = list_audio_devices()  # ← adiciona aqui, linha 20
-    time.sleep(2)
-    send_event("SYSTEM_READY", {"status": "Python engine is ready and listening."})
-    send_event("DEVICE_LIST", {"devices": _devices_cached})  # ← troca list_audio_devices() por _devices_cached
     main()

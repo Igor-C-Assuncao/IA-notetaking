@@ -25,6 +25,10 @@ interface SettingsPayload {
   modelName: string;
   apiKey: string;
   theme: string;
+  systemAudio: boolean;
+  autoSummarize: boolean;
+  speakerDiarization: boolean;
+  alwaysOnTop: boolean;
 }
 
 // ── OS detection ──────────────────────────────────────────────
@@ -238,6 +242,10 @@ function PopoverWindowContent() {
   const [devices, setDevices] = useState<AudioDevice[]>([]);
   const [selectedDevice, setSelectedDevice] = useState<number | null>(null);
   const [audioLevel, setAudioLevel] = useState(0);
+  const [systemAudio, setSystemAudio] = useState(false);
+  const [autoSummarize, setAutoSummarize] = useState(true);
+  const [speakerDiarization, setSpeakerDiarization] = useState(false);
+  const [alwaysOnTop, setAlwaysOnTop] = useState(true);
   const isLG = theme !== "minimalist-notebook";
   const win = getCurrentWindow();
 
@@ -251,20 +259,26 @@ function PopoverWindowContent() {
         const sk = await store.get<string>("apiKey");
         const st = await store.get<string>("theme");
         const sd = await store.get<number>("selectedDeviceId");
+        const sa = await store.get<boolean>("systemAudio");
+        const as_ = await store.get<boolean>("autoSummarize");
+        const sd2 = await store.get<boolean>("speakerDiarization");
+        const aot = await store.get<boolean>("alwaysOnTop");
         if (sp) setProvider(sp);
         if (sm) setModelName(sm);
         if (sk) setApiKey(sk);
         if (st) setTheme(st);
         if (sd != null) setSelectedDevice(sd);
+        if (sa != null) setSystemAudio(sa);
+        if (as_ != null) setAutoSummarize(as_);
+        if (sd2 != null) setSpeakerDiarization(sd2);
+        if (aot != null) setAlwaysOnTop(aot);
       } catch (e) {
         console.error("Failed to load settings in popover:", e);
       }
     };
     init();
     // Request device list from Python
-    if (devices.length === 0) {
-      invoke("request_audio_devices").catch(console.error);
-    }
+    invoke("request_audio_devices").catch(console.error);
   }, []);
 
   // Listen for DEVICE_LIST and VAD_TELEMETRY events from Python
@@ -277,10 +291,15 @@ function PopoverWindowContent() {
         } else if (parsed.event === "VAD_TELEMETRY") {
           setAudioLevel(parsed.data.level ?? 0);
         }
-      } catch { }
+      } catch {}
     });
     return () => { unlisten.then((f) => f()); };
   }, []);
+
+  // alwaysOnTop applies immediately — no need to wait for Save
+  useEffect(() => {
+    win.setAlwaysOnTop(alwaysOnTop).catch(console.error);
+  }, [alwaysOnTop]);
 
   // Keep data-theme in sync for correct CSS variables
   useEffect(() => {
@@ -308,9 +327,16 @@ function PopoverWindowContent() {
       await store.set("modelName", modelName);
       await store.set("apiKey", apiKey);
       await store.set("theme", theme);
+      await store.set("systemAudio", systemAudio);
+      await store.set("autoSummarize", autoSummarize);
+      await store.set("speakerDiarization", speakerDiarization);
+      await store.set("alwaysOnTop", alwaysOnTop);
       if (selectedDevice !== null) await store.set("selectedDeviceId", selectedDevice);
       await store.save();
-      await emit("settings-changed", { provider, modelName, apiKey, theme } satisfies SettingsPayload);
+      await emit("settings-changed", {
+        provider, modelName, apiKey, theme,
+        systemAudio, autoSummarize, speakerDiarization, alwaysOnTop,
+      } satisfies SettingsPayload);
       await win.close();
     } catch (e) {
       console.error("Failed to save settings from popover:", e);
@@ -394,16 +420,46 @@ function PopoverWindowContent() {
         </div>
       )}
 
-      {/* Theme toggle */}
-      <div className="popover-toggle-row">
-        <div>
-          <div className="popover-toggle-label">Notebook theme</div>
-          <div className="popover-toggle-hint">Switch to light / paper style</div>
+      {/* Behavior toggles */}
+      <div className="popover-toggles-section">
+        <div className="popover-toggle-row">
+          <div>
+            <div className="popover-toggle-label">System audio capture</div>
+            <div className="popover-toggle-hint">Record the other side of calls</div>
+          </div>
+          <Toggle on={systemAudio} onChange={setSystemAudio} />
         </div>
-        <Toggle
-          on={theme === "minimalist-notebook"}
-          onChange={(v) => setTheme(v ? "minimalist-notebook" : "liquid-glass")}
-        />
+        <div className="popover-toggle-row">
+          <div>
+            <div className="popover-toggle-label">Auto-summarize</div>
+            <div className="popover-toggle-hint">Generate notes after recording stops</div>
+          </div>
+          <Toggle on={autoSummarize} onChange={setAutoSummarize} />
+        </div>
+        <div className="popover-toggle-row">
+          <div>
+            <div className="popover-toggle-label">Speaker diarization</div>
+            <div className="popover-toggle-hint">Identify who said what</div>
+          </div>
+          <Toggle on={speakerDiarization} onChange={setSpeakerDiarization} />
+        </div>
+        <div className="popover-toggle-row">
+          <div>
+            <div className="popover-toggle-label">Always on top</div>
+            <div className="popover-toggle-hint">Keep widget above other windows</div>
+          </div>
+          <Toggle on={alwaysOnTop} onChange={setAlwaysOnTop} />
+        </div>
+        <div className="popover-toggle-row">
+          <div>
+            <div className="popover-toggle-label">Notebook theme</div>
+            <div className="popover-toggle-hint">Switch to light / paper style</div>
+          </div>
+          <Toggle
+            on={theme === "minimalist-notebook"}
+            onChange={(v) => setTheme(v ? "minimalist-notebook" : "liquid-glass")}
+          />
+        </div>
       </div>
 
       {/* Footer */}
@@ -513,6 +569,10 @@ function App() {
   const [modelName, setModelName] = useState("llama3");
   const [apiKey, setApiKey] = useState("");
   const [theme, setTheme] = useState("liquid-glass");
+  const [systemAudio, setSystemAudio] = useState(false);
+  const [autoSummarize, setAutoSummarize] = useState(true);
+  const [speakerDiarization, setSpeakerDiarization] = useState(false);
+  const [alwaysOnTop, setAlwaysOnTop] = useState(true);
 
   const isLG = theme !== "minimalist-notebook";
   const waveColor = isLG ? "rgba(255,255,255,0.92)" : "#1a1814";
@@ -558,11 +618,16 @@ function App() {
   // Listen for settings saved from the popover window
   useEffect(() => {
     const unlisten = listen<SettingsPayload>("settings-changed", (event) => {
-      const { provider: p, modelName: m, apiKey: k, theme: t } = event.payload;
+      const { provider: p, modelName: m, apiKey: k, theme: t,
+              systemAudio: sa, autoSummarize: as_, speakerDiarization: sd, alwaysOnTop: aot } = event.payload;
       setProvider(p);
       setModelName(m);
       setApiKey(k);
       setTheme(t);
+      setSystemAudio(sa);
+      setAutoSummarize(as_);
+      setSpeakerDiarization(sd);
+      setAlwaysOnTop(aot);
       setStatus("Settings saved");
       setTimeout(() => setStatus("Ready"), 2000);
     });
@@ -641,7 +706,15 @@ function App() {
     setStatus(isRecording ? "Stopping…" : `Recording via ${provider.toUpperCase()}`);
     try {
       await invoke("send_command_to_python", {
-        payload: JSON.stringify({ action, llm_provider: provider, llm_model: modelName, api_key: apiKey }),
+        payload: JSON.stringify({
+          action,
+          llm_provider: provider,
+          llm_model: modelName,
+          api_key: apiKey,
+          system_audio: systemAudio,
+          auto_summarize: autoSummarize,
+          speaker_diarization: speakerDiarization,
+        }),
       });
     } catch (e) {
       console.error("IPC error:", e); setStatus("Engine connection failed");
