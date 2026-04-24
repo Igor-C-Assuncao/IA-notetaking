@@ -53,6 +53,7 @@ def main():
                     "system_audio": command.get("system_audio", False),
                     "auto_summarize": command.get("auto_summarize", True),
                     "speaker_diarization": command.get("speaker_diarization", False),
+                    "hf_token": command.get("hf_token", ""),
                     "language": command.get("language", "auto"),
                     "system_prompt": command.get("system_prompt", ""),
                     "llm_provider": command.get("llm_provider", "ollama"),
@@ -76,11 +77,22 @@ def main():
                 if transcriber:
                     send_event("PIPELINE_STATUS", {"step": "Transcribing with WhisperX..."})
                     lang = current_config.get("language", "auto")
+                    use_diarization = current_config.get("speaker_diarization", False)
+                    hf_token = current_config.get("hf_token", "") or None
+
                     transcription_result = transcriber.transcribe(
                         saved_file_path,
-                        language=None if lang == "auto" else lang
+                        language=None if lang == "auto" else lang,
+                        speaker_diarization=use_diarization,
+                        hf_token=hf_token,
                     )
-                    send_event("TRANSCRIPTION_COMPLETED", {"text": transcription_result})
+
+                    # Emit full result — frontend handles both plain and diarized
+                    send_event("TRANSCRIPTION_COMPLETED", {
+                        "text": transcription_result["text"],
+                        "segments": transcription_result.get("segments"),
+                        "diarized": transcription_result.get("diarized", False),
+                    })
 
                     # STEP C: Generate Notes — only if auto_summarize is enabled
                     if not current_config.get("auto_summarize", True):
@@ -96,7 +108,7 @@ def main():
                     try:
                         llm = LLMFactory.get_provider(provider_name, model_name)
                         notes_markdown = llm.generate_notes(
-                            transcription_result,
+                            transcription_result["text"],
                             api_key=api_key,
                             system_prompt=current_config.get("system_prompt", "") or None,
                         )
