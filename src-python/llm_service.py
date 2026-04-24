@@ -8,12 +8,15 @@ from langchain_core.messages import SystemMessage, HumanMessage
 # ---------------------------------------------------------
 # GRAPH STATE DEFINITION
 # ---------------------------------------------------------
+import json as json_lib
+
 class AgentState(TypedDict):
     """Represents the memory/state of our LangGraph workflow."""
     raw_transcript: str
     clean_transcript: str
     action_items: str
     final_markdown: str
+    structured_summary: dict   # {tldr, decisions[], actions[], tags[]}
 
 # ---------------------------------------------------------
 # LANGGRAPH WORKFLOW ENGINE
@@ -88,20 +91,32 @@ class MeetingWorkflowEngine:
         ])
         return {"action_items": response.content}
 
-    # --- NODE 3: Final Markdown Formatting ---
+    # --- NODE 3: Structured Summary (JSON) + Markdown fallback ---
     def generate_summary_node(self, state: AgentState):
-        print("DEBUG: [LangGraph] Node 3: Generating final Markdown summary...", file=sys.stderr)
+        print("DEBUG: [LangGraph] Node 3: Generating structured summary...", file=sys.stderr)
 
         base_prompt = (
-            "You are an executive assistant. Construct a highly professional meeting summary in Markdown.\n\n"
-            "REQUIREMENTS:\n"
-            "1. Start with '## 📝 Executive Summary' (1 paragraph overview).\n"
-            "2. Follow with '## 🔑 Key Takeaways' (bullet points of main discussions).\n"
-            "3. End with '## 🎯 Action Items' (insert the provided action items directly).\n\n"
-            "Use the provided cleaned transcript and action items to build this. Output ONLY the Markdown."
+            "You are an executive assistant. Analyze the meeting transcript and action items below "
+            "and return a structured JSON object — nothing else, no markdown fences, no commentary.\n\n"
+            "The JSON MUST follow this exact schema:\n"
+            "{\n"
+            '  "tldr": "One sentence that captures the core outcome of the meeting.",\n'
+            '  "decisions": ["Decision 1", "Decision 2"],\n'
+            '  "actions": [\n'
+            '    {"who": "Name or null", "text": "Task description", "due": "Due date or null"}\n'
+            "  ],\n"
+            '  "tags": ["tag1", "tag2"],\n'
+            '  "markdown": "## 📝 Executive Summary\\n...full markdown summary..."\n'
+            "}\n\n"
+            "Rules:\n"
+            "- tldr: single sentence, no more than 25 words.\n"
+            "- decisions: concrete choices made, not discussion points. Empty array if none.\n"
+            "- actions: tasks with an owner and optionally a due date. who/due may be null.\n"
+            "- tags: 2-5 lowercase hyphenated topic labels (e.g. 'product', 'q2-planning').\n"
+            "- markdown: full professional summary with Executive Summary, Key Takeaways, and Action Items sections.\n"
+            "Output ONLY the raw JSON object."
         )
 
-        # Prepend custom system prompt if provided by the user
         if self.system_prompt:
             prompt = f"{self.system_prompt}\n\n{base_prompt}"
         else:
@@ -113,32 +128,55 @@ class MeetingWorkflowEngine:
             SystemMessage(content=prompt),
             HumanMessage(content=content_block)
         ])
-        return {"final_markdown": response.content}
 
-    def run(self, transcript: str) -> str:
+        raw = response.content.strip()
+
+        # Strip markdown fences if model wrapped the JSON anyway
+        if raw.startswith("```"):
+            raw = raw.split("```")[1]
+            if raw.startswith("json"):
+                raw = raw[4:]
+            raw = raw.strip()
+
+        try:
+            structured = json_lib.loads(raw)
+        except Exception:
+            # Fallback: treat the whole response as markdown
+            print("DEBUG: [LangGraph] JSON parse failed, falling back to markdown.", file=sys.stderr)
+            structured = {
+                "tldr": None,
+                "decisions": [],
+                "actions": [],
+                "tags": [],
+                "markdown": raw,
+            }
+
+        return {
+            "final_markdown": structured.get("markdown", raw),
+            "structured_summary": structured,
+        }
+
+    def run(self, transcript: str) -> dict:
         """Builds the graph, compiles it, and runs the transcript through the nodes."""
         print("DEBUG: [LangGraph] Building and compiling workflow graph...", file=sys.stderr)
         
-        # 1. Initialize Graph
         workflow = StateGraph(AgentState)
-        
-        # 2. Add Nodes
         workflow.add_node("cleanup", self.clean_transcript_node)
         workflow.add_node("extraction", self.extract_action_items_node)
         workflow.add_node("summary", self.generate_summary_node)
-        
-        # 3. Define Edges (The Pipeline Flow)
         workflow.add_edge(START, "cleanup")
         workflow.add_edge("cleanup", "extraction")
         workflow.add_edge("extraction", "summary")
         workflow.add_edge("summary", END)
         
-        # 4. Compile and Execute
         app = workflow.compile()
         try:
             print("DEBUG: [LangGraph] Executing workflow...", file=sys.stderr)
             result = app.invoke({"raw_transcript": transcript})
-            return result["final_markdown"]
+            return {
+                "markdown": result["final_markdown"],
+                "structured": result.get("structured_summary", {}),
+            }
         except Exception as e:
             raise RuntimeError(f"Workflow execution failed: {str(e)}")
 
@@ -151,7 +189,7 @@ class LangGraphStrategy:
         self.provider_name = provider_name
         self.model_name = model_name
 
-    def generate_notes(self, transcription: str, api_key: str = None, system_prompt: str = None) -> str:
+    def generate_notes(self, transcription: str, api_key: str = None, system_prompt: str = None) -> dict:
         try:
             engine = MeetingWorkflowEngine(
                 self.provider_name, self.model_name,
@@ -159,7 +197,7 @@ class LangGraphStrategy:
             )
             return engine.run(transcription)
         except Exception as e:
-            return f"[LangGraph Error: {str(e)}]"
+            return {"markdown": f"[LangGraph Error: {str(e)}]", "structured": {}}
 
 class LLMFactory:
     @staticmethod

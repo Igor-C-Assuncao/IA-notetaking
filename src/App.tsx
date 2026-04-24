@@ -20,130 +20,19 @@ interface Meeting {
   markdown_summary: string;
 }
 
-interface DiarizedSegment {
-  speaker: string;
-  start: number;
-  end: number;
+interface ActionItem {
+  who: string | null;
   text: string;
+  due: string | null;
+  done?: boolean;
 }
 
-// ── Speaker color helpers ──────────────────────────────────────
-const SPEAKER_PALETTE = [
-  "#6C8EBF", "#82B366", "#D6A520", "#AE4132",
-  "#7B5EA7", "#2D9B8A", "#C0714F", "#4A7C9E",
-];
-
-function speakerColor(name: string): string {
-  let hash = 0;
-  for (let i = 0; i < name.length; i++) hash = name.charCodeAt(i) + ((hash << 5) - hash);
-  return SPEAKER_PALETTE[Math.abs(hash) % SPEAKER_PALETTE.length];
-}
-
-function speakerInitials(name: string): string {
-  return name
-    .replace("SPEAKER_", "S")
-    .split(/[\s_]+/)
-    .map((w) => w[0]?.toUpperCase() ?? "")
-    .slice(0, 2)
-    .join("");
-}
-
-function formatTimestamp(seconds: number): string {
-  const h = Math.floor(seconds / 3600);
-  const m = Math.floor((seconds % 3600) / 60);
-  const s = Math.floor(seconds % 60);
-  if (h > 0) return `${String(h).padStart(2, "0")}:${String(m).padStart(2, "0")}:${String(s).padStart(2, "0")}`;
-  return `${String(m).padStart(2, "0")}:${String(s).padStart(2, "0")}`;
-}
-
-// ── TranscriptLine ─────────────────────────────────────────────
-function TranscriptLine({ seg }: { seg: DiarizedSegment }) {
-  const color = speakerColor(seg.speaker);
-  return (
-    <div className="transcript-line">
-      <div className="transcript-avatar" style={{ background: color }} title={seg.speaker}>
-        {speakerInitials(seg.speaker)}
-      </div>
-      <div className="transcript-line-body">
-        <div className="transcript-line-meta">
-          <span className="transcript-speaker" style={{ color }}>{seg.speaker}</span>
-          <span className="transcript-timestamp">{formatTimestamp(seg.start)}</span>
-        </div>
-        <p className="transcript-line-text">{seg.text}</p>
-      </div>
-    </div>
-  );
-}
-
-// ── ParticipantAvatars ─────────────────────────────────────────
-function ParticipantAvatars({ speakers }: { speakers: string[] }) {
-  if (!speakers.length) return null;
-  const visible = speakers.slice(0, 5);
-  const overflow = speakers.length - visible.length;
-  return (
-    <div className="participant-avatars">
-      {visible.map((s, i) => (
-        <div
-          key={s}
-          className="participant-avatar"
-          style={{ background: speakerColor(s), zIndex: visible.length - i }}
-          title={s}
-        >
-          {speakerInitials(s)}
-        </div>
-      ))}
-      {overflow > 0 && (
-        <div className="participant-avatar participant-avatar-overflow">
-          +{overflow}
-        </div>
-      )}
-    </div>
-  );
-}
-
-// ── TagRow ─────────────────────────────────────────────────────
-function TagRow({
-  tags, onAdd, onRemove,
-}: {
+interface StructuredSummary {
+  tldr: string | null;
+  decisions: string[];
+  actions: ActionItem[];
   tags: string[];
-  onAdd: (t: string) => void;
-  onRemove: (t: string) => void;
-}) {
-  const [editing, setEditing] = useState(false);
-  const [input, setInput] = useState("");
-  const inputRef = useRef<HTMLInputElement>(null);
-
-  const commit = () => {
-    const val = input.trim().toLowerCase().replace(/\s+/g, "-");
-    if (val && !tags.includes(val)) onAdd(val);
-    setInput("");
-    setEditing(false);
-  };
-
-  return (
-    <div className="tag-row">
-      {tags.map((t) => (
-        <span key={t} className="tag-chip">
-          {t}
-          <button className="tag-remove" onClick={() => onRemove(t)}>×</button>
-        </span>
-      ))}
-      {editing ? (
-        <input
-          ref={inputRef}
-          className="tag-input"
-          value={input}
-          onChange={(e) => setInput(e.target.value)}
-          onKeyDown={(e) => { if (e.key === "Enter") commit(); if (e.key === "Escape") setEditing(false); }}
-          onBlur={commit}
-          placeholder="add tag…"
-          autoFocus
-        />
-      ) : (
-        <button className="tag-add-btn" onClick={() => setEditing(true)}>+ tag</button>
-      )}
-    </div>
-  );
+  markdown: string;
 }
 
 interface SettingsPayload {
@@ -825,9 +714,8 @@ function App() {
   const [isRecording, setIsRecording] = useState(false);
   const [status, setStatus] = useState("Initializing system…");
   const [transcription, setTranscription] = useState("");
-  const [diarizedSegments, setDiarizedSegments] = useState<DiarizedSegment[] | null>(null);
-  const [meetingTags, setMeetingTags] = useState<string[]>([]);
   const [notes, setNotes] = useState("");
+  const [structuredSummary, setStructuredSummary] = useState<StructuredSummary | null>(null);
   const [isExpanded, setIsExpanded] = useState(false);
   const [recordingSeconds, setRecordingSeconds] = useState(0);
   const [audioLevel, setAudioLevel] = useState(0);
@@ -862,12 +750,6 @@ function App() {
 
   const actionItems = useMemo(() => (notes ? parseActionItems(notes) : []), [notes]);
   const tldr = useMemo(() => (notes ? parseTldr(notes) : null), [notes]);
-
-  const participants = useMemo(() => {
-    if (!diarizedSegments) return [];
-    return [...new Set(diarizedSegments.map((s) => s.speaker))];
-  }, [diarizedSegments]);
-
   const filteredTranscript = useMemo(() => {
     if (!transcription || !search.trim()) return transcription;
     return transcription
@@ -875,15 +757,6 @@ function App() {
       .filter((l) => l.toLowerCase().includes(search.toLowerCase()))
       .join("\n");
   }, [transcription, search]);
-
-  const filteredSegments = useMemo(() => {
-    if (!diarizedSegments) return null;
-    if (!search.trim()) return diarizedSegments;
-    return diarizedSegments.filter((s) =>
-      s.text.toLowerCase().includes(search.toLowerCase()) ||
-      s.speaker.toLowerCase().includes(search.toLowerCase())
-    );
-  }, [diarizedSegments, search]);
 
   // Load persisted settings and history on mount
   useEffect(() => {
@@ -971,19 +844,19 @@ function App() {
             setIsRecording(parsed.data.is_recording);
             if (parsed.data.is_recording) {
               setTranscription(""); setNotes("");
-              setDiarizedSegments(null); setMeetingTags([]);
+              setStructuredSummary(null);
               setSelectedMeetingId(null); setActiveTab("transcript");
             }
             break;
           case "PIPELINE_STATUS": setStatus(parsed.data.step); break;
           case "TRANSCRIPTION_COMPLETED":
-            setTranscription(parsed.data.text);
-            setDiarizedSegments(parsed.data.diarized ? (parsed.data.segments ?? null) : null);
-            setActiveTab("transcript");
-            break;
+            setTranscription(parsed.data.text); setActiveTab("transcript"); break;
           case "NOTES_GENERATED": {
             const md = parsed.data.markdown;
-            setNotes(md); setActiveTab("summary");
+            const structured = parsed.data.structured ?? null;
+            setNotes(md);
+            setStructuredSummary(structured && structured.tldr ? structured : null);
+            setActiveTab("summary");
             try {
               await invoke("save_meeting", {
                 date: new Date().toLocaleString(),
@@ -1156,26 +1029,14 @@ function App() {
         <main className="main-content">
           <div className="meeting-header">
             <div className="meeting-header-left">
-              <div className="meeting-title-row">
-                <div className="meeting-title">
-                  {selectedMeetingId
-                    ? meetingsHistory.find((m) => m.id === selectedMeetingId)?.title ?? "Meeting"
-                    : "Current Session"}
-                </div>
-                {participants.length > 0 && (
-                  <ParticipantAvatars speakers={participants} />
-                )}
+              <div className="meeting-title">
+                {selectedMeetingId
+                  ? meetingsHistory.find((m) => m.id === selectedMeetingId)?.title ?? "Meeting"
+                  : "Current Session"}
               </div>
               <div className="meeting-meta">
                 {isRecording ? `Recording · ${formatDuration(recordingSeconds)}` : status}
               </div>
-              {(meetingTags.length > 0 || !selectedMeetingId) && (
-                <TagRow
-                  tags={meetingTags}
-                  onAdd={(t) => setMeetingTags((prev) => [...prev, t])}
-                  onRemove={(t) => setMeetingTags((prev) => prev.filter((x) => x !== t))}
-                />
-              )}
             </div>
             <div className="meeting-header-right">
               {isRecording && <Waveform width={60} height={14} color={waveColor} active bars={14} />}
@@ -1209,37 +1070,93 @@ function App() {
           <div className="tab-content">
             {activeTab === "transcript" && (
               <div className="tab-panel">
-                {filteredSegments ? (
-                  <div className="transcript-diarized">
-                    {filteredSegments.map((seg, i) => (
-                      <TranscriptLine key={i} seg={seg} />
-                    ))}
-                  </div>
-                ) : filteredTranscript ? (
-                  <pre className="transcript-text">{filteredTranscript}</pre>
-                ) : (
-                  <div className="empty-state">
+                {filteredTranscript
+                  ? <pre className="transcript-text">{filteredTranscript}</pre>
+                  : <div className="empty-state">
                     {isRecording
                       ? <><Waveform width={60} height={14} color={waveColor} active bars={14} /><span>Transcribing…</span></>
                       : <span>Start recording to see the transcript here.</span>}
-                  </div>
-                )}
+                  </div>}
               </div>
             )}
             {activeTab === "summary" && (
               <div className="tab-panel">
-                {notes
-                  ? <>{tldr && <div className="tldr-card"><div className="tldr-label">TL;DR</div><p className="tldr-body">{tldr}</p></div>}<pre className="summary-text">{notes}</pre></>
-                  : <div className="empty-state"><span>Summary will appear here once recording is processed.</span></div>}
+                {structuredSummary ? (
+                  <div className="structured-summary">
+                    {/* TL;DR */}
+                    {structuredSummary.tldr && (
+                      <div className="tldr-card">
+                        <div className="tldr-label">TL;DR</div>
+                        <p className="tldr-body">{structuredSummary.tldr}</p>
+                      </div>
+                    )}
+                    {/* Decisions */}
+                    {structuredSummary.decisions.length > 0 && (
+                      <div className="summary-section">
+                        <div className="summary-section-title">Decisions</div>
+                        <ul className="decisions-list">
+                          {structuredSummary.decisions.map((d, i) => (
+                            <li key={i} className="decision-item">
+                              <span className="decision-check">✓</span>
+                              <span>{d}</span>
+                            </li>
+                          ))}
+                        </ul>
+                      </div>
+                    )}
+                    {/* Markdown fallback for Key Takeaways */}
+                    <div className="summary-section">
+                      <div className="summary-section-title">Full Summary</div>
+                      <pre className="summary-text">{structuredSummary.markdown}</pre>
+                    </div>
+                  </div>
+                ) : notes ? (
+                  <>
+                    {tldr && <div className="tldr-card"><div className="tldr-label">TL;DR</div><p className="tldr-body">{tldr}</p></div>}
+                    <pre className="summary-text">{notes}</pre>
+                  </>
+                ) : (
+                  <div className="empty-state"><span>Summary will appear here once recording is processed.</span></div>
+                )}
               </div>
             )}
             {activeTab === "actions" && (
               <div className="tab-panel">
-                {actionItems.length > 0
-                  ? <ul className="action-list">{actionItems.map((item, i) => (
+                {structuredSummary?.actions?.length ? (
+                  <ul className="action-list">
+                    {structuredSummary.actions.map((item, i) => (
+                      <li key={i} className={`action-item-rich ${item.done ? "done" : ""}`}>
+                        <button
+                          className="action-checkbox-btn"
+                          onClick={() => {
+                            setStructuredSummary((prev) => {
+                              if (!prev) return prev;
+                              const actions = prev.actions.map((a, j) =>
+                                j === i ? { ...a, done: !a.done } : a
+                              );
+                              return { ...prev, actions };
+                            });
+                          }}
+                        >
+                          {item.done ? "✓" : ""}
+                        </button>
+                        <div className="action-item-body">
+                          <span className="action-item-text">{item.text}</span>
+                          <div className="action-item-meta">
+                            {item.who && <span className="action-badge action-who">{item.who}</span>}
+                            {item.due && <span className="action-badge action-due">{item.due}</span>}
+                          </div>
+                        </div>
+                      </li>
+                    ))}
+                  </ul>
+                ) : actionItems.length > 0 ? (
+                  <ul className="action-list">{actionItems.map((item, i) => (
                     <li key={i} className="action-item"><span className="action-checkbox" /><span className="action-text">{item}</span></li>
                   ))}</ul>
-                  : <div className="empty-state"><span>{notes ? "No action items found. Use `- [ ] task` format." : "Action items will appear here after processing."}</span></div>}
+                ) : (
+                  <div className="empty-state"><span>{notes ? "No action items found." : "Action items will appear here after processing."}</span></div>
+                )}
               </div>
             )}
           </div>
