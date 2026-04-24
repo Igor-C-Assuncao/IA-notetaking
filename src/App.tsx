@@ -20,12 +20,20 @@ interface Meeting {
   markdown_summary: string;
 }
 
+interface DiarizedSegment {
+  speaker: string;
+  start: number;
+  end: number;
+  text: string;
+}
+
 interface SettingsPayload {
   provider: string;
   modelName: string;
   apiKey: string;
   theme: string;
   language: string;
+  hfToken: string;
   systemAudio: boolean;
   autoSummarize: boolean;
   speakerDiarization: boolean;
@@ -289,6 +297,7 @@ function PopoverWindowContent() {
   const [autoSummarize, setAutoSummarize] = useState(true);
   const [speakerDiarization, setSpeakerDiarization] = useState(false);
   const [alwaysOnTop, setAlwaysOnTop] = useState(true);
+  const [hfToken, setHfToken] = useState("");
   const [showShortcuts, setShowShortcuts] = useState(false);
   const isLG = theme !== "minimalist-notebook";
   const win = getCurrentWindow();
@@ -309,6 +318,7 @@ function PopoverWindowContent() {
         const as_ = await store.get<boolean>("autoSummarize");
         const sd2 = await store.get<boolean>("speakerDiarization");
         const aot = await store.get<boolean>("alwaysOnTop");
+        const sht = await store.get<string>("hfToken");
         if (sp) setProvider(sp);
         if (sm) setModelName(sm);
         if (scm) setCustomModel(scm);
@@ -320,6 +330,7 @@ function PopoverWindowContent() {
         if (as_ != null) setAutoSummarize(as_);
         if (sd2 != null) setSpeakerDiarization(sd2);
         if (aot != null) setAlwaysOnTop(aot);
+        if (sht) setHfToken(sht);
       } catch (e) {
         console.error("Failed to load settings in popover:", e);
       }
@@ -382,11 +393,12 @@ function PopoverWindowContent() {
       await store.set("autoSummarize", autoSummarize);
       await store.set("speakerDiarization", speakerDiarization);
       await store.set("alwaysOnTop", alwaysOnTop);
+      await store.set("hfToken", hfToken);
       if (selectedDevice !== null) await store.set("selectedDeviceId", selectedDevice);
       await store.save();
       await emit("settings-changed", {
         provider, modelName: effectiveModel, apiKey, theme, language,
-        systemAudio, autoSummarize, speakerDiarization, alwaysOnTop,
+        hfToken, systemAudio, autoSummarize, speakerDiarization, alwaysOnTop,
       } satisfies SettingsPayload);
       await win.close();
     } catch (e) {
@@ -556,6 +568,18 @@ function PopoverWindowContent() {
           </div>
           <Toggle on={speakerDiarization} onChange={setSpeakerDiarization} />
         </div>
+        {speakerDiarization && (
+          <div className="popover-row" style={{ marginTop: -4 }}>
+            <label className="popover-row-label">HF Token</label>
+            <input
+              className="popover-input"
+              type="password"
+              value={hfToken}
+              placeholder="hf_…"
+              onChange={(e) => setHfToken(e.target.value)}
+            />
+          </div>
+        )}
         <div className="popover-toggle-row">
           <div>
             <div className="popover-toggle-label">Always on top</div>
@@ -717,10 +741,12 @@ function App() {
   const [theme, setTheme] = useState("liquid-glass");
   const [language, setLanguage] = useState("auto");
   const [systemPrompt, setSystemPrompt] = useState("");
+  const [hfToken, setHfToken] = useState("");
   const [systemAudio, setSystemAudio] = useState(false);
   const [autoSummarize, setAutoSummarize] = useState(true);
   const [speakerDiarization, setSpeakerDiarization] = useState(false);
   const [alwaysOnTop, setAlwaysOnTop] = useState(true);
+  const [diarizedSegments, setDiarizedSegments] = useState<DiarizedSegment[] | null>(null);
 
   const isLG = theme !== "minimalist-notebook";
   const waveColor = isLG ? "rgba(255,255,255,0.92)" : "#1a1814";
@@ -769,17 +795,12 @@ function App() {
   useEffect(() => {
     const unlisten = listen<SettingsPayload>("settings-changed", (event) => {
       const { provider: p, modelName: m, apiKey: k, theme: t,
-              language: l,
+              language: l, hfToken: hft,
               systemAudio: sa, autoSummarize: as_, speakerDiarization: sd, alwaysOnTop: aot } = event.payload;
-      setProvider(p);
-      setModelName(m);
-      setApiKey(k);
-      setTheme(t);
-      setLanguage(l);
-      setSystemAudio(sa);
-      setAutoSummarize(as_);
-      setSpeakerDiarization(sd);
-      setAlwaysOnTop(aot);
+      setProvider(p); setModelName(m); setApiKey(k); setTheme(t);
+      setLanguage(l); setHfToken(hft);
+      setSystemAudio(sa); setAutoSummarize(as_);
+      setSpeakerDiarization(sd); setAlwaysOnTop(aot);
       setStatus("Settings saved");
       setTimeout(() => setStatus("Ready"), 2000);
     });
@@ -827,12 +848,17 @@ function App() {
           case "RECORDING_STATUS":
             setIsRecording(parsed.data.is_recording);
             if (parsed.data.is_recording) {
-              setTranscription(""); setNotes(""); setSelectedMeetingId(null); setActiveTab("transcript");
+              setTranscription(""); setNotes("");
+              setDiarizedSegments(null);
+              setSelectedMeetingId(null); setActiveTab("transcript");
             }
             break;
           case "PIPELINE_STATUS": setStatus(parsed.data.step); break;
           case "TRANSCRIPTION_COMPLETED":
-            setTranscription(parsed.data.text); setActiveTab("transcript"); break;
+            setTranscription(parsed.data.text);
+            setDiarizedSegments(parsed.data.diarized ? parsed.data.segments : null);
+            setActiveTab("transcript");
+            break;
           case "NOTES_GENERATED": {
             const md = parsed.data.markdown;
             setNotes(md); setActiveTab("summary");
@@ -865,6 +891,7 @@ function App() {
           llm_model: modelName,
           api_key: apiKey,
           language,
+          hf_token: hfToken,
           system_audio: systemAudio,
           auto_summarize: autoSummarize,
           speaker_diarization: speakerDiarization,

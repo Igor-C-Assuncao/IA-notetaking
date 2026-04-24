@@ -15,6 +15,7 @@ torchaudio==2.8.0; sys_platform != "win32"
 torchvision==0.23.0; sys_platform != "win32"
 silero-vad
 git+https://github.com/m-bain/whisperx.git
+pyannote.audio==3.3.2
 langgraph
 langchain-core
 langchain-community
