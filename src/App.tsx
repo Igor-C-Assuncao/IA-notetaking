@@ -27,7 +27,7 @@ interface DiarizedSegment {
   text: string;
 }
 
-// Deterministic color from speaker name — same speaker always gets same color
+// ── Speaker color helpers ──────────────────────────────────────
 const SPEAKER_PALETTE = [
   "#6C8EBF", "#82B366", "#D6A520", "#AE4132",
   "#7B5EA7", "#2D9B8A", "#C0714F", "#4A7C9E",
@@ -57,13 +57,12 @@ function formatTimestamp(seconds: number): string {
 }
 
 // ── TranscriptLine ─────────────────────────────────────────────
-function TranscriptLine({ seg, isLG }: { seg: DiarizedSegment; isLG: boolean }) {
+function TranscriptLine({ seg }: { seg: DiarizedSegment }) {
   const color = speakerColor(seg.speaker);
-  const initials = speakerInitials(seg.speaker);
   return (
     <div className="transcript-line">
       <div className="transcript-avatar" style={{ background: color }} title={seg.speaker}>
-        {initials}
+        {speakerInitials(seg.speaker)}
       </div>
       <div className="transcript-line-body">
         <div className="transcript-line-meta">
@@ -72,6 +71,77 @@ function TranscriptLine({ seg, isLG }: { seg: DiarizedSegment; isLG: boolean }) 
         </div>
         <p className="transcript-line-text">{seg.text}</p>
       </div>
+    </div>
+  );
+}
+
+// ── ParticipantAvatars ─────────────────────────────────────────
+function ParticipantAvatars({ speakers }: { speakers: string[] }) {
+  if (!speakers.length) return null;
+  const visible = speakers.slice(0, 5);
+  const overflow = speakers.length - visible.length;
+  return (
+    <div className="participant-avatars">
+      {visible.map((s, i) => (
+        <div
+          key={s}
+          className="participant-avatar"
+          style={{ background: speakerColor(s), zIndex: visible.length - i }}
+          title={s}
+        >
+          {speakerInitials(s)}
+        </div>
+      ))}
+      {overflow > 0 && (
+        <div className="participant-avatar participant-avatar-overflow">
+          +{overflow}
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ── TagRow ─────────────────────────────────────────────────────
+function TagRow({
+  tags, onAdd, onRemove,
+}: {
+  tags: string[];
+  onAdd: (t: string) => void;
+  onRemove: (t: string) => void;
+}) {
+  const [editing, setEditing] = useState(false);
+  const [input, setInput] = useState("");
+  const inputRef = useRef<HTMLInputElement>(null);
+
+  const commit = () => {
+    const val = input.trim().toLowerCase().replace(/\s+/g, "-");
+    if (val && !tags.includes(val)) onAdd(val);
+    setInput("");
+    setEditing(false);
+  };
+
+  return (
+    <div className="tag-row">
+      {tags.map((t) => (
+        <span key={t} className="tag-chip">
+          {t}
+          <button className="tag-remove" onClick={() => onRemove(t)}>×</button>
+        </span>
+      ))}
+      {editing ? (
+        <input
+          ref={inputRef}
+          className="tag-input"
+          value={input}
+          onChange={(e) => setInput(e.target.value)}
+          onKeyDown={(e) => { if (e.key === "Enter") commit(); if (e.key === "Escape") setEditing(false); }}
+          onBlur={commit}
+          placeholder="add tag…"
+          autoFocus
+        />
+      ) : (
+        <button className="tag-add-btn" onClick={() => setEditing(true)}>+ tag</button>
+      )}
     </div>
   );
 }
@@ -756,6 +826,7 @@ function App() {
   const [status, setStatus] = useState("Initializing system…");
   const [transcription, setTranscription] = useState("");
   const [diarizedSegments, setDiarizedSegments] = useState<DiarizedSegment[] | null>(null);
+  const [meetingTags, setMeetingTags] = useState<string[]>([]);
   const [notes, setNotes] = useState("");
   const [isExpanded, setIsExpanded] = useState(false);
   const [recordingSeconds, setRecordingSeconds] = useState(0);
@@ -791,6 +862,12 @@ function App() {
 
   const actionItems = useMemo(() => (notes ? parseActionItems(notes) : []), [notes]);
   const tldr = useMemo(() => (notes ? parseTldr(notes) : null), [notes]);
+
+  const participants = useMemo(() => {
+    if (!diarizedSegments) return [];
+    return [...new Set(diarizedSegments.map((s) => s.speaker))];
+  }, [diarizedSegments]);
+
   const filteredTranscript = useMemo(() => {
     if (!transcription || !search.trim()) return transcription;
     return transcription
@@ -894,7 +971,7 @@ function App() {
             setIsRecording(parsed.data.is_recording);
             if (parsed.data.is_recording) {
               setTranscription(""); setNotes("");
-              setDiarizedSegments(null);
+              setDiarizedSegments(null); setMeetingTags([]);
               setSelectedMeetingId(null); setActiveTab("transcript");
             }
             break;
@@ -1079,14 +1156,26 @@ function App() {
         <main className="main-content">
           <div className="meeting-header">
             <div className="meeting-header-left">
-              <div className="meeting-title">
-                {selectedMeetingId
-                  ? meetingsHistory.find((m) => m.id === selectedMeetingId)?.title ?? "Meeting"
-                  : "Current Session"}
+              <div className="meeting-title-row">
+                <div className="meeting-title">
+                  {selectedMeetingId
+                    ? meetingsHistory.find((m) => m.id === selectedMeetingId)?.title ?? "Meeting"
+                    : "Current Session"}
+                </div>
+                {participants.length > 0 && (
+                  <ParticipantAvatars speakers={participants} />
+                )}
               </div>
               <div className="meeting-meta">
                 {isRecording ? `Recording · ${formatDuration(recordingSeconds)}` : status}
               </div>
+              {(meetingTags.length > 0 || !selectedMeetingId) && (
+                <TagRow
+                  tags={meetingTags}
+                  onAdd={(t) => setMeetingTags((prev) => [...prev, t])}
+                  onRemove={(t) => setMeetingTags((prev) => prev.filter((x) => x !== t))}
+                />
+              )}
             </div>
             <div className="meeting-header-right">
               {isRecording && <Waveform width={60} height={14} color={waveColor} active bars={14} />}
@@ -1123,7 +1212,7 @@ function App() {
                 {filteredSegments ? (
                   <div className="transcript-diarized">
                     {filteredSegments.map((seg, i) => (
-                      <TranscriptLine key={i} seg={seg} isLG={isLG} />
+                      <TranscriptLine key={i} seg={seg} />
                     ))}
                   </div>
                 ) : filteredTranscript ? (
