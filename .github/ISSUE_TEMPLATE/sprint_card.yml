@@ -1,0 +1,80 @@
+name: Sprint Card
+description: Implementation task linked to the sprint roadmap
+title: ""
+labels: []
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Use this template for planned sprint cards.
+        Title format: `[Scope] Short description` — e.g. `[UI] Add language dropdown to popover`.
+
+  - type: dropdown
+    id: scope
+    attributes:
+      label: Scope
+      options:
+        - UI
+        - UI/UX
+        - Core
+        - AI
+        - AI/Core
+        - AI/UI
+        - Data
+    validations:
+      required: true
+
+  - type: dropdown
+    id: priority
+    attributes:
+      label: Priority
+      options:
+        - P0 — Critical
+        - P1 — High
+        - P2 — Medium
+        - P3 — Low
+    validations:
+      required: true
+
+  - type: textarea
+    id: context
+    attributes:
+      label: Context
+      description: Why does this card exist? What's the current state?
+    validations:
+      required: true
+
+  - type: textarea
+    id: task
+    attributes:
+      label: Task
+      description: What needs to be built or changed?
+    validations:
+      required: true
+
+  - type: textarea
+    id: acceptance
+    attributes:
+      label: Acceptance Criteria
+      description: Paste the checklist here.
+      placeholder: |
+        - [ ] First criterion
+        - [ ] Second criterion
+    validations:
+      required: true
+
+  - type: input
+    id: depends
+    attributes:
+      label: Depends on
+      placeholder: "Card 7.2, Card 8.1"
+    validations:
+      required: false
+
+  - type: input
+    id: commit
+    attributes:
+      label: Commit convention
+      placeholder: "feat(ui): add language dropdown to popover"
+    validations:
+      required: false

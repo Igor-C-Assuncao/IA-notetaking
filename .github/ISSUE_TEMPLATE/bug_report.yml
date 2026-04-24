@@ -1,0 +1,77 @@
+name: Bug Report
+description: Something isn't working as expected
+title: "[Bug]: "
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for taking the time to report a bug. The more detail you provide, the faster we can fix it.
+        Before opening an issue, please check if a similar one already exists.
+
+  - type: textarea
+    id: description
+    attributes:
+      label: What happened?
+      description: What did you expect to happen, and what happened instead?
+      placeholder: "Expected: the transcript appeared after stopping the recording. Got: the app showed a WinError 2 message."
+    validations:
+      required: true
+
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps to reproduce
+      description: Walk us through how to trigger the bug.
+      placeholder: |
+        1. Open the app in compact mode
+        2. Click the record button
+        3. Speak for ~5 seconds
+        4. Click stop
+        5. See error
+    validations:
+      required: true
+
+  - type: dropdown
+    id: os
+    attributes:
+      label: Operating system
+      options:
+        - Windows 11
+        - Windows 10
+        - macOS Sequoia (15)
+        - macOS Sonoma (14)
+        - macOS Ventura (13)
+        - Other
+    validations:
+      required: true
+
+  - type: dropdown
+    id: provider
+    attributes:
+      label: LLM provider in use
+      options:
+        - Ollama (local)
+        - OpenAI
+        - Google Gemini
+        - Anthropic Claude
+        - Other / not applicable
+    validations:
+      required: false
+
+  - type: textarea
+    id: logs
+    attributes:
+      label: Relevant logs or error output
+      description: Paste any console output, Python stderr, or Rust debug lines here.
+      render: shell
+    validations:
+      required: false
+
+  - type: textarea
+    id: context
+    attributes:
+      label: Additional context
+      description: Anything else that might help — hardware, GPU, model name, audio setup, etc.
+    validations:
+      required: false

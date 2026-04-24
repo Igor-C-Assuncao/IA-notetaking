@@ -1,0 +1,52 @@
+name: Feature Request
+description: Suggest a new feature or improvement
+title: "[Feature]: "
+labels: ["enhancement"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Got an idea? We'd love to hear it.
+        Check the open issues and roadmap first to avoid duplicates.
+
+  - type: textarea
+    id: problem
+    attributes:
+      label: What problem does this solve?
+      description: Describe the context or limitation you're running into.
+      placeholder: "When recording long meetings, there's no way to pause without losing the session..."
+    validations:
+      required: true
+
+  - type: textarea
+    id: solution
+    attributes:
+      label: Proposed solution
+      description: What would you like to see? Feel free to be as specific or as high-level as you want.
+    validations:
+      required: true
+
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives considered
+      description: Any other approaches you thought about?
+    validations:
+      required: false
+
+  - type: dropdown
+    id: area
+    attributes:
+      label: Area
+      options:
+        - Audio capture
+        - Transcription (WhisperX)
+        - AI / LLM pipeline
+        - UI — compact widget
+        - UI — expanded view
+        - UI — settings
+        - Integrations
+        - Performance
+        - Other
+    validations:
+      required: true
