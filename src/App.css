@@ -1350,6 +1350,32 @@ input, select { font-family: inherit; }
 .form-group input:focus,
 .form-group select:focus { border-color: var(--accent); }
 
+.form-hint {
+  font-size: 11px;
+  color: var(--text-dim);
+  font-weight: 400;
+  margin-left: 6px;
+}
+
+.system-prompt-textarea {
+  width: 100%;
+  padding: 8px 11px;
+  background: var(--bg-input);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  color: var(--text);
+  font-size: 12px;
+  font-family: var(--font-mono, monospace);
+  outline: none;
+  resize: vertical;
+  min-height: 80px;
+  line-height: 1.6;
+  transition: border-color 120ms;
+}
+
+.system-prompt-textarea:focus { border-color: var(--accent); }
+.system-prompt-textarea::placeholder { color: var(--text-faint); font-style: italic; }
+
 .modal-actions {
   display: flex;
   gap: 8px;
