@@ -25,6 +25,7 @@ interface SettingsPayload {
   modelName: string;
   apiKey: string;
   theme: string;
+  language: string;
   systemAudio: boolean;
   autoSummarize: boolean;
   speakerDiarization: boolean;
@@ -237,6 +238,8 @@ interface AudioDevice {
 function PopoverWindowContent() {
   const [provider, setProvider] = useState("ollama");
   const [modelName, setModelName] = useState("llama3");
+  const [customModel, setCustomModel] = useState("");
+  const [language, setLanguage] = useState("auto");
   const [apiKey, setApiKey] = useState("");
   const [theme, setTheme] = useState("liquid-glass");
   const [devices, setDevices] = useState<AudioDevice[]>([]);
@@ -256,6 +259,8 @@ function PopoverWindowContent() {
         const store = await load("settings.json", { autoSave: false, defaults: {} });
         const sp = await store.get<string>("provider");
         const sm = await store.get<string>("modelName");
+        const scm = await store.get<string>("customModel");
+        const sl = await store.get<string>("language");
         const sk = await store.get<string>("apiKey");
         const st = await store.get<string>("theme");
         const sd = await store.get<number>("selectedDeviceId");
@@ -265,6 +270,8 @@ function PopoverWindowContent() {
         const aot = await store.get<boolean>("alwaysOnTop");
         if (sp) setProvider(sp);
         if (sm) setModelName(sm);
+        if (scm) setCustomModel(scm);
+        if (sl) setLanguage(sl);
         if (sk) setApiKey(sk);
         if (st) setTheme(st);
         if (sd != null) setSelectedDevice(sd);
@@ -323,8 +330,11 @@ function PopoverWindowContent() {
   const handleSave = async () => {
     try {
       const store = await load("settings.json", { autoSave: false, defaults: {} });
+      const effectiveModel = customModel.trim() || modelName;
       await store.set("provider", provider);
-      await store.set("modelName", modelName);
+      await store.set("modelName", effectiveModel);
+      await store.set("customModel", customModel);
+      await store.set("language", language);
       await store.set("apiKey", apiKey);
       await store.set("theme", theme);
       await store.set("systemAudio", systemAudio);
@@ -334,7 +344,7 @@ function PopoverWindowContent() {
       if (selectedDevice !== null) await store.set("selectedDeviceId", selectedDevice);
       await store.save();
       await emit("settings-changed", {
-        provider, modelName, apiKey, theme,
+        provider, modelName: effectiveModel, apiKey, theme, language,
         systemAudio, autoSummarize, speakerDiarization, alwaysOnTop,
       } satisfies SettingsPayload);
       await win.close();
@@ -395,15 +405,76 @@ function PopoverWindowContent() {
         </select>
       </div>
 
-      {/* Model */}
-      <div className="popover-row">
-        <label className="popover-row-label">Model</label>
-        <input
-          className="popover-input"
-          type="text"
-          value={modelName}
-          onChange={(e) => setModelName(e.target.value)}
-        />
+      {/* Model + Language — two columns */}
+      <div className="popover-row-dual">
+        <div className="popover-col">
+          <label className="popover-row-label">Model</label>
+          <select
+            className="popover-select"
+            value={customModel ? "custom" : modelName}
+            onChange={(e) => {
+              if (e.target.value === "custom") {
+                setModelName("custom");
+              } else {
+                setModelName(e.target.value);
+                setCustomModel("");
+              }
+            }}
+          >
+            <optgroup label="Ollama">
+              <option value="llama3">llama3</option>
+              <option value="llama3.1">llama3.1</option>
+              <option value="gemma3">gemma3</option>
+              <option value="mistral">mistral</option>
+              <option value="phi4">phi4</option>
+            </optgroup>
+            <optgroup label="OpenAI">
+              <option value="gpt-4o">gpt-4o</option>
+              <option value="gpt-4o-mini">gpt-4o-mini</option>
+              <option value="gpt-4-turbo">gpt-4-turbo</option>
+            </optgroup>
+            <optgroup label="Anthropic">
+              <option value="claude-sonnet-4-5">claude-sonnet-4-5</option>
+              <option value="claude-haiku-4-5">claude-haiku-4-5</option>
+            </optgroup>
+            <optgroup label="Gemini">
+              <option value="gemini-2.0-flash">gemini-2.0-flash</option>
+              <option value="gemini-1.5-pro">gemini-1.5-pro</option>
+            </optgroup>
+            <option value="custom">Custom…</option>
+          </select>
+          {(modelName === "custom" || customModel) && (
+            <input
+              className="popover-input"
+              type="text"
+              placeholder="model-name"
+              value={customModel}
+              onChange={(e) => setCustomModel(e.target.value)}
+              style={{ marginTop: 5 }}
+            />
+          )}
+        </div>
+
+        <div className="popover-col">
+          <label className="popover-row-label">Language</label>
+          <select
+            className="popover-select"
+            value={language}
+            onChange={(e) => setLanguage(e.target.value)}
+          >
+            <option value="auto">Auto detect</option>
+            <option value="pt">Português</option>
+            <option value="en">English</option>
+            <option value="es">Español</option>
+            <option value="fr">Français</option>
+            <option value="de">Deutsch</option>
+            <option value="it">Italiano</option>
+            <option value="ja">日本語</option>
+            <option value="zh">中文</option>
+            <option value="ko">한국어</option>
+            <option value="ru">Русский</option>
+          </select>
+        </div>
       </div>
 
       {/* API key */}
@@ -569,6 +640,7 @@ function App() {
   const [modelName, setModelName] = useState("llama3");
   const [apiKey, setApiKey] = useState("");
   const [theme, setTheme] = useState("liquid-glass");
+  const [language, setLanguage] = useState("auto");
   const [systemAudio, setSystemAudio] = useState(false);
   const [autoSummarize, setAutoSummarize] = useState(true);
   const [speakerDiarization, setSpeakerDiarization] = useState(false);
@@ -619,11 +691,13 @@ function App() {
   useEffect(() => {
     const unlisten = listen<SettingsPayload>("settings-changed", (event) => {
       const { provider: p, modelName: m, apiKey: k, theme: t,
+              language: l,
               systemAudio: sa, autoSummarize: as_, speakerDiarization: sd, alwaysOnTop: aot } = event.payload;
       setProvider(p);
       setModelName(m);
       setApiKey(k);
       setTheme(t);
+      setLanguage(l);
       setSystemAudio(sa);
       setAutoSummarize(as_);
       setSpeakerDiarization(sd);
@@ -711,6 +785,7 @@ function App() {
           llm_provider: provider,
           llm_model: modelName,
           api_key: apiKey,
+          language,
           system_audio: systemAudio,
           auto_summarize: autoSummarize,
           speaker_diarization: speakerDiarization,

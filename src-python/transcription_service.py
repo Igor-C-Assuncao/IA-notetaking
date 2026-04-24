@@ -52,7 +52,7 @@ class TranscriptionService:
                 print(f"DEBUG: [AI Critical Error] Falha total no carregamento do modelo: {str(fallback_error)}", file=sys.stderr)
                 self.model = None
 
-    def transcribe(self, audio_path: str) -> str:
+    def transcribe(self, audio_path: str, language: str | None = None) -> str:
         if self.model is None:
             return "[Error: WhisperX model not loaded]"
 
@@ -66,7 +66,7 @@ class TranscriptionService:
 
         try:
             audio = whisperx.load_audio(audio_path)
-            result = self.model.transcribe(audio, batch_size=4)
+            result = self.model.transcribe(audio, batch_size=4, language=language)
             segments = result.get("segments", [])
             full_text = " ".join([seg["text"].strip() for seg in segments])
 

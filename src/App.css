@@ -379,6 +379,26 @@ input, select { font-family: inherit; }
   flex-shrink: 0;
 }
 
+/* ── Popover dual-column row ───────────────────────────────── */
+.popover-row-dual {
+  display: flex;
+  gap: 8px;
+  margin-bottom: 4px;
+}
+
+.popover-col {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  min-width: 0;
+}
+
+.popover-col .popover-row-label {
+  display: block;
+  margin-bottom: 2px;
+}
+
 /* ── Popover level meter ───────────────────────────────────── */
 .popover-level-meter {
   height: 3px;
