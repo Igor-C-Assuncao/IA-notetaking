@@ -128,8 +128,8 @@ async fn open_popover_window(app: AppHandle, window: Window) -> Result<(), Strin
     let pos = window.outer_position().map_err(|e| e.to_string())?;
     let size = window.outer_size().map_err(|e| e.to_string())?;
 
-    let popover_w = 284.0_f64;
-    let popover_h = 344.0_f64;
+    let popover_w = 300.0_f64;
+    let popover_h = 480.0_f64;
     let gap = 8.0_f64;
 
     // Right-align with main window; clamp so it does not go off-screen left

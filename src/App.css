@@ -363,20 +363,38 @@ input, select { font-family: inherit; }
   display: flex;
   flex-direction: column;
   overflow: hidden;
-  padding: 14px;
-  /* Remove the absolute-positioning from .compact-popover */
+  padding: 0;
   position: static;
   bottom: unset;
   right: unset;
-  /* Keep border-radius from popover-lg / popover-nb for rounded corners
-     against the transparent OS window shadow on macOS */
 }
 
 .popover-drag-handle {
   height: 20px;
-  margin: -14px -14px 10px -14px; /* bleed to edges */
-  cursor: grab;
   flex-shrink: 0;
+  cursor: grab;
+}
+
+/* Scrollable content area between drag handle and footer */
+.popover-scroll-body {
+  flex: 1;
+  overflow-y: auto;
+  padding: 0 14px 10px;
+  display: flex;
+  flex-direction: column;
+  gap: 0;
+  scrollbar-width: thin;
+}
+
+.popover-lg .popover-scroll-body { scrollbar-color: rgba(255,255,255,0.15) transparent; }
+.popover-nb .popover-scroll-body { scrollbar-color: #d0c8bc transparent; }
+
+/* Footer stays pinned at bottom */
+.popover-footer-bar {
+  flex-shrink: 0;
+  padding: 10px 14px 12px;
+  margin-top: 0;
+  border-top: 1px solid;
 }
 
 /* ── Popover dual-column row ───────────────────────────────── */
@@ -605,19 +623,6 @@ input, select { font-family: inherit; }
   border: none;
   border-radius: 2px;
 }
-
-.popover-footer-bar {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 8px;
-  padding-top: 10px;
-  margin-top: 6px;
-  border-top: 1px solid;
-}
-
-.popover-lg .popover-footer-bar { border-color: rgba(255,255,255,0.1); }
-.popover-nb .popover-footer-bar { border-color: #d0c8bc; }
 
 .popover-footer-left {
   display: flex;

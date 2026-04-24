@@ -397,12 +397,13 @@ function PopoverWindowContent() {
   return (
     <div
       className={`popover-window ${isLG ? "popover-lg" : "popover-nb"}`}
-      data-tauri-drag-region
     >
-      {/* Drag handle strip */}
+      {/* Drag handle — full width, outside scroll */}
       <div className="popover-drag-handle" data-tauri-drag-region />
 
-      <div className="popover-label">SETTINGS</div>
+      {/* Scrollable content */}
+      <div className="popover-scroll-body">
+        <div className="popover-label">SETTINGS</div>
 
       {/* Input device picker */}
       <div className="popover-row">
@@ -574,7 +575,9 @@ function PopoverWindowContent() {
         </div>
       </div>
 
-      {/* Footer — Preferences · divider · Shortcuts · Save */}
+      </div>{/* end popover-scroll-body */}
+
+      {/* Footer — pinned at bottom */}
       <div className="popover-footer-bar">
         <div className="popover-footer-left">
           <button
