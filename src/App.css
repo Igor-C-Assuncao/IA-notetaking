@@ -363,20 +363,38 @@ input, select { font-family: inherit; }
   display: flex;
   flex-direction: column;
   overflow: hidden;
-  padding: 14px;
-  /* Remove the absolute-positioning from .compact-popover */
+  padding: 0;
   position: static;
   bottom: unset;
   right: unset;
-  /* Keep border-radius from popover-lg / popover-nb for rounded corners
-     against the transparent OS window shadow on macOS */
 }
 
 .popover-drag-handle {
   height: 20px;
-  margin: -14px -14px 10px -14px; /* bleed to edges */
-  cursor: grab;
   flex-shrink: 0;
+  cursor: grab;
+}
+
+/* Scrollable content area between drag handle and footer */
+.popover-scroll-body {
+  flex: 1;
+  overflow-y: auto;
+  padding: 0 14px 10px;
+  display: flex;
+  flex-direction: column;
+  gap: 0;
+  scrollbar-width: thin;
+}
+
+.popover-lg .popover-scroll-body { scrollbar-color: rgba(255,255,255,0.15) transparent; }
+.popover-nb .popover-scroll-body { scrollbar-color: #d0c8bc transparent; }
+
+/* Footer stays pinned at bottom */
+.popover-footer-bar {
+  flex-shrink: 0;
+  padding: 10px 14px 12px;
+  margin-top: 0;
+  border-top: 1px solid;
 }
 
 /* ── Popover dual-column row ───────────────────────────────── */
@@ -569,20 +587,8 @@ input, select { font-family: inherit; }
 .popover-lg .popover-toggle-hint  { color: rgba(255,255,255,0.38); }
 .popover-nb .popover-toggle-hint  { color: #8a8277; }
 
-.popover-footer {
-  display: flex;
-  gap: 6px;
-  padding-top: 10px;
-  margin-top: 6px;
-  border-top: 1px solid;
-}
-
-.popover-lg .popover-footer { border-color: rgba(255,255,255,0.1); }
-.popover-nb .popover-footer { border-color: #d0c8bc; }
-
 .popover-btn {
-  flex: 1;
-  padding: 6px 10px;
+  padding: 6px 14px;
   font-size: 11.5px;
   font-weight: 500;
   border-radius: 7px;
@@ -616,6 +622,159 @@ input, select { font-family: inherit; }
   color: #faf6ec;
   border: none;
   border-radius: 2px;
+}
+
+.popover-footer-left {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.popover-text-btn {
+  background: none;
+  border: none;
+  cursor: pointer;
+  font-size: 11px;
+  font-weight: 500;
+  padding: 3px 2px;
+  transition: opacity 120ms;
+}
+
+.popover-text-btn:hover { opacity: 0.6; }
+.popover-lg .popover-text-btn { color: rgba(255,255,255,0.55); }
+.popover-nb .popover-text-btn { color: #8a8277; }
+
+.popover-footer-sep {
+  width: 1px;
+  height: 12px;
+  border-radius: 1px;
+}
+
+.popover-lg .popover-footer-sep { background: rgba(255,255,255,0.15); }
+.popover-nb .popover-footer-sep { background: #d0c8bc; }
+
+/* ── Shortcuts modal ───────────────────────────────────────── */
+.shortcuts-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 100;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.shortcuts-modal {
+  width: 240px;
+  border-radius: var(--radius, 12px);
+  padding: 14px 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  box-shadow: 0 8px 32px rgba(0,0,0,0.4);
+}
+
+.shortcuts-lg {
+  background: rgba(28, 26, 40, 0.97);
+  border: 0.5px solid rgba(255,255,255,0.12);
+  backdrop-filter: blur(20px);
+}
+
+.shortcuts-nb {
+  background: #faf6ec;
+  border: 0.5px solid #d0c8bc;
+}
+
+.shortcuts-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.shortcuts-title {
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+
+.shortcuts-lg .shortcuts-title { color: rgba(255,255,255,0.5); }
+.shortcuts-nb .shortcuts-title { color: #8a8277; }
+
+.shortcuts-close {
+  background: none;
+  border: none;
+  cursor: pointer;
+  font-size: 11px;
+  padding: 2px 4px;
+  border-radius: 4px;
+  transition: opacity 120ms;
+}
+
+.shortcuts-close:hover { opacity: 0.6; }
+.shortcuts-lg .shortcuts-close { color: rgba(255,255,255,0.5); }
+.shortcuts-nb .shortcuts-close { color: #8a8277; }
+
+.shortcuts-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.shortcut-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.shortcut-label {
+  font-size: 12px;
+}
+
+.shortcuts-lg .shortcut-label { color: rgba(255,255,255,0.85); }
+.shortcuts-nb .shortcut-label { color: #1a1814; }
+
+.shortcut-keys {
+  display: flex;
+  gap: 3px;
+  flex-shrink: 0;
+}
+
+.shortcut-key {
+  font-family: var(--font-mono, monospace);
+  font-size: 10px;
+  padding: 2px 5px;
+  border-radius: 4px;
+  font-style: normal;
+}
+
+.shortcuts-lg .shortcut-key {
+  background: rgba(255,255,255,0.08);
+  border: 0.5px solid rgba(255,255,255,0.15);
+  color: rgba(255,255,255,0.8);
+}
+
+.shortcuts-nb .shortcut-key {
+  background: #f0ece4;
+  border: 0.5px solid #d0c8bc;
+  color: #1a1814;
+}
+
+.shortcuts-note {
+  font-size: 10.5px;
+  line-height: 1.5;
+  padding-top: 6px;
+  border-top: 0.5px solid;
+}
+
+.shortcuts-lg .shortcuts-note {
+  color: rgba(255,255,255,0.3);
+  border-color: rgba(255,255,255,0.08);
+}
+
+.shortcuts-nb .shortcuts-note {
+  color: #8a8277;
+  border-color: #d0c8bc;
 }
 
 /* ── Expanded layout ───────────────────────────────────────── */
