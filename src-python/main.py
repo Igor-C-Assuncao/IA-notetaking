@@ -53,6 +53,7 @@ def main():
                     "system_audio": command.get("system_audio", False),
                     "auto_summarize": command.get("auto_summarize", True),
                     "speaker_diarization": command.get("speaker_diarization", False),
+                    "language": command.get("language", "auto"),
                     "llm_provider": command.get("llm_provider", "ollama"),
                     "llm_model": command.get("llm_model", "llama3"),
                     "api_key": command.get("api_key", ""),
@@ -73,7 +74,11 @@ def main():
                 # STEP B: Transcribe audio
                 if transcriber:
                     send_event("PIPELINE_STATUS", {"step": "Transcribing with WhisperX..."})
-                    transcription_result = transcriber.transcribe(saved_file_path)
+                    lang = current_config.get("language", "auto")
+                    transcription_result = transcriber.transcribe(
+                        saved_file_path,
+                        language=None if lang == "auto" else lang
+                    )
                     send_event("TRANSCRIPTION_COMPLETED", {"text": transcription_result})
 
                     # STEP C: Generate Notes — only if auto_summarize is enabled
