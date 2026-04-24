@@ -1,5 +1,5 @@
 <div align="center">
-  <img src="public/logo.png" alt="AI NoteTaking" width="160" />
+  <img src="public/logo-mark-white.png" alt="AI NoteTaking" width="160" />
 
   <h1>AI NoteTaking</h1>
 
