@@ -18,9 +18,9 @@ interface Meeting {
   title: string;
   raw_transcript: string;
   markdown_summary: string;
-  speakers: string | null;          // JSON array string
-  tags: string | null;              // JSON array string
-  structured_summary: string | null; // JSON object string
+  speakers: string | null;
+  tags: string | null;
+  structured_summary: string | null;
 }
 
 interface SettingsPayload {
@@ -707,7 +707,8 @@ function App() {
   const [recordingSeconds, setRecordingSeconds] = useState(0);
   const [audioLevel, setAudioLevel] = useState(0);
   const [activeTab, setActiveTab] = useState<"transcript" | "summary" | "actions">("transcript");
-  const [search, setSearch] = useState("");
+  const [sidebarSearch, setSidebarSearch] = useState("");
+  const [search, setSearch] = useState(""); // transcript / summary search
 
   const [meetingsHistory, setMeetingsHistory] = useState<Meeting[]>([]);
   const [selectedMeetingId, setSelectedMeetingId] = useState<number | null>(null);
@@ -805,9 +806,11 @@ function App() {
     }
   };
 
-  const loadHistory = async () => {
+  const loadHistory = async (query = "") => {
     try {
-      const meetings: Meeting[] = await invoke("get_meetings");
+      const meetings: Meeting[] = query.trim()
+        ? await invoke("search_meetings", { query })
+        : await invoke("get_meetings");
       setMeetingsHistory(meetings);
     } catch (e) {
       console.error("DB fetch error:", e);
@@ -817,6 +820,12 @@ function App() {
   useEffect(() => {
     document.documentElement.setAttribute("data-theme", theme);
   }, [theme]);
+
+  // Debounced FTS5 sidebar search — 300ms after user stops typing
+  useEffect(() => {
+    const timer = setTimeout(() => { loadHistory(sidebarSearch); }, 300);
+    return () => clearTimeout(timer);
+  }, [sidebarSearch]);
 
   useEffect(() => {
     const unlisten = listen<string>("python-event", async (event) => {
@@ -838,30 +847,12 @@ function App() {
             setTranscription(parsed.data.text); setActiveTab("transcript"); break;
           case "NOTES_GENERATED": {
             const md = parsed.data.markdown;
-            const structured = parsed.data.structured ?? null;
-            setNotes(md);
-            setActiveTab("summary");
+            setNotes(md); setActiveTab("summary");
             try {
-              // Derive speakers from transcription event (stored in state via diarizedSegments)
-              // Tags come from the LLM structured output
-              const speakersJson = structured?.tags
-                ? null // speakers come from diarizedSegments state, passed separately
-                : null;
-              const tagsJson = structured?.tags?.length
-                ? JSON.stringify(structured.tags)
-                : null;
-              const structuredJson = structured
-                ? JSON.stringify(structured)
-                : null;
-
               await invoke("save_meeting", {
                 date: new Date().toLocaleString(),
                 title: `Meeting ${new Date().toLocaleDateString()}`,
-                rawTranscript: transcription,
-                markdownSummary: md,
-                speakers: null,    // populated by Card 8.3 state — wired in next card
-                tags: tagsJson,
-                structuredSummary: structuredJson,
+                rawTranscript: transcription, markdownSummary: md,
               });
               await loadHistory();
             } catch (dbErr) { console.error("DB save error:", dbErr); }
@@ -997,16 +988,29 @@ function App() {
       <div className="content-area">
         {/* Sidebar */}
         <aside className="sidebar">
-          <div className="sidebar-label">MEETINGS</div>
-          <div className={`history-item current ${isRecording ? "recording" : ""}`}>
-            <div className="history-item-header">
-              <StatusDot isRecording={isRecording} size={6} isLG={isLG} />
-              <span className="history-item-title">Current Session</span>
+          <div className="sidebar-header">
+            <div className="sidebar-label">MEETINGS</div>
+            <div className="sidebar-search-box">
+              <MagnifyingGlassIcon size={11} />
+              <input
+                className="sidebar-search-input"
+                value={sidebarSearch}
+                onChange={(e) => setSidebarSearch(e.target.value)}
+                placeholder="Search meetings…"
+              />
             </div>
-            <span className="history-item-date">
-              {isRecording ? `Recording · ${formatDuration(recordingSeconds)}` : status}
-            </span>
           </div>
+          {!sidebarSearch && (
+            <div className={`history-item current ${isRecording ? "recording" : ""}`}>
+              <div className="history-item-header">
+                <StatusDot isRecording={isRecording} size={6} isLG={isLG} />
+                <span className="history-item-title">Current Session</span>
+              </div>
+              <span className="history-item-date">
+                {isRecording ? `Recording · ${formatDuration(recordingSeconds)}` : status}
+              </span>
+            </div>
+          )}
           {meetingsHistory.map((m) => (
             <button
               key={m.id}
@@ -1020,6 +1024,16 @@ function App() {
             >
               <span className="history-item-title">{m.title}</span>
               <span className="history-item-date">{m.date}</span>
+              {m.tags && (() => {
+                try {
+                  const tags: string[] = JSON.parse(m.tags);
+                  return tags.length ? (
+                    <div className="history-item-tags">
+                      {tags.slice(0, 2).map((t) => <span key={t} className="history-tag">{t}</span>)}
+                    </div>
+                  ) : null;
+                } catch { return null; }
+              })()}
             </button>
           ))}
           {meetingsHistory.length === 0 && <p className="empty-label">No past meetings</p>}
