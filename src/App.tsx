@@ -18,21 +18,9 @@ interface Meeting {
   title: string;
   raw_transcript: string;
   markdown_summary: string;
-}
-
-interface ActionItem {
-  who: string | null;
-  text: string;
-  due: string | null;
-  done?: boolean;
-}
-
-interface StructuredSummary {
-  tldr: string | null;
-  decisions: string[];
-  actions: ActionItem[];
-  tags: string[];
-  markdown: string;
+  speakers: string | null;          // JSON array string
+  tags: string | null;              // JSON array string
+  structured_summary: string | null; // JSON object string
 }
 
 interface SettingsPayload {
@@ -715,7 +703,6 @@ function App() {
   const [status, setStatus] = useState("Initializing system…");
   const [transcription, setTranscription] = useState("");
   const [notes, setNotes] = useState("");
-  const [structuredSummary, setStructuredSummary] = useState<StructuredSummary | null>(null);
   const [isExpanded, setIsExpanded] = useState(false);
   const [recordingSeconds, setRecordingSeconds] = useState(0);
   const [audioLevel, setAudioLevel] = useState(0);
@@ -843,9 +830,7 @@ function App() {
           case "RECORDING_STATUS":
             setIsRecording(parsed.data.is_recording);
             if (parsed.data.is_recording) {
-              setTranscription(""); setNotes("");
-              setStructuredSummary(null);
-              setSelectedMeetingId(null); setActiveTab("transcript");
+              setTranscription(""); setNotes(""); setSelectedMeetingId(null); setActiveTab("transcript");
             }
             break;
           case "PIPELINE_STATUS": setStatus(parsed.data.step); break;
@@ -855,13 +840,28 @@ function App() {
             const md = parsed.data.markdown;
             const structured = parsed.data.structured ?? null;
             setNotes(md);
-            setStructuredSummary(structured && structured.tldr ? structured : null);
             setActiveTab("summary");
             try {
+              // Derive speakers from transcription event (stored in state via diarizedSegments)
+              // Tags come from the LLM structured output
+              const speakersJson = structured?.tags
+                ? null // speakers come from diarizedSegments state, passed separately
+                : null;
+              const tagsJson = structured?.tags?.length
+                ? JSON.stringify(structured.tags)
+                : null;
+              const structuredJson = structured
+                ? JSON.stringify(structured)
+                : null;
+
               await invoke("save_meeting", {
                 date: new Date().toLocaleString(),
                 title: `Meeting ${new Date().toLocaleDateString()}`,
-                rawTranscript: transcription, markdownSummary: md,
+                rawTranscript: transcription,
+                markdownSummary: md,
+                speakers: null,    // populated by Card 8.3 state — wired in next card
+                tags: tagsJson,
+                structuredSummary: structuredJson,
               });
               await loadHistory();
             } catch (dbErr) { console.error("DB save error:", dbErr); }
@@ -1081,82 +1081,18 @@ function App() {
             )}
             {activeTab === "summary" && (
               <div className="tab-panel">
-                {structuredSummary ? (
-                  <div className="structured-summary">
-                    {/* TL;DR */}
-                    {structuredSummary.tldr && (
-                      <div className="tldr-card">
-                        <div className="tldr-label">TL;DR</div>
-                        <p className="tldr-body">{structuredSummary.tldr}</p>
-                      </div>
-                    )}
-                    {/* Decisions */}
-                    {structuredSummary.decisions.length > 0 && (
-                      <div className="summary-section">
-                        <div className="summary-section-title">Decisions</div>
-                        <ul className="decisions-list">
-                          {structuredSummary.decisions.map((d, i) => (
-                            <li key={i} className="decision-item">
-                              <span className="decision-check">✓</span>
-                              <span>{d}</span>
-                            </li>
-                          ))}
-                        </ul>
-                      </div>
-                    )}
-                    {/* Markdown fallback for Key Takeaways */}
-                    <div className="summary-section">
-                      <div className="summary-section-title">Full Summary</div>
-                      <pre className="summary-text">{structuredSummary.markdown}</pre>
-                    </div>
-                  </div>
-                ) : notes ? (
-                  <>
-                    {tldr && <div className="tldr-card"><div className="tldr-label">TL;DR</div><p className="tldr-body">{tldr}</p></div>}
-                    <pre className="summary-text">{notes}</pre>
-                  </>
-                ) : (
-                  <div className="empty-state"><span>Summary will appear here once recording is processed.</span></div>
-                )}
+                {notes
+                  ? <>{tldr && <div className="tldr-card"><div className="tldr-label">TL;DR</div><p className="tldr-body">{tldr}</p></div>}<pre className="summary-text">{notes}</pre></>
+                  : <div className="empty-state"><span>Summary will appear here once recording is processed.</span></div>}
               </div>
             )}
             {activeTab === "actions" && (
               <div className="tab-panel">
-                {structuredSummary?.actions?.length ? (
-                  <ul className="action-list">
-                    {structuredSummary.actions.map((item, i) => (
-                      <li key={i} className={`action-item-rich ${item.done ? "done" : ""}`}>
-                        <button
-                          className="action-checkbox-btn"
-                          onClick={() => {
-                            setStructuredSummary((prev) => {
-                              if (!prev) return prev;
-                              const actions = prev.actions.map((a, j) =>
-                                j === i ? { ...a, done: !a.done } : a
-                              );
-                              return { ...prev, actions };
-                            });
-                          }}
-                        >
-                          {item.done ? "✓" : ""}
-                        </button>
-                        <div className="action-item-body">
-                          <span className="action-item-text">{item.text}</span>
-                          <div className="action-item-meta">
-                            {item.who && <span className="action-badge action-who">{item.who}</span>}
-                            {item.due && <span className="action-badge action-due">{item.due}</span>}
-                          </div>
-                        </div>
-                      </li>
-                    ))}
-                  </ul>
-                ) : actionItems.length > 0 ? (
-                  <ul className="action-list">{actionItems.map((item, i) => (
+                {actionItems.length > 0
+                  ? <ul className="action-list">{actionItems.map((item, i) => (
                     <li key={i} className="action-item"><span className="action-checkbox" /><span className="action-text">{item}</span></li>
                   ))}</ul>
-                ) : (
-                  <div className="empty-state"><span>{notes ? "No action items found." : "Action items will appear here after processing."}</span></div>
-                )}
+                  : <div className="empty-state"><span>{notes ? "No action items found. Use `- [ ] task` format." : "Action items will appear here after processing."}</span></div>}
               </div>
             )}
           </div>

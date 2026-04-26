@@ -80,7 +80,11 @@ def main():
                         saved_file_path,
                         language=None if lang == "auto" else lang
                     )
-                    send_event("TRANSCRIPTION_COMPLETED", {"text": transcription_result})
+                    send_event("TRANSCRIPTION_COMPLETED", {
+                        "text": transcription_result["text"],
+                        "segments": transcription_result.get("segments"),
+                        "diarized": transcription_result.get("diarized", False),
+                    })
 
                     # STEP C: Generate Notes — only if auto_summarize is enabled
                     if not current_config.get("auto_summarize", True):
@@ -96,7 +100,7 @@ def main():
                     try:
                         llm = LLMFactory.get_provider(provider_name, model_name)
                         result = llm.generate_notes(
-                            transcription_result,
+                            transcription_result["text"],
                             api_key=api_key,
                             system_prompt=current_config.get("system_prompt", "") or None,
                         )
