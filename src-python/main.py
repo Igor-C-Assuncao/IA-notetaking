@@ -74,13 +74,13 @@ def main():
                 if hasattr(audio_capturer, 'resume_recording'):
                     audio_capturer.resume_recording()
                 send_event("RECORDING_STATUS", {"is_recording": True, "is_paused": False})
+
+            elif action == "STOP_RECORDING":
                 send_event("RECORDING_STATUS", {"is_recording": False})
                 send_event("PIPELINE_STATUS", {"step": "Processing Audio (VAD)..."})
 
-                # STEP A: Stop recording and trim silence
                 saved_file_path = audio_capturer.stop_recording()
 
-                # STEP B: Transcribe audio
                 if transcriber:
                     send_event("PIPELINE_STATUS", {"step": "Transcribing with WhisperX..."})
                     lang = current_config.get("language", "auto")
@@ -94,7 +94,6 @@ def main():
                         "diarized": transcription_result.get("diarized", False),
                     })
 
-                    # STEP C: Generate Notes — only if auto_summarize is enabled
                     if not current_config.get("auto_summarize", True):
                         send_event("PIPELINE_STATUS", {"step": "Done."})
                         continue
@@ -104,7 +103,7 @@ def main():
                     provider_name = current_config.get("llm_provider", "ollama")
                     model_name = current_config.get("llm_model", "llama3")
                     api_key = current_config.get("api_key", "")
-                    
+
                     try:
                         llm = LLMFactory.get_provider(provider_name, model_name)
                         result = llm.generate_notes(
@@ -113,7 +112,6 @@ def main():
                             system_prompt=current_config.get("system_prompt", "") or None,
                         )
 
-                        # Filter out placeholder action items some models return
                         _NULL_ACTIONS = {"none identified.", "none.", "none", "n/a", "n/a."}
                         structured = result.get("structured", {})
                         if "actions" in structured:
