@@ -3,7 +3,7 @@ use std::io::{BufRead, BufReader, Write};
 use std::path::PathBuf;
 use std::process::{ChildStdin, Command, Stdio};
 use std::sync::{Arc, Mutex};
-use tauri::{AppHandle, Emitter, Manager, State, WebviewWindowBuilder, WebviewUrl};
+use tauri::{AppHandle, Emitter, Manager, State, WebviewUrl, WebviewWindowBuilder};
 use tauri::{LogicalSize, Window};
 
 // 1. Structure Definitions
@@ -88,14 +88,16 @@ fn search_meetings(state: State<'_, AppState>, query: String) -> Result<Vec<Meet
     let db = state.db.lock().unwrap();
     let fts_query = format!("{}*", query.trim().replace('"', ""));
 
-    let mut stmt = db.prepare(
-        "SELECT m.id, m.date, m.title, m.raw_transcript, m.markdown_summary,
+    let mut stmt = db
+        .prepare(
+            "SELECT m.id, m.date, m.title, m.raw_transcript, m.markdown_summary,
                 m.speakers, m.tags, m.structured_summary
          FROM meetings m
          JOIN meetings_fts fts ON fts.rowid = m.id
          WHERE meetings_fts MATCH ?1
-         ORDER BY m.id DESC"
-    ).map_err(|e| e.to_string())?;
+         ORDER BY m.id DESC",
+        )
+        .map_err(|e| e.to_string())?;
 
     let meeting_iter = stmt
         .query_map(rusqlite::params![fts_query], |row| {
@@ -133,7 +135,9 @@ fn send_command_to_python(state: State<'_, AppState>, payload: String) -> Result
 
 #[tauri::command]
 async fn set_compact_mode(window: Window) -> Result<(), String> {
-    window.set_size(LogicalSize::new(400.0, 120.0)).map_err(|e| e.to_string())?;
+    window
+        .set_size(LogicalSize::new(400.0, 120.0))
+        .map_err(|e| e.to_string())?;
     window.set_decorations(false).map_err(|e| e.to_string())?;
     window.set_always_on_top(true).map_err(|e| e.to_string())?;
     window.set_resizable(false).map_err(|e| e.to_string())?;
@@ -142,7 +146,9 @@ async fn set_compact_mode(window: Window) -> Result<(), String> {
 
 #[tauri::command]
 async fn set_expanded_mode(window: Window) -> Result<(), String> {
-    window.set_size(LogicalSize::new(1024.0, 720.0)).map_err(|e| e.to_string())?;
+    window
+        .set_size(LogicalSize::new(1024.0, 720.0))
+        .map_err(|e| e.to_string())?;
     window.set_decorations(false).map_err(|e| e.to_string())?;
     window.set_always_on_top(false).map_err(|e| e.to_string())?;
     window.set_resizable(true).map_err(|e| e.to_string())?;
@@ -229,7 +235,8 @@ pub fn run() {
             structured_summary TEXT
         )",
         [],
-    ).expect("Failed to create meetings table");
+    )
+    .expect("Failed to create meetings table");
 
     // Column migration for existing databases
     for sql in &[
@@ -286,14 +293,24 @@ pub fn run() {
         .setup(move |app| {
             let app_handle = app.handle().clone();
 
-            let mut child = Command::new("bash")
-                .current_dir("../")
-                .arg("src-python/run.sh")
-                .stdin(Stdio::piped())
-                .stdout(Stdio::piped())
-                .stderr(Stdio::inherit())
-                .spawn()
-                .expect("Failed to start Python engine");
+            let mut child = if cfg!(target_os = "windows") {
+                Command::new(r"..\src-python\.venv\Scripts\python.exe")
+                    .arg(r"..\src-python\main.py")
+                    .stdin(Stdio::piped())
+                    .stdout(Stdio::piped())
+                    .stderr(Stdio::inherit())
+                    .spawn()
+                    .expect("Failed to start Python engine")
+            } else {
+                Command::new("bash")
+                    .current_dir("../")
+                    .arg("src-python/run.sh")
+                    .stdin(Stdio::piped())
+                    .stdout(Stdio::piped())
+                    .stderr(Stdio::inherit())
+                    .spawn()
+                    .expect("Failed to start Python engine")
+            };
 
             let stdin = child.stdin.take().expect("Failed to open Python stdin");
             *python_stdin_clone.lock().unwrap() = Some(stdin);

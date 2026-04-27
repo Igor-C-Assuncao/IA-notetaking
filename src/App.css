@@ -3,6 +3,10 @@
   0%, 100% { transform: scale(1); opacity: 0.35; }
   50%       { transform: scale(1.7); opacity: 0; }
 }
+@keyframes amberPulse {
+  0%, 100% { opacity: 1; }
+  50%       { opacity: 0.4; }
+}
 @keyframes wf {
   0%   { transform: scaleY(0.25); }
   100% { transform: scaleY(1); }
@@ -285,6 +289,11 @@ input, select { font-family: inherit; }
   letter-spacing: 0.5px;
   white-space: nowrap;
   flex-shrink: 0;
+}
+
+.pause-label {
+  animation: amberPulse 1.2s ease-in-out infinite;
+  color: #ffcc00;
 }
 
 .icon-btn-pill {
