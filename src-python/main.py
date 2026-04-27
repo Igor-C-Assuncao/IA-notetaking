@@ -65,7 +65,15 @@ def main():
 
                 audio_capturer.start_recording(telemetry_callback=on_telemetry)
 
-            elif action == "STOP_RECORDING":
+            elif action == "PAUSE_RECORDING":
+                if hasattr(audio_capturer, 'pause_recording'):
+                    audio_capturer.pause_recording()
+                send_event("RECORDING_STATUS", {"is_recording": True, "is_paused": True})
+
+            elif action == "RESUME_RECORDING":
+                if hasattr(audio_capturer, 'resume_recording'):
+                    audio_capturer.resume_recording()
+                send_event("RECORDING_STATUS", {"is_recording": True, "is_paused": False})
                 send_event("RECORDING_STATUS", {"is_recording": False})
                 send_event("PIPELINE_STATUS", {"step": "Processing Audio (VAD)..."})
 
@@ -104,9 +112,19 @@ def main():
                             api_key=api_key,
                             system_prompt=current_config.get("system_prompt", "") or None,
                         )
+
+                        # Filter out placeholder action items some models return
+                        _NULL_ACTIONS = {"none identified.", "none.", "none", "n/a", "n/a."}
+                        structured = result.get("structured", {})
+                        if "actions" in structured:
+                            structured["actions"] = [
+                                a for a in structured["actions"]
+                                if a.get("text", "").strip().lower() not in _NULL_ACTIONS
+                            ]
+
                         send_event("NOTES_GENERATED", {
                             "markdown": result.get("markdown", ""),
-                            "structured": result.get("structured", {}),
+                            "structured": structured,
                         })
                         send_event("PIPELINE_STATUS", {"step": "Done."})
                     except Exception as e:

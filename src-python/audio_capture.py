@@ -60,6 +60,14 @@ class AudioCaptureStrategy(ABC):
         """Stops capturing and returns the absolute path to the saved audio file."""
         pass
 
+    def pause_recording(self):
+        """Pause audio capture — optional, default is no-op."""
+        pass
+
+    def resume_recording(self):
+        """Resume audio capture after pause — optional, default is no-op."""
+        pass
+
 # ---------------------------------------------------------
 # CONCRETE STRATEGIES: OS-specific implementations
 # ---------------------------------------------------------
@@ -72,6 +80,7 @@ class WindowsAudioCapture(AudioCaptureStrategy):
     
     def __init__(self):
         self.is_recording = False
+        self.is_paused = False
         self.telemetry_callback = None
 
         # Audio Engine references
@@ -94,6 +103,16 @@ class WindowsAudioCapture(AudioCaptureStrategy):
 
         current_dir = os.path.dirname(os.path.abspath(__file__))
         self.output_file = os.path.join(current_dir, "temp_meeting_audio.wav")
+
+    def pause_recording(self):
+        """Freeze audio capture — frames are discarded while paused."""
+        self.is_paused = True
+        print("DEBUG: [Windows] Recording paused.", file=sys.stderr)
+
+    def resume_recording(self):
+        """Resume audio capture after pause."""
+        self.is_paused = False
+        print("DEBUG: [Windows] Recording resumed.", file=sys.stderr)
 
     def start_recording(self, telemetry_callback=None):
         if self.is_recording:
@@ -157,12 +176,14 @@ class WindowsAudioCapture(AudioCaptureStrategy):
         try:
             while self.is_recording and self.loopback_stream:
                 data = self.loopback_stream.read(1024, exception_on_overflow=False)
+                if self.is_paused:
+                    continue
                 audio_data = np.frombuffer(data, dtype=np.int16)
-                
+
                 if self.loopback_channels > 1:
                     audio_data = np.reshape(audio_data, (-1, self.loopback_channels))
                     audio_data = np.mean(audio_data, axis=1).astype(np.int16)
-                    
+
                 self.loopback_frames.append(audio_data)
         except Exception as e:
             print(f"DEBUG: [Windows Loopback Error] {str(e)}", file=sys.stderr)
@@ -173,6 +194,8 @@ class WindowsAudioCapture(AudioCaptureStrategy):
         try:
             while self.is_recording and self.mic_stream:
                 data = self.mic_stream.read(1024, exception_on_overflow=False)
+                if self.is_paused:
+                    continue
                 audio_data = np.frombuffer(data, dtype=np.int16)
 
                 if self.mic_channels > 1:
@@ -243,16 +266,25 @@ class MacosAudioCapture(AudioCaptureStrategy):
 
     def __init__(self):
         self.is_recording = False
+        self.is_paused = False
         self.telemetry_callback = None
         self.p = None
         self.mic_stream = None
         self.mic_thread = None
         self.mic_frames = []
-        self.sample_rate = 16000  # WhisperX works best at 16kHz
+        self.sample_rate = 16000
         self.channels = 1
 
         current_dir = os.path.dirname(os.path.abspath(__file__))
         self.output_file = os.path.join(current_dir, "temp_meeting_audio.wav")
+
+    def pause_recording(self):
+        self.is_paused = True
+        print("DEBUG: [macOS] Recording paused.", file=sys.stderr)
+
+    def resume_recording(self):
+        self.is_paused = False
+        print("DEBUG: [macOS] Recording resumed.", file=sys.stderr)
 
     def start_recording(self, telemetry_callback=None):
         if self.is_recording:
@@ -283,6 +315,8 @@ class MacosAudioCapture(AudioCaptureStrategy):
         try:
             while self.is_recording and self.mic_stream:
                 data = self.mic_stream.read(1024, exception_on_overflow=False)
+                if self.is_paused:
+                    continue
                 audio_data = np.frombuffer(data, dtype=np.int16)
                 self.mic_frames.append(audio_data)
 
