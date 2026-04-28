@@ -3,13 +3,55 @@
   0%, 100% { transform: scale(1); opacity: 0.35; }
   50%       { transform: scale(1.7); opacity: 0; }
 }
+@keyframes wf {
+  0%   { transform: scaleY(0.25); }
+  100% { transform: scaleY(1); }
+}
 @keyframes amberPulse {
   0%, 100% { opacity: 1; }
   50%       { opacity: 0.4; }
 }
-@keyframes wf {
-  0%   { transform: scaleY(0.25); }
-  100% { transform: scaleY(1); }
+
+/* ── Window mode transition ────────────────────────────────── */
+/* Phase 1: fade out (applied immediately before resize)       */
+.compact-widget.transitioning,
+.app-layout.transitioning {
+  opacity: 0;
+  transform: scale(0.97);
+  transition: opacity 100ms ease-in, transform 100ms ease-in;
+  pointer-events: none;
+}
+
+/* Phase 3: fade in + slide up (applied after resize)          */
+@keyframes enterExpanded {
+  from { opacity: 0; transform: translateY(6px); }
+  to   { opacity: 1; transform: translateY(0); }
+}
+
+@keyframes enterCompact {
+  from { opacity: 0; transform: scale(0.95); }
+  to   { opacity: 1; transform: scale(1); }
+}
+
+.compact-widget.entered {
+  animation: enterCompact 180ms cubic-bezier(0.34, 1.56, 0.64, 1) forwards;
+}
+
+.app-layout.entered {
+  animation: enterExpanded 180ms cubic-bezier(0.34, 1.56, 0.64, 1) forwards;
+}
+
+/* Respect user motion preference */
+@media (prefers-reduced-motion: reduce) {
+  .compact-widget.transitioning,
+  .app-layout.transitioning,
+  .compact-widget.entered,
+  .app-layout.entered {
+    animation: none;
+    transition: none;
+    opacity: 1;
+    transform: none;
+  }
 }
 
 /* ── Theme tokens ──────────────────────────────────────────── */
@@ -289,11 +331,6 @@ input, select { font-family: inherit; }
   letter-spacing: 0.5px;
   white-space: nowrap;
   flex-shrink: 0;
-}
-
-.pause-label {
-  animation: amberPulse 1.2s ease-in-out infinite;
-  color: #ffcc00;
 }
 
 .icon-btn-pill {

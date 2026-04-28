@@ -700,7 +700,6 @@ function App() {
   const isWin = os === "win";
 
   const [isRecording, setIsRecording] = useState(false);
-  const [isPaused, setIsPaused] = useState(false);
   const [status, setStatus] = useState("Initializing system…");
   const [transcription, setTranscription] = useState("");
   const [notes, setNotes] = useState("");
@@ -733,10 +732,9 @@ function App() {
   // Recording timer
   useEffect(() => {
     if (!isRecording) { setRecordingSeconds(0); return; }
-    if (isPaused) return;
     const id = setInterval(() => setRecordingSeconds((s) => s + 1), 1000);
     return () => clearInterval(id);
-  }, [isRecording, isPaused]);
+  }, [isRecording]);
 
   const actionItems = useMemo(() => (notes ? parseActionItems(notes) : []), [notes]);
   const tldr = useMemo(() => (notes ? parseTldr(notes) : null), [notes]);
@@ -770,6 +768,8 @@ function App() {
     init();
     loadHistory();
   }, []);
+
+  // Listen for settings saved from the popover window
   useEffect(() => {
     const unlisten = listen<SettingsPayload>("settings-changed", (event) => {
       const { provider: p, modelName: m, apiKey: k, theme: t,
@@ -838,7 +838,6 @@ function App() {
             break;
           case "RECORDING_STATUS":
             setIsRecording(parsed.data.is_recording);
-            setIsPaused(parsed.data.is_paused ?? false);
             if (parsed.data.is_recording) {
               setTranscription(""); setNotes(""); setSelectedMeetingId(null); setActiveTab("transcript");
             }
@@ -869,7 +868,6 @@ function App() {
   const toggleRecording = async () => {
     const action = isRecording ? "STOP_RECORDING" : "START_RECORDING";
     setIsRecording(!isRecording);
-    setIsPaused(false);
     setStatus(isRecording ? "Stopping…" : `Recording via ${provider.toUpperCase()}`);
     try {
       await invoke("send_command_to_python", {
@@ -890,58 +888,31 @@ function App() {
     }
   };
 
-  const togglePause = async () => {
-    const action = isPaused ? "RESUME_RECORDING" : "PAUSE_RECORDING";
-    setIsPaused(!isPaused);
-    setStatus(isPaused ? `Recording via ${provider.toUpperCase()}` : "Paused");
-    try {
-      await invoke("send_command_to_python", {
-        payload: JSON.stringify({
-          action,
-          llm_provider: provider,
-          llm_model: modelName,
-          api_key: apiKey,
-          language,
-          system_audio: systemAudio,
-          auto_summarize: autoSummarize,
-          speaker_diarization: speakerDiarization,
-          system_prompt: systemPrompt,
-        }),
-      });
-    } catch (e) {
-      console.error("IPC error:", e); setStatus("Engine connection failed");
-    }
-  };
+  const [isTransitioning, setIsTransitioning] = useState(false);
 
   const toggleWindowMode = async () => {
+    if (isTransitioning) return;
+    setIsTransitioning(true);
+
+    // Phase 1 — fade out current view (100ms)
+    await new Promise((r) => setTimeout(r, 100));
+
     try {
-      if (isExpanded) { await invoke("set_compact_mode"); setIsExpanded(false); }
-      else { await invoke("set_expanded_mode"); setIsExpanded(true); }
-    } catch (e) { console.error("Window mode error:", e); }
+      if (isExpanded) {
+        await invoke("set_compact_mode");
+        setIsExpanded(false);
+      } else {
+        await invoke("set_expanded_mode");
+        setIsExpanded(true);
+      }
+    } catch (e) {
+      console.error("Window mode error:", e);
+    }
+
+    // Phase 3 — allow fade-in animation to complete (180ms)
+    await new Promise((r) => setTimeout(r, 180));
+    setIsTransitioning(false);
   };
-
-  // ── Global keyboard shortcut listeners ────────────────────────
-  // Rust fires these events via tauri_plugin_global_shortcut.
-  // Using refs so the callbacks always see the latest state values.
-  const isRecordingRef = useRef(false);
-  const isPausedRef = useRef(false);
-  const isExpandedRef = useRef(false);
-  useEffect(() => { isRecordingRef.current = isRecording; }, [isRecording]);
-  useEffect(() => { isPausedRef.current = isPaused; }, [isPaused]);
-  useEffect(() => { isExpandedRef.current = isExpanded; }, [isExpanded]);
-
-  useEffect(() => {
-    const unlistenR = listen("shortcut:toggle-recording", () => toggleRecording());
-    const unlistenP = listen("shortcut:toggle-pause", () => {
-      if (isRecordingRef.current) togglePause();
-    });
-    const unlistenE = listen("shortcut:toggle-expand", () => toggleWindowMode());
-    return () => {
-      unlistenR.then((f) => f());
-      unlistenP.then((f) => f());
-      unlistenE.then((f) => f());
-    };
-  }, []);
 
   const handleCopy = async () => {
     await writeText(notes);
@@ -957,7 +928,7 @@ function App() {
   // ── COMPACT WIDGET ──────────────────────────────────────────
   if (!isExpanded) {
     return (
-      <div className={`compact-widget ${isWin ? "win" : "mac"}`}>
+      <div className={`compact-widget ${isWin ? "win" : "mac"} ${isTransitioning ? "transitioning" : "entered"}`}>
         {/* OS titlebar strip — drag region spans the full strip */}
         <div className="compact-os-strip" data-tauri-drag-region>
           {!isWin && <MacTrafficLights theme={theme} />}
@@ -1010,7 +981,7 @@ function App() {
 
   // ── EXPANDED VIEW ───────────────────────────────────────────
   return (
-    <div className={`app-layout ${isWin ? "win" : "mac"}`}>
+    <div className={`app-layout ${isWin ? "win" : "mac"} ${isTransitioning ? "transitioning" : "entered"}`}>
       {/* OS titlebar */}
       <div className={`titlebar ${isWin ? "win" : "mac"}`} data-tauri-drag-region>
         {!isWin && <MacTrafficLights theme={theme} />}
