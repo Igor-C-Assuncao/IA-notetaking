@@ -3,8 +3,9 @@ use std::io::{BufRead, BufReader, Write};
 use std::path::PathBuf;
 use std::process::{ChildStdin, Command, Stdio};
 use std::sync::{Arc, Mutex};
-use tauri::{AppHandle, Emitter, Manager, State, WebviewUrl, WebviewWindowBuilder};
+use tauri::{AppHandle, Emitter, Manager, State, WebviewWindowBuilder, WebviewUrl};
 use tauri::{LogicalSize, Window};
+use tauri_plugin_global_shortcut::{Code, GlobalShortcutExt, Modifiers, Shortcut, ShortcutState};
 
 // 1. Structure Definitions
 #[derive(serde::Serialize, serde::Deserialize, Clone)]
@@ -88,16 +89,14 @@ fn search_meetings(state: State<'_, AppState>, query: String) -> Result<Vec<Meet
     let db = state.db.lock().unwrap();
     let fts_query = format!("{}*", query.trim().replace('"', ""));
 
-    let mut stmt = db
-        .prepare(
-            "SELECT m.id, m.date, m.title, m.raw_transcript, m.markdown_summary,
+    let mut stmt = db.prepare(
+        "SELECT m.id, m.date, m.title, m.raw_transcript, m.markdown_summary,
                 m.speakers, m.tags, m.structured_summary
          FROM meetings m
          JOIN meetings_fts fts ON fts.rowid = m.id
          WHERE meetings_fts MATCH ?1
-         ORDER BY m.id DESC",
-        )
-        .map_err(|e| e.to_string())?;
+         ORDER BY m.id DESC"
+    ).map_err(|e| e.to_string())?;
 
     let meeting_iter = stmt
         .query_map(rusqlite::params![fts_query], |row| {
@@ -135,9 +134,7 @@ fn send_command_to_python(state: State<'_, AppState>, payload: String) -> Result
 
 #[tauri::command]
 async fn set_compact_mode(window: Window) -> Result<(), String> {
-    window
-        .set_size(LogicalSize::new(400.0, 120.0))
-        .map_err(|e| e.to_string())?;
+    window.set_size(LogicalSize::new(400.0, 120.0)).map_err(|e| e.to_string())?;
     window.set_decorations(false).map_err(|e| e.to_string())?;
     window.set_always_on_top(true).map_err(|e| e.to_string())?;
     window.set_resizable(false).map_err(|e| e.to_string())?;
@@ -146,9 +143,7 @@ async fn set_compact_mode(window: Window) -> Result<(), String> {
 
 #[tauri::command]
 async fn set_expanded_mode(window: Window) -> Result<(), String> {
-    window
-        .set_size(LogicalSize::new(1024.0, 720.0))
-        .map_err(|e| e.to_string())?;
+    window.set_size(LogicalSize::new(1024.0, 720.0)).map_err(|e| e.to_string())?;
     window.set_decorations(false).map_err(|e| e.to_string())?;
     window.set_always_on_top(false).map_err(|e| e.to_string())?;
     window.set_resizable(true).map_err(|e| e.to_string())?;
@@ -235,8 +230,7 @@ pub fn run() {
             structured_summary TEXT
         )",
         [],
-    )
-    .expect("Failed to create meetings table");
+    ).expect("Failed to create meetings table");
 
     // Column migration for existing databases
     for sql in &[
@@ -286,6 +280,7 @@ pub fn run() {
         .plugin(tauri_plugin_clipboard_manager::init())
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_fs::init())
+        .plugin(tauri_plugin_global_shortcut::Builder::new().build())
         .manage(AppState {
             db: Mutex::new(conn),
             python_stdin,
@@ -293,6 +288,7 @@ pub fn run() {
         .setup(move |app| {
             let app_handle = app.handle().clone();
 
+            // ── Python engine startup ──────────────────────────────
             let mut child = if cfg!(target_os = "windows") {
                 Command::new(r"..\src-python\.venv\Scripts\python.exe")
                     .arg(r"..\src-python\main.py")
@@ -327,6 +323,49 @@ pub fn run() {
                     }
                 }
             });
+
+            // ── Global keyboard shortcuts ──────────────────────────
+            // All shortcuts fire a Tauri event that the frontend listens to.
+            // This keeps the Rust side thin — no state duplication.
+            let shortcut_handle = app.handle().clone();
+            app.handle().plugin(
+                tauri_plugin_global_shortcut::Builder::new()
+                    .with_handler(move |_app, shortcut, event| {
+                        if event.state() != ShortcutState::Pressed {
+                            return;
+                        }
+                        let cmd = if shortcut.matches(Modifiers::SUPER | Modifiers::SHIFT, Code::KeyR)
+                            || shortcut.matches(Modifiers::CONTROL | Modifiers::SHIFT, Code::KeyR)
+                        {
+                            Some("shortcut:toggle-recording")
+                        } else if shortcut.matches(Modifiers::SUPER | Modifiers::SHIFT, Code::KeyP)
+                            || shortcut.matches(Modifiers::CONTROL | Modifiers::SHIFT, Code::KeyP)
+                        {
+                            Some("shortcut:toggle-pause")
+                        } else if shortcut.matches(Modifiers::SUPER | Modifiers::SHIFT, Code::KeyE)
+                            || shortcut.matches(Modifiers::CONTROL | Modifiers::SHIFT, Code::KeyE)
+                        {
+                            Some("shortcut:toggle-expand")
+                        } else {
+                            None
+                        };
+                        if let Some(event_name) = cmd {
+                            shortcut_handle.emit(event_name, ()).ok();
+                        }
+                    })
+                    .build(),
+            )?;
+
+            // Register the three shortcuts
+            let shortcuts = [
+                Shortcut::new(Some(Modifiers::SUPER | Modifiers::SHIFT), Code::KeyR),
+                Shortcut::new(Some(Modifiers::CONTROL | Modifiers::SHIFT), Code::KeyR),
+                Shortcut::new(Some(Modifiers::SUPER | Modifiers::SHIFT), Code::KeyP),
+                Shortcut::new(Some(Modifiers::CONTROL | Modifiers::SHIFT), Code::KeyP),
+                Shortcut::new(Some(Modifiers::SUPER | Modifiers::SHIFT), Code::KeyE),
+                Shortcut::new(Some(Modifiers::CONTROL | Modifiers::SHIFT), Code::KeyE),
+            ];
+            app.global_shortcut().register_multiple(shortcuts)?;
 
             Ok(())
         })

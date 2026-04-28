@@ -185,23 +185,18 @@ function Waveform({
 }
 
 // ── Status dot ────────────────────────────────────────────────
-function StatusDot({ isRecording, isPaused, size = 8, isLG }: { isRecording: boolean; isPaused?: boolean; size?: number; isLG: boolean }) {
-  const color = isPaused
-    ? (isLG ? "#ffcc00" : "#b87800")
-    : isRecording
-      ? (isLG ? "#ff4d5f" : "#c03838")
-      : (isLG ? "#30d158" : "#2d5a3d");
-  const pulseAnim = isPaused ? "amberPulse 1.2s ease-in-out infinite" : "dotPulse 1.6s ease-in-out infinite";
+function StatusDot({ isRecording, size = 8, isLG }: { isRecording: boolean; size?: number; isLG: boolean }) {
+  const color = isRecording ? (isLG ? "#ff4d5f" : "#c03838") : (isLG ? "#30d158" : "#2d5a3d");
   return (
     <span style={{ position: "relative", display: "inline-flex", width: size, height: size, flexShrink: 0 }}>
       <span style={{
         position: "absolute", inset: 0, borderRadius: 99, background: color,
         boxShadow: isLG ? `0 0 8px ${color}` : "none",
       }} />
-      {(isRecording || isPaused) && (
+      {isRecording && (
         <span style={{
           position: "absolute", inset: -2, borderRadius: 99, background: color,
-          opacity: 0.35, animation: pulseAnim,
+          opacity: 0.35, animation: "dotPulse 1.6s ease-in-out infinite",
         }} />
       )}
     </span>
@@ -737,7 +732,8 @@ function App() {
 
   // Recording timer
   useEffect(() => {
-    if (!isRecording || isPaused) { if (!isRecording) setRecordingSeconds(0); return; }
+    if (!isRecording) { setRecordingSeconds(0); return; }
+    if (isPaused) return;
     const id = setInterval(() => setRecordingSeconds((s) => s + 1), 1000);
     return () => clearInterval(id);
   }, [isRecording, isPaused]);
@@ -774,8 +770,6 @@ function App() {
     init();
     loadHistory();
   }, []);
-
-  // Listen for settings saved from the popover window
   useEffect(() => {
     const unlisten = listen<SettingsPayload>("settings-changed", (event) => {
       const { provider: p, modelName: m, apiKey: k, theme: t,
@@ -845,11 +839,8 @@ function App() {
           case "RECORDING_STATUS":
             setIsRecording(parsed.data.is_recording);
             setIsPaused(parsed.data.is_paused ?? false);
-            if (parsed.data.is_recording && !parsed.data.is_paused) {
-              // fresh start — reset state
-              if (!isPaused) {
-                setTranscription(""); setNotes(""); setSelectedMeetingId(null); setActiveTab("transcript");
-              }
+            if (parsed.data.is_recording) {
+              setTranscription(""); setNotes(""); setSelectedMeetingId(null); setActiveTab("transcript");
             }
             break;
           case "PIPELINE_STATUS": setStatus(parsed.data.step); break;
@@ -878,7 +869,7 @@ function App() {
   const toggleRecording = async () => {
     const action = isRecording ? "STOP_RECORDING" : "START_RECORDING";
     setIsRecording(!isRecording);
-    if (!isRecording) setIsPaused(false);
+    setIsPaused(false);
     setStatus(isRecording ? "Stopping…" : `Recording via ${provider.toUpperCase()}`);
     try {
       await invoke("send_command_to_python", {
@@ -900,14 +891,25 @@ function App() {
   };
 
   const togglePause = async () => {
-    if (!isRecording) return;
     const action = isPaused ? "RESUME_RECORDING" : "PAUSE_RECORDING";
     setIsPaused(!isPaused);
     setStatus(isPaused ? `Recording via ${provider.toUpperCase()}` : "Paused");
     try {
-      await invoke("send_command_to_python", { payload: JSON.stringify({ action }) });
+      await invoke("send_command_to_python", {
+        payload: JSON.stringify({
+          action,
+          llm_provider: provider,
+          llm_model: modelName,
+          api_key: apiKey,
+          language,
+          system_audio: systemAudio,
+          auto_summarize: autoSummarize,
+          speaker_diarization: speakerDiarization,
+          system_prompt: systemPrompt,
+        }),
+      });
     } catch (e) {
-      console.error("Pause IPC error:", e);
+      console.error("IPC error:", e); setStatus("Engine connection failed");
     }
   };
 
@@ -917,6 +919,29 @@ function App() {
       else { await invoke("set_expanded_mode"); setIsExpanded(true); }
     } catch (e) { console.error("Window mode error:", e); }
   };
+
+  // ── Global keyboard shortcut listeners ────────────────────────
+  // Rust fires these events via tauri_plugin_global_shortcut.
+  // Using refs so the callbacks always see the latest state values.
+  const isRecordingRef = useRef(false);
+  const isPausedRef = useRef(false);
+  const isExpandedRef = useRef(false);
+  useEffect(() => { isRecordingRef.current = isRecording; }, [isRecording]);
+  useEffect(() => { isPausedRef.current = isPaused; }, [isPaused]);
+  useEffect(() => { isExpandedRef.current = isExpanded; }, [isExpanded]);
+
+  useEffect(() => {
+    const unlistenR = listen("shortcut:toggle-recording", () => toggleRecording());
+    const unlistenP = listen("shortcut:toggle-pause", () => {
+      if (isRecordingRef.current) togglePause();
+    });
+    const unlistenE = listen("shortcut:toggle-expand", () => toggleWindowMode());
+    return () => {
+      unlistenR.then((f) => f());
+      unlistenP.then((f) => f());
+      unlistenE.then((f) => f());
+    };
+  }, []);
 
   const handleCopy = async () => {
     await writeText(notes);
@@ -947,38 +972,30 @@ function App() {
         {/* Content row */}
         <div className="pill-inner">
           <div className="pill-left" data-tauri-drag-region>
-            <StatusDot isRecording={isRecording} isPaused={isPaused} size={8} isLG={isLG} />
+            <StatusDot isRecording={isRecording} size={8} isLG={isLG} />
           </div>
 
           <div className="pill-middle" data-tauri-drag-region>
-            <Waveform width={150} height={20} color={waveColor} active={isRecording && !isPaused} bars={28} />
+            <Waveform width={150} height={20} color={waveColor} active={isRecording} bars={28} />
             <span className="timer-display">
               {isRecording ? formatDuration(recordingSeconds) : "--:--"}
-              {isPaused && <span className="pause-label"> ⏸</span>}
             </span>
           </div>
 
           <div className="pill-right">
-            <button className="icon-btn-pill" onClick={() => invoke("open_popover_window")} title="Settings">
+            {/* Gear opens the popover as a separate OS window */}
+            <button
+              className="icon-btn-pill"
+              onClick={() => invoke("open_popover_window")}
+              title="Settings"
+            >
               <GearIcon size={15} />
             </button>
-            {isRecording && (
-              <button
-                className="icon-btn-pill"
-                onClick={togglePause}
-                title={isPaused ? "Resume" : "Pause"}
-              >
-                {isPaused
-                  ? <svg width={12} height={12} viewBox="0 0 12 12" fill="currentColor"><polygon points="2,1 11,6 2,11"/></svg>
-                  : <svg width={12} height={12} viewBox="0 0 12 12" fill="currentColor"><rect x="2" y="1" width="3" height="10"/><rect x="7" y="1" width="3" height="10"/></svg>
-                }
-              </button>
-            )}
             <button
               className={`record-btn-pill ${isRecording ? "recording" : ""}`}
               onClick={toggleRecording}
               title={isRecording ? "Stop Recording" : "Start Recording"}
-              style={isRecording && !isPaused ? { transform: `scale(${1 + audioLevel * 0.12})`, transition: "transform 80ms ease-out" } : undefined}
+              style={isRecording ? { transform: `scale(${1 + audioLevel * 0.12})`, transition: "transform 80ms ease-out" } : undefined}
             >
               {isRecording ? <span className="stop-square" /> : <span className="record-circle" />}
             </button>
