@@ -27,4 +27,4 @@ rusqlite = { version = "0.31", features = ["bundled"] }
 tauri-plugin-clipboard-manager = "2"
 tauri-plugin-dialog = "2"
 tauri-plugin-fs = "2"
-
+tauri-plugin-global-shortcut = "2"
