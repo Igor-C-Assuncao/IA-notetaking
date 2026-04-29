@@ -56,3 +56,6 @@ __pycache__/
 temp_*.wav
 
 .claude
+
+
+src-tauri/binaries/audio-tap-aarch64-apple-darwin
