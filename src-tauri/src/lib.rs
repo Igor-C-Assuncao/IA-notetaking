@@ -280,7 +280,32 @@ pub fn run() {
         .plugin(tauri_plugin_clipboard_manager::init())
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_fs::init())
-        .plugin(tauri_plugin_global_shortcut::Builder::new().build())
+        .plugin(
+            tauri_plugin_global_shortcut::Builder::new()
+                .with_handler(move |_app, shortcut, event| {
+                    if event.state() != ShortcutState::Pressed {
+                        return;
+                    }
+                    let m = if cfg!(target_os = "macos") {
+                        Modifiers::SUPER | Modifiers::SHIFT
+                    } else {
+                        Modifiers::CONTROL | Modifiers::SHIFT
+                    };
+                    let cmd = if shortcut.matches(m, Code::KeyR) {
+                        Some("shortcut:toggle-recording")
+                    } else if shortcut.matches(m, Code::KeyP) {
+                        Some("shortcut:toggle-pause")
+                    } else if shortcut.matches(m, Code::KeyE) {
+                        Some("shortcut:toggle-expand")
+                    } else {
+                        None
+                    };
+                    if let Some(name) = cmd {
+                        _app.emit(name, ()).ok();
+                    }
+                })
+                .build(),
+        )
         .manage(AppState {
             db: Mutex::new(conn),
             python_stdin,
@@ -325,45 +350,16 @@ pub fn run() {
             });
 
             // ── Global keyboard shortcuts ──────────────────────────
-            // All shortcuts fire a Tauri event that the frontend listens to.
-            // This keeps the Rust side thin — no state duplication.
-            let shortcut_handle = app.handle().clone();
-            app.handle().plugin(
-                tauri_plugin_global_shortcut::Builder::new()
-                    .with_handler(move |_app, shortcut, event| {
-                        if event.state() != ShortcutState::Pressed {
-                            return;
-                        }
-                        let cmd = if shortcut.matches(Modifiers::SUPER | Modifiers::SHIFT, Code::KeyR)
-                            || shortcut.matches(Modifiers::CONTROL | Modifiers::SHIFT, Code::KeyR)
-                        {
-                            Some("shortcut:toggle-recording")
-                        } else if shortcut.matches(Modifiers::SUPER | Modifiers::SHIFT, Code::KeyP)
-                            || shortcut.matches(Modifiers::CONTROL | Modifiers::SHIFT, Code::KeyP)
-                        {
-                            Some("shortcut:toggle-pause")
-                        } else if shortcut.matches(Modifiers::SUPER | Modifiers::SHIFT, Code::KeyE)
-                            || shortcut.matches(Modifiers::CONTROL | Modifiers::SHIFT, Code::KeyE)
-                        {
-                            Some("shortcut:toggle-expand")
-                        } else {
-                            None
-                        };
-                        if let Some(event_name) = cmd {
-                            shortcut_handle.emit(event_name, ()).ok();
-                        }
-                    })
-                    .build(),
-            )?;
-
-            // Register the three shortcuts
+            // Plugin is already initialized above; only register shortcuts here.
+            let modifier = if cfg!(target_os = "macos") {
+                Modifiers::SUPER | Modifiers::SHIFT
+            } else {
+                Modifiers::CONTROL | Modifiers::SHIFT
+            };
             let shortcuts = [
-                Shortcut::new(Some(Modifiers::SUPER | Modifiers::SHIFT), Code::KeyR),
-                Shortcut::new(Some(Modifiers::CONTROL | Modifiers::SHIFT), Code::KeyR),
-                Shortcut::new(Some(Modifiers::SUPER | Modifiers::SHIFT), Code::KeyP),
-                Shortcut::new(Some(Modifiers::CONTROL | Modifiers::SHIFT), Code::KeyP),
-                Shortcut::new(Some(Modifiers::SUPER | Modifiers::SHIFT), Code::KeyE),
-                Shortcut::new(Some(Modifiers::CONTROL | Modifiers::SHIFT), Code::KeyE),
+                Shortcut::new(Some(modifier), Code::KeyR),
+                Shortcut::new(Some(modifier), Code::KeyP),
+                Shortcut::new(Some(modifier), Code::KeyE),
             ];
             app.global_shortcut().register_multiple(shortcuts)?;
 
