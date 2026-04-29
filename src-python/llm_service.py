@@ -141,7 +141,6 @@ class MeetingWorkflowEngine:
         try:
             structured = json_lib.loads(raw)
         except Exception:
-            # Fallback: treat the whole response as markdown
             print("DEBUG: [LangGraph] JSON parse failed, falling back to markdown.", file=sys.stderr)
             structured = {
                 "tldr": None,
@@ -150,6 +149,23 @@ class MeetingWorkflowEngine:
                 "tags": [],
                 "markdown": raw,
             }
+
+        # If the model returned empty markdown, build a basic one from the structured fields
+        if not structured.get("markdown"):
+            lines = []
+            if structured.get("tldr"):
+                lines.append(f"## 📝 TL;DR\n{structured['tldr']}\n")
+            if structured.get("decisions"):
+                lines.append("## ✅ Decisions\n" + "\n".join(f"- {d}" for d in structured["decisions"]) + "\n")
+            if structured.get("actions"):
+                items = [
+                    f"- [ ] {a['text']}" + (f" — {a['who']}" if a.get("who") else "")
+                    for a in structured["actions"]
+                    if a.get("text", "").lower() not in ("none identified.", "none.", "none")
+                ]
+                if items:
+                    lines.append("## 🎯 Action Items\n" + "\n".join(items) + "\n")
+            structured["markdown"] = "\n".join(lines) if lines else raw
 
         return {
             "final_markdown": structured.get("markdown", raw),

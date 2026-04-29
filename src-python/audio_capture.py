@@ -1,6 +1,7 @@
 # src-python/audio_capture.py
 import sys
 import os
+import subprocess
 import threading
 import wave
 import numpy as np
@@ -60,14 +61,6 @@ class AudioCaptureStrategy(ABC):
         """Stops capturing and returns the absolute path to the saved audio file."""
         pass
 
-    def pause_recording(self):
-        """Pause audio capture — optional, default is no-op."""
-        pass
-
-    def resume_recording(self):
-        """Resume audio capture after pause — optional, default is no-op."""
-        pass
-
 # ---------------------------------------------------------
 # CONCRETE STRATEGIES: OS-specific implementations
 # ---------------------------------------------------------
@@ -80,7 +73,6 @@ class WindowsAudioCapture(AudioCaptureStrategy):
     
     def __init__(self):
         self.is_recording = False
-        self.is_paused = False
         self.telemetry_callback = None
 
         # Audio Engine references
@@ -103,16 +95,6 @@ class WindowsAudioCapture(AudioCaptureStrategy):
 
         current_dir = os.path.dirname(os.path.abspath(__file__))
         self.output_file = os.path.join(current_dir, "temp_meeting_audio.wav")
-
-    def pause_recording(self):
-        """Freeze audio capture — frames are discarded while paused."""
-        self.is_paused = True
-        print("DEBUG: [Windows] Recording paused.", file=sys.stderr)
-
-    def resume_recording(self):
-        """Resume audio capture after pause."""
-        self.is_paused = False
-        print("DEBUG: [Windows] Recording resumed.", file=sys.stderr)
 
     def start_recording(self, telemetry_callback=None):
         if self.is_recording:
@@ -176,14 +158,12 @@ class WindowsAudioCapture(AudioCaptureStrategy):
         try:
             while self.is_recording and self.loopback_stream:
                 data = self.loopback_stream.read(1024, exception_on_overflow=False)
-                if self.is_paused:
-                    continue
                 audio_data = np.frombuffer(data, dtype=np.int16)
-
+                
                 if self.loopback_channels > 1:
                     audio_data = np.reshape(audio_data, (-1, self.loopback_channels))
                     audio_data = np.mean(audio_data, axis=1).astype(np.int16)
-
+                    
                 self.loopback_frames.append(audio_data)
         except Exception as e:
             print(f"DEBUG: [Windows Loopback Error] {str(e)}", file=sys.stderr)
@@ -194,8 +174,6 @@ class WindowsAudioCapture(AudioCaptureStrategy):
         try:
             while self.is_recording and self.mic_stream:
                 data = self.mic_stream.read(1024, exception_on_overflow=False)
-                if self.is_paused:
-                    continue
                 audio_data = np.frombuffer(data, dtype=np.int16)
 
                 if self.mic_channels > 1:
@@ -260,8 +238,9 @@ class WindowsAudioCapture(AudioCaptureStrategy):
     
 class MacosAudioCapture(AudioCaptureStrategy):
     """
-    macOS microphone capture via PyAudio.
-    System audio loopback (ScreenCaptureKit) is planned for Sprint 9 Card 9.4.
+    macOS audio capture:
+    - Microphone via PyAudio (always)
+    - System audio via Core Audio Tap Swift binary (macOS 14.4+, optional)
     """
 
     def __init__(self):
@@ -274,6 +253,7 @@ class MacosAudioCapture(AudioCaptureStrategy):
         self.mic_frames = []
         self.sample_rate = 16000
         self.channels = 1
+        self._sys_mixer = None
 
         current_dir = os.path.dirname(os.path.abspath(__file__))
         self.output_file = os.path.join(current_dir, "temp_meeting_audio.wav")
@@ -286,13 +266,23 @@ class MacosAudioCapture(AudioCaptureStrategy):
         self.is_paused = False
         print("DEBUG: [macOS] Recording resumed.", file=sys.stderr)
 
-    def start_recording(self, telemetry_callback=None):
+    def start_recording(self, telemetry_callback=None, system_audio: bool = False):
         if self.is_recording:
             return
-
         self.is_recording = True
+        self.is_paused = False
         self.telemetry_callback = telemetry_callback
         self.mic_frames = []
+
+        self._sys_mixer = None
+        if system_audio:
+            binary = MacosSystemAudioMixer.find_binary()
+            if binary:
+                mixer = MacosSystemAudioMixer(binary)
+                if mixer.start():
+                    self._sys_mixer = mixer
+            if not self._sys_mixer:
+                print("DEBUG: [macOS] System audio unavailable — mic only.", file=sys.stderr)
 
         try:
             self.p = pyaudio.PyAudio()
@@ -319,8 +309,6 @@ class MacosAudioCapture(AudioCaptureStrategy):
                     continue
                 audio_data = np.frombuffer(data, dtype=np.int16)
                 self.mic_frames.append(audio_data)
-
-                # Emit RMS telemetry every 5th chunk
                 chunk_count += 1
                 if chunk_count % 5 == 0 and self.telemetry_callback:
                     rms = float(np.sqrt(np.mean(audio_data.astype(np.float32) ** 2)))
@@ -332,11 +320,9 @@ class MacosAudioCapture(AudioCaptureStrategy):
     def stop_recording(self) -> str:
         if not self.is_recording:
             return self.output_file
-
         self.is_recording = False
         if self.mic_thread:
             self.mic_thread.join(timeout=2.0)
-
         if self.mic_stream:
             try:
                 self.mic_stream.stop_stream()
@@ -350,17 +336,29 @@ class MacosAudioCapture(AudioCaptureStrategy):
             print("DEBUG: [macOS] No audio frames captured.", file=sys.stderr)
             return self.output_file
 
-        audio_full = np.concatenate(self.mic_frames)
+        mic_full = np.concatenate(self.mic_frames)
+
+        sys_frames = self._sys_mixer.stop() if self._sys_mixer else None
+        self._sys_mixer = None
+
+        if sys_frames is not None and len(sys_frames) > 0:
+            min_len = min(len(mic_full), len(sys_frames))
+            mixed = np.clip(
+                mic_full[:min_len].astype(np.int32) + sys_frames[:min_len].astype(np.int32),
+                -32768, 32767
+            ).astype(np.int16)
+            audio_input = mixed.reshape(-1, 1)
+            print("DEBUG: [macOS] Mixed mic + system audio.", file=sys.stderr)
+        else:
+            audio_input = mic_full.reshape(-1, 1)
 
         print("DEBUG: [AI] Running Silero VAD to trim silence...", file=sys.stderr)
         try:
             vad = VADService()
-            audio_trimmed = vad.trim_silence(
-                audio_full.reshape(-1, 1), self.sample_rate
-            )
+            audio_trimmed = vad.trim_silence(audio_input, self.sample_rate)
         except Exception as e:
             print(f"DEBUG: [AI VAD Error] Falling back to raw audio: {e}", file=sys.stderr)
-            audio_trimmed = audio_full.reshape(-1, 1)
+            audio_trimmed = audio_input
 
         with wave.open(self.output_file, "wb") as wf:
             wf.setnchannels(1)
@@ -385,3 +383,111 @@ class AudioCaptureFactory:
             return MacosAudioCapture()
         else:
             raise NotImplementedError(f"Audio capture is not yet supported on OS: {platform}")
+
+
+# ---------------------------------------------------------
+# macOS SYSTEM AUDIO — Core Audio Tap helper
+# Spawns the Swift binary, reads raw PCM from its stdout,
+# and mixes it with the microphone before passing to VAD.
+# Requires: src-tauri/binaries/audio-tap-{arch}-apple-darwin
+#           built from audio-tap.swift
+# ---------------------------------------------------------
+class MacosSystemAudioMixer:
+    """
+    Reads Float32 stereo 48kHz PCM from the Swift tap binary stdout.
+    Normalizes to int16 mono 16kHz so it can be mixed with the mic stream.
+    Used internally by MacosAudioCapture when system_audio=True.
+    """
+
+    CHUNK = 4096 * 2 * 4  # 4096 frames × 2 ch × 4 bytes (float32)
+
+    def __init__(self, binary_path: str):
+        self.binary_path = binary_path
+        self.proc = None
+        self.thread = None
+        self.frames: list = []
+        self._running = False
+
+    def start(self) -> bool:
+        """Spawn the Swift binary. Returns False if binary not found or old macOS."""
+        if not os.path.exists(self.binary_path):
+            print(f"DEBUG: [CATap] Binary not found: {self.binary_path}", file=sys.stderr)
+            return False
+        try:
+            self.proc = subprocess.Popen(
+                [self.binary_path],
+                stdin=subprocess.PIPE,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+            )
+            # Check stderr for READY or FALLBACK_SCKIT
+            stderr_line = self.proc.stderr.readline().decode().strip()
+            if "FALLBACK_SCKIT" in stderr_line:
+                print("DEBUG: [CATap] macOS < 14.4 — system audio unavailable.", file=sys.stderr)
+                self.proc.terminate()
+                return False
+            if "ERROR" in stderr_line:
+                print(f"DEBUG: [CATap] {stderr_line}", file=sys.stderr)
+                self.proc.terminate()
+                return False
+            self._running = True
+            self.thread = threading.Thread(target=self._read_loop, daemon=True)
+            self.thread.start()
+            print("DEBUG: [CATap] System audio capture started.", file=sys.stderr)
+            return True
+        except Exception as e:
+            print(f"DEBUG: [CATap] Failed to start: {e}", file=sys.stderr)
+            return False
+
+    def _read_loop(self):
+        while self._running and self.proc and self.proc.stdout:
+            chunk = self.proc.stdout.read(self.CHUNK)
+            if not chunk:
+                break
+            pcm = self._normalize(chunk)
+            self.frames.append(pcm)
+
+    @staticmethod
+    def _normalize(raw: bytes) -> np.ndarray:
+        """
+        Normalize Swift tap output to int16 mono 16kHz for mixing with mic.
+        Native format from CATap aggregate device: Float32 mono 44100 Hz.
+        """
+        from scipy.signal import resample_poly
+        mono_f32 = np.frombuffer(raw, dtype=np.float32).copy()
+        # Resample 44100 Hz -> 16000 Hz (ratio 160:441)
+        mono_16k = resample_poly(mono_f32, 160, 441).astype(np.float32)
+        # Convert float32 -> int16
+        return (mono_16k * 32768).clip(-32768, 32767).astype(np.int16)
+
+    def stop(self) -> np.ndarray | None:
+        self._running = False
+        if self.proc and self.proc.stdin:
+            try:
+                self.proc.stdin.write(b"stop\n")
+                self.proc.stdin.flush()
+            except Exception:
+                pass
+        if self.thread:
+            self.thread.join(timeout=2.0)
+        if self.proc:
+            self.proc.terminate()
+        if not self.frames:
+            return None
+        return np.concatenate(self.frames)
+
+    @staticmethod
+    def find_binary() -> str | None:
+        """Locate the Swift binary bundled alongside the app."""
+        import platform as _platform
+        arch = _platform.machine()  # arm64 or x86_64
+        name = f"audio-tap-{arch}-apple-darwin"
+        # When running from Tauri: binary is next to the executable
+        candidates = [
+            os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", name),
+            os.path.join(os.path.dirname(os.path.abspath(__file__)), name),
+        ]
+        for p in candidates:
+            if os.path.exists(p):
+                return os.path.abspath(p)
+        return None
