@@ -454,7 +454,7 @@ class MacosSystemAudioMixer:
         Native format from Swift tap: Float32 interleaved stereo 48000 Hz.
         """
         from scipy.signal import resample_poly
-        stereo_f32 = np.frombuffer(raw, dtype=np.float32).copy()
+        stereo_f32 = np.frombuffer(raw, dtype=np.float32)
         if stereo_f32.size < 2:
             return np.array([], dtype=np.int16)
         # Ensure complete LR pairs and downmix stereo -> mono.
