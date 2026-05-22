@@ -44,21 +44,40 @@ export function PopoverWidget() {
   }, [win]);
 
   const handleSave = async () => {
-    const effectiveModel = localSettings.customModel.trim() || localSettings.modelName;
-    await updateSettings({ ...localSettings, modelName: effectiveModel });
+    await updateSettings(localSettings);
     await win.close();
+  };
+
+  const handleResetSetup = async () => {
+    if (confirm("Are you sure you want to run the setup wizard again?")) {
+      await updateSettings({ onboarding_completed: false });
+      // We can't do window.location.reload() safely here because this is the popover window.
+      // We need to tell the main window to reload, or just close the popover.
+      // Actually, since settings are shared, changing it will trigger a re-render on main window.
+      await win.close();
+    }
   };
 
   if (loading) return null;
 
   return (
     <div className={`popover-window ${isLG ? "popover-lg" : "popover-nb"}`}>
-      <div className="popover-header">
+      <div className="popover-drag-handle" data-tauri-drag-region />
+      <div className="popover-header" data-tauri-drag-region>
         <span className="popover-title">Configuration</span>
         <button className="popover-close" onClick={() => win.close()}>✕</button>
       </div>
 
-      <div className="popover-content">
+      <div className="popover-scroll-body">
+        
+        <div className="popover-section">
+          <label className="popover-label">Theme</label>
+          <select className="popover-select" value={localSettings.theme} onChange={(e) => setLocalSettings({ ...localSettings, theme: e.target.value })}>
+            <option value="liquid-glass">Liquid Glass (Dark)</option>
+            <option value="minimalist-notebook">Notebook Paper (Light)</option>
+          </select>
+        </div>
+
         <div className="popover-section">
           <label className="popover-label">Audio Source</label>
           <select
@@ -77,36 +96,46 @@ export function PopoverWidget() {
         </div>
 
         <div className="popover-section">
-          <label className="popover-label">Model Selection</label>
-          <div className="popover-grid-2">
-            <button className={`model-btn ${localSettings.modelName === "llama3" ? "active" : ""}`} onClick={() => setLocalSettings({ ...localSettings, modelName: "llama3" })}>
-              <span className="model-name">Llama 3</span>
-              <span className="model-desc">Fast, local</span>
-            </button>
-            <button className={`model-btn ${localSettings.modelName === "phi3" ? "active" : ""}`} onClick={() => setLocalSettings({ ...localSettings, modelName: "phi3" })}>
-              <span className="model-name">Phi-3</span>
-              <span className="model-desc">Ultra-light</span>
-            </button>
-            <button className={`model-btn ${localSettings.modelName === "mistral" ? "active" : ""}`} onClick={() => setLocalSettings({ ...localSettings, modelName: "mistral" })}>
-              <span className="model-name">Mistral</span>
-              <span className="model-desc">Balanced</span>
-            </button>
-            <button className={`model-btn ${!["llama3", "phi3", "mistral"].includes(localSettings.modelName) ? "active" : ""}`} onClick={() => document.getElementById("custom-model-input")?.focus()}>
-              <span className="model-name">Custom</span>
-              <span className="model-desc">Other local</span>
-            </button>
-          </div>
+          <label className="popover-label">AI Provider</label>
+          <select className="popover-select" value={localSettings.provider} onChange={(e) => setLocalSettings({ ...localSettings, provider: e.target.value })}>
+            <option value="ollama">Ollama (Local)</option>
+            <option value="openai">OpenAI</option>
+            <option value="gemini">Google Gemini</option>
+            <option value="anthropic">Anthropic Claude</option>
+          </select>
+        </div>
+
+        <div className="popover-section">
+          <label className="popover-label">Model Name</label>
           <input
-            id="custom-model-input"
             className="popover-input custom-model-input"
-            placeholder="e.g. gemma:7b"
-            value={localSettings.customModel}
-            onChange={(e) => setLocalSettings({ ...localSettings, customModel: e.target.value })}
-            onFocus={() => {
-              if (["llama3", "phi3", "mistral"].includes(localSettings.modelName)) {
-                setLocalSettings({ ...localSettings, modelName: "" });
-              }
-            }}
+            value={localSettings.modelName}
+            onChange={(e) => setLocalSettings({ ...localSettings, modelName: e.target.value })}
+            placeholder="e.g. gemma4:e2b"
+          />
+        </div>
+
+        {localSettings.provider !== "ollama" && (
+          <div className="popover-section">
+            <label className="popover-label">API Key</label>
+            <input
+              type="password"
+              className="popover-input custom-model-input"
+              value={localSettings.apiKey}
+              onChange={(e) => setLocalSettings({ ...localSettings, apiKey: e.target.value })}
+              placeholder="sk-..."
+            />
+          </div>
+        )}
+
+        <div className="popover-section">
+          <label className="popover-label">System Prompt (Optional)</label>
+          <textarea
+            className="popover-input custom-model-input"
+            style={{ resize: "none", height: "80px", fontFamily: "inherit" }}
+            value={localSettings.systemPrompt}
+            onChange={(e) => setLocalSettings({ ...localSettings, systemPrompt: e.target.value })}
+            placeholder="Guides the AI output style..."
           />
         </div>
 
@@ -128,11 +157,18 @@ export function PopoverWidget() {
             <Toggle on={localSettings.alwaysOnTop} onChange={(v) => setLocalSettings({ ...localSettings, alwaysOnTop: v })} />
           </div>
         </div>
+
+        <div className="popover-section">
+          <button className="link-btn" style={{ color: "#ff5f57", padding: "10px 0" }} onClick={handleResetSetup}>
+            Restart Setup Wizard
+          </button>
+        </div>
+
       </div>
 
-      <div className="popover-footer">
+      <div className="popover-footer-bar">
         <button className="link-btn" onClick={() => setShowShortcuts(true)}>Shortcuts</button>
-        <button className="btn-save-sm" onClick={handleSave}>Save</button>
+        <button className="btn-save-sm" style={{ marginLeft: "auto" }} onClick={handleSave}>Save</button>
       </div>
 
       {showShortcuts && <ShortcutsModal onClose={() => setShowShortcuts(false)} isLG={isLG} />}
