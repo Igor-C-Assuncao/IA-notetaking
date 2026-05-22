@@ -7,6 +7,7 @@ import time
 from audio_capture import AudioCaptureFactory, list_audio_devices
 from transcription_service import TranscriptionService
 from llm_service import LLMFactory
+from config import DEFAULTS
 
 def send_event(event_type: str, payload: dict):
     """
@@ -21,6 +22,8 @@ def main():
     time.sleep(2)
     send_event("SYSTEM_READY", {"status": "Python engine is ready and listening."})
     send_event("DEVICE_LIST", {"devices": list_audio_devices()})
+
+    current_config = {}
 
     # 1. Initialize Audio Capture
     try:
@@ -50,14 +53,15 @@ def main():
 
                 # Store recording config for use when STOP_RECORDING arrives
                 current_config = {
-                    "system_audio": command.get("system_audio", False),
-                    "auto_summarize": command.get("auto_summarize", True),
-                    "speaker_diarization": command.get("speaker_diarization", False),
-                    "language": command.get("language", "auto"),
+                    "system_audio": command.get("system_audio", DEFAULTS["system_audio"]),
+                    "auto_summarize": command.get("auto_summarize", DEFAULTS["auto_summarize"]),
+                    "speaker_diarization": command.get("speaker_diarization", DEFAULTS["speaker_diarization"]),
+                    "language": command.get("language", DEFAULTS["language"]),
                     "system_prompt": command.get("system_prompt", ""),
-                    "llm_provider": command.get("llm_provider", "ollama"),
-                    "llm_model": command.get("llm_model", "llama3"),
+                    "llm_provider": command.get("llm_provider", DEFAULTS["provider"]),
+                    "llm_model": command.get("llm_model", DEFAULTS["model"]),
                     "api_key": command.get("api_key", ""),
+                    "is_test": command.get("is_test", False),
                 }
 
                 def on_telemetry(level: float):
@@ -74,6 +78,10 @@ def main():
 
                 # STEP A: Stop recording and trim silence
                 saved_file_path = audio_capturer.stop_recording()
+
+                if current_config.get("is_test", False):
+                    send_event("PIPELINE_STATUS", {"step": "Done."})
+                    continue
 
                 # STEP B: Transcribe audio
                 if transcriber:
@@ -106,6 +114,8 @@ def main():
                             transcription_result["text"],
                             api_key=api_key,
                             system_prompt=current_config.get("system_prompt", "") or None,
+                            diarized_segments=transcription_result.get("segments") if transcription_result.get("diarized") else None,
+                            meeting_date=time.strftime("%Y-%m-%d %H:%M:%S")
                         )
                         send_event("NOTES_GENERATED", {
                             "markdown": result.get("markdown", ""),

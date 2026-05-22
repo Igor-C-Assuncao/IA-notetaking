@@ -1,8 +1,9 @@
 import { useState } from "react";
+import { invoke } from "@tauri-apps/api/core";
 import { writeText } from "@tauri-apps/plugin-clipboard-manager";
 import { save } from "@tauri-apps/plugin-dialog";
 import { writeTextFile } from "@tauri-apps/plugin-fs";
-import { GearIcon, ArrowsInSimpleIcon, MagnifyingGlassIcon, CopyIcon, ExportIcon } from "@phosphor-icons/react";
+import { GearIcon, ArrowsInSimpleIcon, MagnifyingGlassIcon, CopyIcon, ExportIcon, ChatCircleIcon } from "@phosphor-icons/react";
 import { MacTrafficLights } from "@features/window-chrome/MacTrafficLights";
 import { WinCaptionButtons } from "@features/window-chrome/WinCaptionButtons";
 import { StatusDot } from "@shared/ui/StatusDot";
@@ -16,7 +17,6 @@ import { useRecording } from "@features/recording/hooks/useRecording";
 import { useTranscription } from "@features/transcription/hooks/useTranscription";
 import { useSummary } from "@features/summary/hooks/useSummary";
 import { useMeetings } from "@features/meetings/hooks/useMeetings";
-import { SettingsModal } from "@features/settings/SettingsModal";
 
 export function ExpandedView({
   isTransitioning, toggleWindowMode
@@ -31,17 +31,49 @@ export function ExpandedView({
   const { meetingsHistory, selectedMeetingId, setSelectedMeetingId, sidebarSearch, setSidebarSearch } = useMeetings();
   
   const [activeTab, setActiveTab] = useState<"transcript" | "summary" | "actions">("transcript");
-  const [showSettings, setShowSettings] = useState(false);
+  const [copiedNotes, setCopiedNotes] = useState(false);
+  const [copiedWebAI, setCopiedWebAI] = useState(false);
 
   const isWin = detectOS() === "win";
 
+  const safeWriteText = async (text: string) => {
+    try {
+      if (navigator?.clipboard?.writeText) {
+        await navigator.clipboard.writeText(text);
+        return true;
+      }
+    } catch (e) {
+      console.warn("navigator.clipboard failed, trying tauri clipboard:", e);
+    }
+    try {
+      await writeText(text);
+      return true;
+    } catch (e) {
+      console.error("All clipboard methods failed:", e);
+      return false;
+    }
+  };
+
   const handleCopy = async () => {
-    await writeText(notes);
+    const success = await safeWriteText(notes);
+    if (success) {
+      setCopiedNotes(true);
+      setTimeout(() => setCopiedNotes(false), 2000);
+    }
   };
 
   const handleExport = async () => {
     const path = await save({ filters: [{ name: "Markdown", extensions: ["md"] }], defaultPath: `Notes_${Date.now()}.md` });
     if (path) { await writeTextFile(path, notes); }
+  };
+
+  const handleExportForWebAI = async () => {
+    const prompt = `Here is a transcript of a meeting. Please provide a brief TL;DR, identify key decisions, and list action items assigned to people.\n\n[Transcript]\n\n${filteredTranscript || "No transcript available."}`;
+    const success = await safeWriteText(prompt);
+    if (success) {
+      setCopiedWebAI(true);
+      setTimeout(() => setCopiedWebAI(false), 2000);
+    }
   };
 
   return (
@@ -53,7 +85,7 @@ export function ExpandedView({
           <span className="titlebar-name">Ai<span className="titlebar-sub"> NoteTaking</span></span>
         </div>
         <div className="titlebar-actions">
-          <button className="icon-btn" onClick={() => setShowSettings(true)} title="Settings">
+          <button className="icon-btn" onClick={() => invoke("open_popover_window")} title="Settings">
             <GearIcon size={16} />
           </button>
           <button className="icon-btn" onClick={toggleWindowMode} title="Collapse">
@@ -189,13 +221,13 @@ export function ExpandedView({
 
           {notes && (
             <div className="footer-actions">
-              <button className="chip-btn" onClick={handleCopy}><CopyIcon size={13} /> Copy</button>
+              <button className="chip-btn" onClick={handleCopy}><CopyIcon size={13} /> {copiedNotes ? "✓ Copied!" : "Copy"}</button>
               <button className="chip-btn" onClick={handleExport}><ExportIcon size={13} /> Export .MD</button>
+              <button className="chip-btn" onClick={handleExportForWebAI}><ChatCircleIcon size={13} /> {copiedWebAI ? "✓ Copied for Web AI!" : "Copy for Web AI"}</button>
             </div>
           )}
         </main>
       </div>
-      {showSettings && <SettingsModal onClose={() => setShowSettings(false)} />}
     </div>
   );
 }

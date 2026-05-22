@@ -7,7 +7,8 @@ use tauri::{AppHandle, Emitter, Manager, State, WebviewWindowBuilder, WebviewUrl
 use tauri::{LogicalSize, Window};
 use tauri_plugin_global_shortcut::{Code, GlobalShortcutExt, Modifiers, Shortcut, ShortcutState};
 
-// 1. Structure Definitions
+// ── 1. Data structures ────────────────────────────────────────
+
 #[derive(serde::Serialize, serde::Deserialize, Clone)]
 struct Meeting {
     id: Option<i32>,
@@ -15,18 +16,20 @@ struct Meeting {
     title: String,
     raw_transcript: String,
     markdown_summary: String,
-    speakers: Option<String>,
-    tags: Option<String>,
-    structured_summary: Option<String>,
+    speakers: Option<String>,          // JSON array of speaker names
+    tags: Option<String>,              // JSON array of tag strings
+    structured_summary: Option<String>, // Full structured JSON from LangGraph
 }
 
-// 2. Global Application State
+// ── 2. Global application state ───────────────────────────────
+
 struct AppState {
     db: Mutex<Connection>,
     python_stdin: Arc<Mutex<Option<ChildStdin>>>,
 }
 
-// 3. Database Commands
+// ── 3. Database commands ──────────────────────────────────────
+
 #[tauri::command]
 fn save_meeting(
     state: State<'_, AppState>,
@@ -40,7 +43,8 @@ fn save_meeting(
 ) -> Result<(), String> {
     let db = state.db.lock().unwrap();
     db.execute(
-        "INSERT INTO meetings (date, title, raw_transcript, markdown_summary, speakers, tags, structured_summary)
+        "INSERT INTO meetings
+         (date, title, raw_transcript, markdown_summary, speakers, tags, structured_summary)
          VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
         rusqlite::params![
             &date, &title, &raw_transcript, &markdown_summary,
@@ -54,32 +58,31 @@ fn save_meeting(
 fn get_meetings(state: State<'_, AppState>) -> Result<Vec<Meeting>, String> {
     let db = state.db.lock().unwrap();
     let mut stmt = db.prepare(
-        "SELECT id, date, title, raw_transcript, markdown_summary, speakers, tags, structured_summary
+        "SELECT id, date, title, raw_transcript, markdown_summary,
+                speakers, tags, structured_summary
          FROM meetings ORDER BY id DESC"
     ).map_err(|e| e.to_string())?;
 
-    let meeting_iter = stmt
-        .query_map([], |row| {
-            Ok(Meeting {
-                id: Some(row.get(0)?),
-                date: row.get(1)?,
-                title: row.get(2)?,
-                raw_transcript: row.get(3)?,
-                markdown_summary: row.get(4)?,
-                speakers: row.get(5)?,
-                tags: row.get(6)?,
-                structured_summary: row.get(7)?,
-            })
+    let iter = stmt.query_map([], |row| {
+        Ok(Meeting {
+            id: Some(row.get(0)?),
+            date: row.get(1)?,
+            title: row.get(2)?,
+            raw_transcript: row.get(3)?,
+            markdown_summary: row.get(4)?,
+            speakers: row.get(5)?,
+            tags: row.get(6)?,
+            structured_summary: row.get(7)?,
         })
-        .map_err(|e| e.to_string())?;
+    }).map_err(|e| e.to_string())?;
 
     let mut meetings = Vec::new();
-    for meeting in meeting_iter {
-        meetings.push(meeting.map_err(|e| e.to_string())?)
-    }
+    for m in iter { meetings.push(m.map_err(|e| e.to_string())?) }
     Ok(meetings)
 }
 
+// FTS5 full-text search — appends * for prefix matching so partial words work.
+// Falls back to get_meetings() when the query is empty.
 #[tauri::command]
 fn search_meetings(state: State<'_, AppState>, query: String) -> Result<Vec<Meeting>, String> {
     if query.trim().is_empty() {
@@ -98,39 +101,38 @@ fn search_meetings(state: State<'_, AppState>, query: String) -> Result<Vec<Meet
          ORDER BY m.id DESC"
     ).map_err(|e| e.to_string())?;
 
-    let meeting_iter = stmt
-        .query_map(rusqlite::params![fts_query], |row| {
-            Ok(Meeting {
-                id: Some(row.get(0)?),
-                date: row.get(1)?,
-                title: row.get(2)?,
-                raw_transcript: row.get(3)?,
-                markdown_summary: row.get(4)?,
-                speakers: row.get(5)?,
-                tags: row.get(6)?,
-                structured_summary: row.get(7)?,
-            })
+    let iter = stmt.query_map(rusqlite::params![fts_query], |row| {
+        Ok(Meeting {
+            id: Some(row.get(0)?),
+            date: row.get(1)?,
+            title: row.get(2)?,
+            raw_transcript: row.get(3)?,
+            markdown_summary: row.get(4)?,
+            speakers: row.get(5)?,
+            tags: row.get(6)?,
+            structured_summary: row.get(7)?,
         })
-        .map_err(|e| e.to_string())?;
+    }).map_err(|e| e.to_string())?;
 
     let mut meetings = Vec::new();
-    for meeting in meeting_iter {
-        meetings.push(meeting.map_err(|e| e.to_string())?)
-    }
+    for m in iter { meetings.push(m.map_err(|e| e.to_string())?) }
     Ok(meetings)
 }
 
-// 4. IPC Command: Sends commands to Python via stdin
+// ── 4. IPC bridge — forwards commands to the Python engine ────
+
 #[tauri::command]
 fn send_command_to_python(state: State<'_, AppState>, payload: String) -> Result<(), String> {
     println!("[RUST DEBUG] Sending to Python: {}", payload);
-    let stdin_lock = state.python_stdin.lock().unwrap();
-    if let Some(mut stdin) = stdin_lock.as_ref() {
+    let lock = state.python_stdin.lock().unwrap();
+    if let Some(mut stdin) = lock.as_ref() {
         writeln!(stdin, "{}", payload).map_err(|e| e.to_string())?;
         return Ok(());
     }
     Err("Python process not initialized or stdin unavailable".to_string())
 }
+
+// ── 5. Window mode commands ───────────────────────────────────
 
 #[tauri::command]
 async fn set_compact_mode(window: Window) -> Result<(), String> {
@@ -151,11 +153,24 @@ async fn set_expanded_mode(window: Window) -> Result<(), String> {
     Ok(())
 }
 
-// 5. Audio Device Enumeration
+#[tauri::command]
+async fn set_wizard_mode(window: Window) -> Result<(), String> {
+    window.set_size(LogicalSize::new(720.0, 540.0)).map_err(|e| e.to_string())?;
+    window.set_decorations(false).map_err(|e| e.to_string())?;
+    window.set_always_on_top(false).map_err(|e| e.to_string())?;
+    window.set_resizable(false).map_err(|e| e.to_string())?;
+    window.center().map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+// ── 6. Audio device enumeration ───────────────────────────────
+// Sends LIST_DEVICES to Python; the response arrives as a python-event
+// on the frontend via the stdout reader thread.
+
 #[tauri::command]
 fn request_audio_devices(state: State<'_, AppState>) -> Result<(), String> {
-    let stdin_lock = state.python_stdin.lock().unwrap();
-    if let Some(mut stdin) = stdin_lock.as_ref() {
+    let lock = state.python_stdin.lock().unwrap();
+    if let Some(mut stdin) = lock.as_ref() {
         let payload = serde_json::json!({"action": "LIST_DEVICES"});
         writeln!(stdin, "{}", payload).map_err(|e| e.to_string())?;
         return Ok(());
@@ -163,9 +178,13 @@ fn request_audio_devices(state: State<'_, AppState>) -> Result<(), String> {
     Err("Python process not available".to_string())
 }
 
-// 6. Popover Window Commands
+// ── 7. Settings popover window ────────────────────────────────
+// The popover is a separate frameless OS window (label: "popover"),
+// positioned above the compact widget by Rust. Toggled on each call.
+
 #[tauri::command]
 async fn open_popover_window(app: AppHandle, window: Window) -> Result<(), String> {
+    // Toggle: close if already open
     if let Some(existing) = app.get_webview_window("popover") {
         existing.close().map_err(|e| e.to_string())?;
         return Ok(());
@@ -173,11 +192,11 @@ async fn open_popover_window(app: AppHandle, window: Window) -> Result<(), Strin
 
     let pos = window.outer_position().map_err(|e| e.to_string())?;
     let size = window.outer_size().map_err(|e| e.to_string())?;
-
-    let popover_w = 300.0_f64;
-    let popover_h = 480.0_f64;
+    let popover_w = 380.0_f64;
+    let popover_h = 620.0_f64;
     let gap = 8.0_f64;
 
+    // Right-align with the compact widget; fall back to below if near top of screen
     let x = (pos.x as f64 + size.width as f64 - popover_w - 8.0).max(0.0);
     let y = if pos.y as f64 >= popover_h + gap {
         pos.y as f64 - popover_h - gap
@@ -185,21 +204,17 @@ async fn open_popover_window(app: AppHandle, window: Window) -> Result<(), Strin
         pos.y as f64 + size.height as f64 + gap
     };
 
-    WebviewWindowBuilder::new(
-        &app,
-        "popover",
-        WebviewUrl::App(PathBuf::from("index.html")),
-    )
-    .title("")
-    .decorations(false)
-    .always_on_top(true)
-    .resizable(false)
-    .inner_size(popover_w, popover_h)
-    .position(x, y)
-    .skip_taskbar(true)
-    .shadow(true)
-    .build()
-    .map_err(|e| e.to_string())?;
+    WebviewWindowBuilder::new(&app, "popover", WebviewUrl::App(PathBuf::from("index.html")))
+        .title("")
+        .decorations(false)
+        .always_on_top(true)
+        .resizable(false)
+        .inner_size(popover_w, popover_h)
+        .position(x, y)
+        .skip_taskbar(true)
+        .shadow(true)
+        .build()
+        .map_err(|e| e.to_string())?;
 
     Ok(())
 }
@@ -212,12 +227,13 @@ async fn close_popover_window(app: AppHandle) -> Result<(), String> {
     Ok(())
 }
 
-// 7. Main Initialization Function
+// ── 8. Entry point ────────────────────────────────────────────
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     let conn = Connection::open("notetaker.db").expect("Failed to open local database");
 
-    // Full schema for new installs
+    // Create the meetings table with the full schema (new installs)
     conn.execute(
         "CREATE TABLE IF NOT EXISTS meetings (
             id                 INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -232,7 +248,8 @@ pub fn run() {
         [],
     ).expect("Failed to create meetings table");
 
-    // Column migration for existing databases
+    // Migrate existing databases — SQLite has no IF NOT EXISTS for ALTER TABLE,
+    // so we attempt each column and silently ignore "duplicate column name" errors.
     for sql in &[
         "ALTER TABLE meetings ADD COLUMN speakers TEXT",
         "ALTER TABLE meetings ADD COLUMN tags TEXT",
@@ -245,10 +262,12 @@ pub fn run() {
         }
     }
 
-    // FTS5 virtual table + sync triggers
+    // FTS5 virtual table — content= links to meetings without duplicating data.
+    // Three triggers keep the index in sync automatically.
     conn.execute_batch(
         "CREATE VIRTUAL TABLE IF NOT EXISTS meetings_fts
-         USING fts5(title, raw_transcript, markdown_summary, content='meetings', content_rowid='id');
+         USING fts5(title, raw_transcript, markdown_summary,
+                    content='meetings', content_rowid='id');
 
          CREATE TRIGGER IF NOT EXISTS meetings_fts_insert
          AFTER INSERT ON meetings BEGIN
@@ -280,6 +299,7 @@ pub fn run() {
         .plugin(tauri_plugin_clipboard_manager::init())
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_fs::init())
+        .plugin(tauri_plugin_http::init())
         .plugin(
             tauri_plugin_global_shortcut::Builder::new()
                 .with_handler(move |app, shortcut, event| {
@@ -313,7 +333,9 @@ pub fn run() {
         .setup(move |app| {
             let app_handle = app.handle().clone();
 
-            // ── Python engine startup ──────────────────────────────
+            // Spawn the Python AI engine as a child process.
+            // Windows: invoke the .venv interpreter directly (no bash in PATH).
+            // macOS/Linux: use run.sh which activates the venv before launching main.py.
             let mut child = if cfg!(target_os = "windows") {
                 Command::new(r"..\src-python\.venv\Scripts\python.exe")
                     .arg(r"..\src-python\main.py")
@@ -336,6 +358,9 @@ pub fn run() {
             let stdin = child.stdin.take().expect("Failed to open Python stdin");
             *python_stdin_clone.lock().unwrap() = Some(stdin);
 
+            // Spawn a reader thread that forwards every Python stdout line to React
+            // as a "python-event" Tauri event. VAD_TELEMETRY is suppressed from the
+            // console (~10/sec) but still forwarded to the frontend.
             let stdout = child.stdout.take().expect("Failed to open Python stdout");
             std::thread::spawn(move || {
                 let reader = BufReader::new(stdout);
@@ -372,6 +397,7 @@ pub fn run() {
             send_command_to_python,
             set_compact_mode,
             set_expanded_mode,
+            set_wizard_mode,
             open_popover_window,
             close_popover_window,
             request_audio_devices,

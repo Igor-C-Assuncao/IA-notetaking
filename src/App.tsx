@@ -74,10 +74,12 @@ function MainApp() {
 }
 
 function InnerRoot() {
-  const { settings } = useSettings();
+  const { settings, loading } = useSettings();
   const isPopover = getCurrentWindow().label === "popover";
   
   if (isPopover) return <PopoverWidget />;
+  
+  if (loading) return null;
   
   if (!settings.onboarding_completed) {
     return <OnboardingWizard />;

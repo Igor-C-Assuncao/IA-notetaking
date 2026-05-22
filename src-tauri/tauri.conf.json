@@ -15,7 +15,7 @@
       {
         "fullscreen": false,
         "resizable": false,
-        "decorations": true,
+        "decorations": false,
         "title": "AI Notetaker",
         "width": 400,
         "height": 120,
