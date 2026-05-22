@@ -4,12 +4,12 @@ import os
 from typing import TypedDict
 from langgraph.graph import StateGraph, START, END
 from langchain_core.messages import SystemMessage, HumanMessage
+import json as json_lib
+from config import DEFAULTS
 
 # ---------------------------------------------------------
 # GRAPH STATE DEFINITION
 # ---------------------------------------------------------
-import json as json_lib
-
 class AgentState(TypedDict):
     """Represents the memory/state of our LangGraph workflow."""
     raw_transcript: str
@@ -38,8 +38,8 @@ class MeetingWorkflowEngine:
         """Dynamically loads the correct LangChain ChatModel based on provider."""
         print(f"DEBUG: [LangGraph] Initializing {self.provider_name.upper()} model ({self.model_name})...", file=sys.stderr)
         
-        # We use temperature=0.1 for analytical tasks to reduce hallucinations
-        temp = 0.1 
+        # We use temperature from config for analytical tasks to balance creativity/hallucinations
+        temp = DEFAULTS["temperature"]
 
         if self.provider_name == "ollama":
             from langchain_ollama import ChatOllama
@@ -225,7 +225,7 @@ class LLMFactory:
         
         # Set default models if none provided by the frontend
         if provider_name == "ollama" and not model_config:
-            model_config = "llama3"
+            model_config = DEFAULTS["model"]
         elif provider_name == "openai" and not model_config:
             model_config = "gpt-4o"
         elif provider_name == "gemini" and not model_config:

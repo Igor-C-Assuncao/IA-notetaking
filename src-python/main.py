@@ -7,6 +7,7 @@ import time
 from audio_capture import AudioCaptureFactory, list_audio_devices
 from transcription_service import TranscriptionService
 from llm_service import LLMFactory
+from config import DEFAULTS
 
 def send_event(event_type: str, payload: dict):
     """
@@ -50,13 +51,13 @@ def main():
 
                 # Store recording config for use when STOP_RECORDING arrives
                 current_config = {
-                    "system_audio": command.get("system_audio", False),
-                    "auto_summarize": command.get("auto_summarize", True),
-                    "speaker_diarization": command.get("speaker_diarization", False),
-                    "language": command.get("language", "auto"),
+                    "system_audio": command.get("system_audio", DEFAULTS["system_audio"]),
+                    "auto_summarize": command.get("auto_summarize", DEFAULTS["auto_summarize"]),
+                    "speaker_diarization": command.get("speaker_diarization", DEFAULTS["speaker_diarization"]),
+                    "language": command.get("language", DEFAULTS["language"]),
                     "system_prompt": command.get("system_prompt", ""),
-                    "llm_provider": command.get("llm_provider", "ollama"),
-                    "llm_model": command.get("llm_model", "llama3"),
+                    "llm_provider": command.get("llm_provider", DEFAULTS["provider"]),
+                    "llm_model": command.get("llm_model", DEFAULTS["model"]),
                     "api_key": command.get("api_key", ""),
                 }
 
