@@ -300,7 +300,36 @@ pub fn run() {
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_fs::init())
         .plugin(tauri_plugin_http::init())
-        .manage(AppState { db: Mutex::new(conn), python_stdin })
+        .plugin(
+            tauri_plugin_global_shortcut::Builder::new()
+                .with_handler(move |app, shortcut, event| {
+                    if event.state() != ShortcutState::Pressed {
+                        return;
+                    }
+                    let m = if cfg!(target_os = "macos") {
+                        Modifiers::SUPER | Modifiers::SHIFT
+                    } else {
+                        Modifiers::CONTROL | Modifiers::SHIFT
+                    };
+                    let cmd = if shortcut.matches(m, Code::KeyR) {
+                        Some("shortcut:toggle-recording")
+                    } else if shortcut.matches(m, Code::KeyP) {
+                        Some("shortcut:toggle-pause")
+                    } else if shortcut.matches(m, Code::KeyE) {
+                        Some("shortcut:toggle-expand")
+                    } else {
+                        None
+                    };
+                    if let Some(name) = cmd {
+                        app.emit(name, ()).ok();
+                    }
+                })
+                .build(),
+        )
+        .manage(AppState {
+            db: Mutex::new(conn),
+            python_stdin,
+        })
         .setup(move |app| {
             let app_handle = app.handle().clone();
 
@@ -345,49 +374,19 @@ pub fn run() {
                 }
             });
 
-            // Register global keyboard shortcuts.
-            // Use Cmd+Shift on macOS, Ctrl+Shift on Windows/Linux.
-            // Registering only one modifier set per platform avoids the
-            // "HotKey already registered" panic that occurs when the same
-            // physical key combination is registered twice on Windows.
-            let shortcut_handle = app.handle().clone();
-            app.handle().plugin(
-                tauri_plugin_global_shortcut::Builder::new()
-                    .with_handler(move |_app, shortcut, event| {
-                        if event.state() != ShortcutState::Pressed {
-                            return;
-                        }
-                        let m = if cfg!(target_os = "macos") {
-                            Modifiers::SUPER | Modifiers::SHIFT
-                        } else {
-                            Modifiers::CONTROL | Modifiers::SHIFT
-                        };
-                        let cmd = if shortcut.matches(m, Code::KeyR) {
-                            Some("shortcut:toggle-recording")
-                        } else if shortcut.matches(m, Code::KeyP) {
-                            Some("shortcut:toggle-pause")
-                        } else if shortcut.matches(m, Code::KeyE) {
-                            Some("shortcut:toggle-expand")
-                        } else {
-                            None
-                        };
-                        if let Some(name) = cmd {
-                            shortcut_handle.emit(name, ()).ok();
-                        }
-                    })
-                    .build(),
-            )?;
-
+            // ── Global keyboard shortcuts ──────────────────────────
+            // Plugin is already initialized above; only register shortcuts here.
             let modifier = if cfg!(target_os = "macos") {
                 Modifiers::SUPER | Modifiers::SHIFT
             } else {
                 Modifiers::CONTROL | Modifiers::SHIFT
             };
-            app.global_shortcut().register_multiple([
-                Shortcut::new(Some(modifier), Code::KeyR), // toggle recording
-                Shortcut::new(Some(modifier), Code::KeyP), // pause / resume
-                Shortcut::new(Some(modifier), Code::KeyE), // expand / collapse
-            ])?;
+            let shortcuts = [
+                Shortcut::new(Some(modifier), Code::KeyR),
+                Shortcut::new(Some(modifier), Code::KeyP),
+                Shortcut::new(Some(modifier), Code::KeyE),
+            ];
+            app.global_shortcut().register_multiple(shortcuts)?;
 
             Ok(())
         })
