@@ -1,8 +1,9 @@
 import { useState } from "react";
+import { invoke } from "@tauri-apps/api/core";
 import { writeText } from "@tauri-apps/plugin-clipboard-manager";
 import { save } from "@tauri-apps/plugin-dialog";
 import { writeTextFile } from "@tauri-apps/plugin-fs";
-import { GearIcon, ArrowsInSimpleIcon, MagnifyingGlassIcon, CopyIcon, ExportIcon } from "@phosphor-icons/react";
+import { GearIcon, ArrowsInSimpleIcon, MagnifyingGlassIcon, CopyIcon, ExportIcon, ChatCircleIcon } from "@phosphor-icons/react";
 import { MacTrafficLights } from "@features/window-chrome/MacTrafficLights";
 import { WinCaptionButtons } from "@features/window-chrome/WinCaptionButtons";
 import { StatusDot } from "@shared/ui/StatusDot";
@@ -16,7 +17,6 @@ import { useRecording } from "@features/recording/hooks/useRecording";
 import { useTranscription } from "@features/transcription/hooks/useTranscription";
 import { useSummary } from "@features/summary/hooks/useSummary";
 import { useMeetings } from "@features/meetings/hooks/useMeetings";
-import { SettingsModal } from "@features/settings/SettingsModal";
 
 export function ExpandedView({
   isTransitioning, toggleWindowMode
@@ -31,7 +31,6 @@ export function ExpandedView({
   const { meetingsHistory, selectedMeetingId, setSelectedMeetingId, sidebarSearch, setSidebarSearch } = useMeetings();
   
   const [activeTab, setActiveTab] = useState<"transcript" | "summary" | "actions">("transcript");
-  const [showSettings, setShowSettings] = useState(false);
 
   const isWin = detectOS() === "win";
 
@@ -44,6 +43,12 @@ export function ExpandedView({
     if (path) { await writeTextFile(path, notes); }
   };
 
+  const handleExportForWebAI = async () => {
+    const prompt = `Here is a transcript of a meeting. Please provide a brief TL;DR, identify key decisions, and list action items assigned to people.\n\n[Transcript]\n\n${filteredTranscript || "No transcript available."}`;
+    await writeText(prompt);
+    alert("Prompt + Transcript copied to clipboard! You can now paste it into ChatGPT, Claude, etc.");
+  };
+
   return (
     <div className={`app-layout ${isWin ? "win" : "mac"} ${isTransitioning ? "transitioning" : "entered"}`}>
       <div className={`titlebar ${isWin ? "win" : "mac"}`} data-tauri-drag-region>
@@ -53,7 +58,7 @@ export function ExpandedView({
           <span className="titlebar-name">Ai<span className="titlebar-sub"> NoteTaking</span></span>
         </div>
         <div className="titlebar-actions">
-          <button className="icon-btn" onClick={() => setShowSettings(true)} title="Settings">
+          <button className="icon-btn" onClick={() => invoke("open_popover_window")} title="Settings">
             <GearIcon size={16} />
           </button>
           <button className="icon-btn" onClick={toggleWindowMode} title="Collapse">
@@ -191,11 +196,11 @@ export function ExpandedView({
             <div className="footer-actions">
               <button className="chip-btn" onClick={handleCopy}><CopyIcon size={13} /> Copy</button>
               <button className="chip-btn" onClick={handleExport}><ExportIcon size={13} /> Export .MD</button>
+              <button className="chip-btn" onClick={handleExportForWebAI}><ChatCircleIcon size={13} /> Copy for Web AI</button>
             </div>
           )}
         </main>
       </div>
-      {showSettings && <SettingsModal onClose={() => setShowSettings(false)} />}
     </div>
   );
 }
