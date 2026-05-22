@@ -1,5 +1,6 @@
 import { createContext, useContext, useEffect, useState, ReactNode } from "react";
 import { load } from "@tauri-apps/plugin-store";
+import { emit, listen } from "@tauri-apps/api/event";
 
 import { DEFAULTS } from "@shared/config/defaults";
 
@@ -48,6 +49,7 @@ export function SettingsProvider({ children }: { children: ReactNode }) {
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
+    let unlisten: (() => void) | null = null;
     async function init() {
       try {
         const store = await load("settings.json", { autoSave: false, defaults: {} });
@@ -64,8 +66,20 @@ export function SettingsProvider({ children }: { children: ReactNode }) {
       } finally {
         setLoading(false);
       }
+
+      // Listen for settings changed in other Tauri windows
+      try {
+        unlisten = await listen<Partial<Settings>>("settings-changed", (event) => {
+          setSettings((prev) => ({ ...prev, ...event.payload }));
+        });
+      } catch (err) {
+        console.error("Failed to listen to settings-changed event:", err);
+      }
     }
     init();
+    return () => {
+      if (unlisten) unlisten();
+    };
   }, []);
 
   const updateSettings = async (partial: Partial<Settings>) => {
@@ -76,6 +90,8 @@ export function SettingsProvider({ children }: { children: ReactNode }) {
         await store.set(key, value);
       }
       await store.save();
+      // Emit settings changed to synchronize all open Tauri webviews
+      await emit("settings-changed", partial);
     } catch (e) {
       console.error("Failed to save settings:", e);
     }

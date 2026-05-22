@@ -23,6 +23,8 @@ def main():
     send_event("SYSTEM_READY", {"status": "Python engine is ready and listening."})
     send_event("DEVICE_LIST", {"devices": list_audio_devices()})
 
+    current_config = {}
+
     # 1. Initialize Audio Capture
     try:
         audio_capturer = AudioCaptureFactory.get_strategy()
@@ -59,6 +61,7 @@ def main():
                     "llm_provider": command.get("llm_provider", DEFAULTS["provider"]),
                     "llm_model": command.get("llm_model", DEFAULTS["model"]),
                     "api_key": command.get("api_key", ""),
+                    "is_test": command.get("is_test", False),
                 }
 
                 def on_telemetry(level: float):
@@ -75,6 +78,10 @@ def main():
 
                 # STEP A: Stop recording and trim silence
                 saved_file_path = audio_capturer.stop_recording()
+
+                if current_config.get("is_test", False):
+                    send_event("PIPELINE_STATUS", {"step": "Done."})
+                    continue
 
                 # STEP B: Transcribe audio
                 if transcriber:

@@ -13,6 +13,13 @@
     "store:default",
     "clipboard-manager:default",
     "dialog:default",
-    "fs:default"
+    "fs:default",
+    {
+      "identifier": "http:default",
+      "allow": [
+        { "url": "https://**" },
+        { "url": "http://**" }
+      ]
+    }
   ]
 }
