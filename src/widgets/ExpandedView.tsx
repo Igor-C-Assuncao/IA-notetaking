@@ -31,11 +31,35 @@ export function ExpandedView({
   const { meetingsHistory, selectedMeetingId, setSelectedMeetingId, sidebarSearch, setSidebarSearch } = useMeetings();
   
   const [activeTab, setActiveTab] = useState<"transcript" | "summary" | "actions">("transcript");
+  const [copiedNotes, setCopiedNotes] = useState(false);
+  const [copiedWebAI, setCopiedWebAI] = useState(false);
 
   const isWin = detectOS() === "win";
 
+  const safeWriteText = async (text: string) => {
+    try {
+      if (navigator?.clipboard?.writeText) {
+        await navigator.clipboard.writeText(text);
+        return true;
+      }
+    } catch (e) {
+      console.warn("navigator.clipboard failed, trying tauri clipboard:", e);
+    }
+    try {
+      await writeText(text);
+      return true;
+    } catch (e) {
+      console.error("All clipboard methods failed:", e);
+      return false;
+    }
+  };
+
   const handleCopy = async () => {
-    await writeText(notes);
+    const success = await safeWriteText(notes);
+    if (success) {
+      setCopiedNotes(true);
+      setTimeout(() => setCopiedNotes(false), 2000);
+    }
   };
 
   const handleExport = async () => {
@@ -45,8 +69,11 @@ export function ExpandedView({
 
   const handleExportForWebAI = async () => {
     const prompt = `Here is a transcript of a meeting. Please provide a brief TL;DR, identify key decisions, and list action items assigned to people.\n\n[Transcript]\n\n${filteredTranscript || "No transcript available."}`;
-    await writeText(prompt);
-    alert("Prompt + Transcript copied to clipboard! You can now paste it into ChatGPT, Claude, etc.");
+    const success = await safeWriteText(prompt);
+    if (success) {
+      setCopiedWebAI(true);
+      setTimeout(() => setCopiedWebAI(false), 2000);
+    }
   };
 
   return (
@@ -194,9 +221,9 @@ export function ExpandedView({
 
           {notes && (
             <div className="footer-actions">
-              <button className="chip-btn" onClick={handleCopy}><CopyIcon size={13} /> Copy</button>
+              <button className="chip-btn" onClick={handleCopy}><CopyIcon size={13} /> {copiedNotes ? "✓ Copied!" : "Copy"}</button>
               <button className="chip-btn" onClick={handleExport}><ExportIcon size={13} /> Export .MD</button>
-              <button className="chip-btn" onClick={handleExportForWebAI}><ChatCircleIcon size={13} /> Copy for Web AI</button>
+              <button className="chip-btn" onClick={handleExportForWebAI}><ChatCircleIcon size={13} /> {copiedWebAI ? "✓ Copied for Web AI!" : "Copy for Web AI"}</button>
             </div>
           )}
         </main>
