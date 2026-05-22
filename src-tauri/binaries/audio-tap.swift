@@ -1,20 +1,11 @@
 // audio-tap.swift
-// Captures system audio via Core Audio Tap (macOS 14.4+) and writes
-// raw PCM (Float32 interleaved stereo, 48kHz) to stdout.
-// Python reads chunks from the process stdout and normalizes before mixing.
-//
-// Build (run from src-tauri/binaries/):
-//   swiftc audio-tap.swift -o audio-tap-aarch64-apple-darwin   # Apple Silicon
-//   swiftc audio-tap.swift -o audio-tap-x86_64-apple-darwin    # Intel
-//
+// Captures system audio via Core Audio Tap (macOS 14.4+).
+// Writes raw PCM (Float32 interleaved stereo, 48kHz) to stdout.
 // Send "stop\n" to stdin to terminate cleanly.
 
 import AudioToolbox
 import AVFoundation
 import Foundation
-
-let kSampleRate: Double = 48000
-let kChannels: UInt32 = 2
 
 var tapRef: AudioObjectID = kAudioObjectUnknown
 var aggDevRef: AudioObjectID = kAudioObjectUnknown
@@ -30,17 +21,14 @@ func writePCM(_ buffer: AVAudioPCMBuffer) {
         }
     }
     interleaved.withUnsafeBytes { ptr in
-        _ = ptr.baseAddress.map {
-            FileHandle.standardOutput.write(Data($0, count: ptr.count))
-        }
+        FileHandle.standardOutput.write(Data(bytes: ptr.baseAddress!, count: ptr.count))
     }
 }
 
 if #available(macOS 14.4, *) {
-    var tapDesc = CATapDescription(stereoGlobalTapButExcludeProcesses: [])
-    tapDesc.mutedWhenTapped = false
+    let tapDesc = CATapDescription(stereoMixdownOfProcesses: [])
 
-    var err = AudioHardwareCreateProcessTap(&tapDesc, &tapRef)
+    var err = AudioHardwareCreateProcessTap(tapDesc, &tapRef)
     guard err == noErr else {
         fputs("ERROR: AudioHardwareCreateProcessTap \(err)\n", stderr)
         exit(1)
@@ -60,15 +48,48 @@ if #available(macOS 14.4, *) {
     }
 
     let engine = AVAudioEngine()
-    let format = AVAudioFormat(
-        commonFormat: .pcmFormatFloat32,
-        sampleRate: kSampleRate,
-        channels: kChannels,
-        interleaved: true
-    )!
+    let inputNode = engine.inputNode
 
-    engine.inputNode.installTap(onBus: 0, bufferSize: 4096, format: format) { buf, _ in
-        writePCM(buf)
+    // Use nil format — let the engine use its native format for the tap.
+    // We convert to Float32 stereo 48kHz using AVAudioConverter below.
+    let nativeFormat = inputNode.inputFormat(forBus: 0)
+    fputs("DEBUG: native format = \(nativeFormat)\n", stderr)
+
+    // Target format: Float32 non-interleaved stereo 48kHz (AVAudioEngine standard)
+    guard let targetFormat = AVAudioFormat(
+        commonFormat: .pcmFormatFloat32,
+        sampleRate: 48000,
+        channels: 2,
+        interleaved: false
+    ) else {
+        fputs("ERROR: could not create target format\n", stderr)
+        exit(1)
+    }
+
+    guard let converter = AVAudioConverter(from: nativeFormat, to: targetFormat) else {
+        fputs("ERROR: could not create AVAudioConverter\n", stderr)
+        exit(1)
+    }
+
+    inputNode.installTap(onBus: 0, bufferSize: 4096, format: nativeFormat) { inBuf, _ in
+        let frameCapacity = AVAudioFrameCount(
+            Double(inBuf.frameLength) * targetFormat.sampleRate / nativeFormat.sampleRate
+        ) + 1
+
+        guard let outBuf = AVAudioPCMBuffer(
+            pcmFormat: targetFormat,
+            frameCapacity: frameCapacity
+        ) else { return }
+
+        var error: NSError?
+        converter.convert(to: outBuf, error: &error) { _, outStatus in
+            outStatus.pointee = .haveData
+            return inBuf
+        }
+
+        if error == nil && outBuf.frameLength > 0 {
+            writePCM(outBuf)
+        }
     }
 
     do {
@@ -79,18 +100,16 @@ if #available(macOS 14.4, *) {
         exit(1)
     }
 
-    // Block until "stop" arrives on stdin
     while let line = readLine() {
         if line.trimmingCharacters(in: .whitespaces) == "stop" { break }
     }
 
     engine.stop()
-    engine.inputNode.removeTap(onBus: 0)
+    inputNode.removeTap(onBus: 0)
     AudioHardwareDestroyAggregateDevice(aggDevRef)
     AudioHardwareDestroyProcessTap(tapRef)
 
 } else {
-    // Signal Python to fall back to ScreenCaptureKit path
     fputs("FALLBACK_SCKIT\n", stderr)
     exit(2)
 }
