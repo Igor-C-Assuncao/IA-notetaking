@@ -21,7 +21,8 @@ func writePCM(_ buffer: AVAudioPCMBuffer) {
         }
     }
     interleaved.withUnsafeBytes { ptr in
-        FileHandle.standardOutput.write(Data(bytes: ptr.baseAddress!, count: ptr.count))
+        guard let baseAddress = ptr.baseAddress else { return }
+        FileHandle.standardOutput.write(Data(bytes: baseAddress, count: ptr.count))
     }
 }
 
