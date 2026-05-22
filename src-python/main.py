@@ -107,6 +107,8 @@ def main():
                             transcription_result["text"],
                             api_key=api_key,
                             system_prompt=current_config.get("system_prompt", "") or None,
+                            diarized_segments=transcription_result.get("segments") if transcription_result.get("diarized") else None,
+                            meeting_date=time.strftime("%Y-%m-%d %H:%M:%S")
                         )
                         send_event("NOTES_GENERATED", {
                             "markdown": result.get("markdown", ""),
