@@ -1,8 +1,10 @@
 import { useState, useEffect } from "react";
 import { usePythonEvent } from "@app/providers/IpcProvider";
-import { sendCommand } from "@shared/lib/ipc";
+import { useSettings } from "@app/providers/SettingsProvider";
+import { invoke } from "@tauri-apps/api/core";
 
 export function useRecording() {
+  const { settings } = useSettings();
   const [isRecording, setIsRecording] = useState(false);
   const [recordingSeconds, setRecordingSeconds] = useState(0);
   const [audioLevel, setAudioLevel] = useState(0);
@@ -30,10 +32,28 @@ export function useRecording() {
   }, [isRecording]);
 
   const toggleRecording = async () => {
-    if (isRecording) {
-      await sendCommand("stop_recording");
-    } else {
-      await sendCommand("start_recording");
+    try {
+      if (isRecording) {
+        await invoke("send_command_to_python", {
+          payload: JSON.stringify({ action: "STOP_RECORDING" })
+        });
+      } else {
+        await invoke("send_command_to_python", {
+          payload: JSON.stringify({
+            action: "START_RECORDING",
+            system_audio: settings.systemAudio,
+            auto_summarize: settings.autoSummarize,
+            speaker_diarization: settings.speakerDiarization,
+            language: settings.language || "auto",
+            system_prompt: settings.systemPrompt || "",
+            llm_provider: settings.provider,
+            llm_model: settings.modelName,
+            api_key: settings.apiKey || "",
+          })
+        });
+      }
+    } catch (e) {
+      console.error("Failed to toggle recording:", e);
     }
   };
 

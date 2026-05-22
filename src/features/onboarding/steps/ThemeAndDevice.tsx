@@ -1,7 +1,7 @@
 import { Dispatch, SetStateAction, useEffect, useState } from "react";
 import { WizardState } from "../OnboardingWizard";
 import { invoke } from "@tauri-apps/api/core";
-import { listen } from "@tauri-apps/api/event";
+import { usePythonEvent } from "@app/providers/IpcProvider";
 
 interface Props {
   state: WizardState;
@@ -12,43 +12,49 @@ interface Props {
 
 export function ThemeAndDevice({ state, setState, onFinish, onPrev }: Props) {
   const [level, setLevel] = useState(0);
+  const [isTestingMic, setIsTestingMic] = useState(false);
+  const [testCountdown, setTestCountdown] = useState(0);
 
   useEffect(() => {
     // Apply theme preview immediately
     document.documentElement.setAttribute("data-theme", state.theme);
   }, [state.theme]);
 
-  useEffect(() => {
-    // Listen to VAD telemetry for the meter
-    const unlisten = listen("python-event", (event: any) => {
-      try {
-        const payload = JSON.parse(event.payload);
-        if (payload.event === "VAD_TELEMETRY") {
-          setLevel(payload.data.level);
-        }
-      } catch (e) {
-        // ignore
-      }
-    });
-
-    return () => {
-      unlisten.then(f => f());
-    };
-  }, []);
+  // Listen to VAD telemetry for the meter using the robust central hook
+  usePythonEvent("VAD_TELEMETRY", (data) => {
+    setLevel(data.level || 0);
+  });
 
   const startTest = async () => {
+    if (isTestingMic) return;
+    setIsTestingMic(true);
+    setTestCountdown(5);
+    
     try {
       await invoke("send_command_to_python", {
-        payload: JSON.stringify({ action: "START_RECORDING", system_audio: false })
+        payload: JSON.stringify({ action: "START_RECORDING", system_audio: false, is_test: true })
       });
+
+      const interval = setInterval(() => {
+        setTestCountdown((prev) => {
+          if (prev <= 1) {
+            clearInterval(interval);
+            return 0;
+          }
+          return prev - 1;
+        });
+      }, 1000);
+
       setTimeout(async () => {
         await invoke("send_command_to_python", {
           payload: JSON.stringify({ action: "STOP_RECORDING" })
         });
         setLevel(0);
+        setIsTestingMic(false);
       }, 5000);
     } catch (e) {
       console.error(e);
+      setIsTestingMic(false);
     }
   };
 
@@ -96,7 +102,9 @@ export function ThemeAndDevice({ state, setState, onFinish, onPrev }: Props) {
           </div>
         </div>
         
-        <button className="btn-secondary" onClick={startTest}>Test Mic (5s)</button>
+        <button className="btn-secondary" onClick={startTest} disabled={isTestingMic}>
+          {isTestingMic ? `Testing... (${testCountdown}s)` : "Test Mic (5s)"}
+        </button>
       </div>
 
       <div className="wizard-footer">

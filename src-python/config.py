@@ -13,6 +13,7 @@ DEFAULTS = {
     "num_ctx": 16384,
     "top_p": 0.9,
     "repeat_penalty": 1.1,
+    "tokens_per_char": 3.5,
 
     # ── Transcription Defaults ─────────────────────────────────────────────
     "whisper_model": "base",

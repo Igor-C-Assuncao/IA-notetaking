@@ -209,8 +209,14 @@ export function OllamaSetup({ state, setState, onNext, onPrev }: Props) {
         }
         .advanced-options label { font-size: 11px; color: var(--text-faint); }
         .model-select {
-          padding: 8px; background: var(--bg-input); border: 1px solid var(--border);
+          padding: 8px 28px 8px 8px; background: var(--bg-input); border: 1px solid var(--border);
           color: var(--text); border-radius: var(--radius-sm); font-size: 13px; outline: none;
+          -webkit-appearance: none; -moz-appearance: none; appearance: none;
+          background-image: url("data:image/svg+xml,%3Csvg fill='rgba(255,255,255,0.6)' height='24' viewBox='0 0 24 24' width='24' xmlns='http://www.w3.org/2000/svg'%3E%3Cpath d='M7 10l5 5 5-5z'/%3E%3C/svg%3E");
+          background-repeat: no-repeat; background-position: right 8px center; background-size: 18px;
+        }
+        [data-theme="minimalist-notebook"] .model-select {
+          background-image: url("data:image/svg+xml,%3Csvg fill='%231a1814' height='24' viewBox='0 0 24 24' width='24' xmlns='http://www.w3.org/2000/svg'%3E%3Cpath d='M7 10l5 5 5-5z'/%3E%3C/svg%3E");
         }
 
         .wizard-footer {
