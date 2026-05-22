@@ -282,7 +282,7 @@ pub fn run() {
         .plugin(tauri_plugin_fs::init())
         .plugin(
             tauri_plugin_global_shortcut::Builder::new()
-                .with_handler(move |_app, shortcut, event| {
+                .with_handler(move |app, shortcut, event| {
                     if event.state() != ShortcutState::Pressed {
                         return;
                     }
@@ -301,7 +301,7 @@ pub fn run() {
                         None
                     };
                     if let Some(name) = cmd {
-                        _app.emit(name, ()).ok();
+                        app.emit(name, ()).ok();
                     }
                 })
                 .build(),
