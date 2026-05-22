@@ -600,6 +600,13 @@ input, select { font-family: inherit; }
   border-radius: 2px;
 }
 
+/* Fix for native dropdown options in dark theme (Windows) */
+.popover-lg option,
+[data-theme="liquid-glass"] option {
+  background-color: #1a1824;
+  color: #ffffff;
+}
+
 .popover-toggles-section {
   border-top: 0.5px solid rgba(255,255,255,0.08);
   margin-top: 4px;

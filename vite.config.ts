@@ -7,6 +7,14 @@ const host = process.env.TAURI_DEV_HOST;
 // https://vite.dev/config/
 export default defineConfig(async () => ({
   plugins: [react()],
+  resolve: {
+    alias: {
+      "@app": "/src/app",
+      "@features": "/src/features",
+      "@widgets": "/src/widgets",
+      "@shared": "/src/shared",
+    },
+  },
 
   // Vite options tailored for Tauri development and only applied in `tauri dev` or `tauri build`
   //
