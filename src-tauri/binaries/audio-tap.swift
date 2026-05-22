@@ -55,12 +55,12 @@ if #available(macOS 14.4, *) {
     let nativeFormat = inputNode.inputFormat(forBus: 0)
     fputs("DEBUG: native format = \(nativeFormat)\n", stderr)
 
-    // Target format: Float32 non-interleaved stereo 48kHz (AVAudioEngine standard)
+    // Target format: Float32 interleaved stereo 48kHz.
     guard let targetFormat = AVAudioFormat(
         commonFormat: .pcmFormatFloat32,
         sampleRate: 48000,
         channels: 2,
-        interleaved: false
+        interleaved: true
     ) else {
         fputs("ERROR: could not create target format\n", stderr)
         exit(1)
