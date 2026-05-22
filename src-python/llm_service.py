@@ -93,7 +93,7 @@ class MeetingWorkflowEngine:
         text_to_analyze = state["raw_transcript"]
         if state.get("diarized_segments"):
             text_to_analyze += "\n\nDIARIZATION HINTS (Speaker labels and text):\n"
-            for seg in state["diarized_segments"][:20]: # just a hint from the start
+            for seg in state["diarized_segments"][:20]:  # Just a hint from the start.
                 text_to_analyze += f"{seg['speaker']}: {seg['text']}\n"
 
         response = self.llm.invoke([
@@ -262,7 +262,7 @@ class MeetingWorkflowEngine:
                 "markdown": raw,
             }
         
-        structured["decisions"] = [d.get("text") for d in decisions if type(d) == dict and d.get("text")]
+        structured["decisions"] = [d.get("text") for d in decisions if isinstance(d, dict) and d.get("text")]
         structured["actions"] = actions
 
         # Basic fallback markdown if empty
@@ -271,9 +271,9 @@ class MeetingWorkflowEngine:
             if structured.get("tldr"):
                 lines.append(f"## 📝 TL;DR\n{structured['tldr']}\n")
             if decisions:
-                lines.append("## ✅ Decisions\n" + "\n".join(f"- {d.get('text', '')}" for d in decisions if type(d) == dict) + "\n")
+                lines.append("## ✅ Decisions\n" + "\n".join(f"- {d.get('text', '')}" for d in decisions if isinstance(d, dict)) + "\n")
             if actions:
-                items = [f"- [ ] {a.get('what', '')}" + (f" — {a['who']}" if type(a) == dict and a.get("who") else "") for a in actions if type(a) == dict]
+                items = [f"- [ ] {a.get('what', '')}" + (f" — {a['who']}" if isinstance(a, dict) and a.get("who") else "") for a in actions if isinstance(a, dict)]
                 if items:
                     lines.append("## 🎯 Action Items\n" + "\n".join(items) + "\n")
             structured["markdown"] = "\n".join(lines) if lines else raw
