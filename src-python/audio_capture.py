@@ -451,12 +451,17 @@ class MacosSystemAudioMixer:
     def _normalize(raw: bytes) -> np.ndarray:
         """
         Normalize Swift tap output to int16 mono 16kHz for mixing with mic.
-        Native format from CATap aggregate device: Float32 mono 44100 Hz.
+        Native format from Swift tap: Float32 interleaved stereo 48000 Hz.
         """
         from scipy.signal import resample_poly
-        mono_f32 = np.frombuffer(raw, dtype=np.float32).copy()
-        # Resample 44100 Hz -> 16000 Hz (ratio 160:441)
-        mono_16k = resample_poly(mono_f32, 160, 441).astype(np.float32)
+        stereo_f32 = np.frombuffer(raw, dtype=np.float32)
+        if stereo_f32.size < 2:
+            return np.array([], dtype=np.int16)
+        # Ensure complete LR pairs and downmix stereo -> mono.
+        stereo_f32 = stereo_f32[: (stereo_f32.size // 2) * 2].reshape(-1, 2)
+        mono_f32 = stereo_f32.mean(axis=1)
+        # Resample 48000 Hz -> 16000 Hz (ratio 1:3)
+        mono_16k = resample_poly(mono_f32, 1, 3).astype(np.float32)
         # Convert float32 -> int16
         return (mono_16k * 32768).clip(-32768, 32767).astype(np.int16)
 

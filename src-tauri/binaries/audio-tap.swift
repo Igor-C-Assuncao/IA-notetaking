@@ -21,7 +21,8 @@ func writePCM(_ buffer: AVAudioPCMBuffer) {
         }
     }
     interleaved.withUnsafeBytes { ptr in
-        FileHandle.standardOutput.write(Data(bytes: ptr.baseAddress!, count: ptr.count))
+        guard let baseAddress = ptr.baseAddress else { return }
+        FileHandle.standardOutput.write(Data(bytes: baseAddress, count: ptr.count))
     }
 }
 
@@ -53,14 +54,13 @@ if #available(macOS 14.4, *) {
     // Use nil format — let the engine use its native format for the tap.
     // We convert to Float32 stereo 48kHz using AVAudioConverter below.
     let nativeFormat = inputNode.inputFormat(forBus: 0)
-    fputs("DEBUG: native format = \(nativeFormat)\n", stderr)
 
-    // Target format: Float32 non-interleaved stereo 48kHz (AVAudioEngine standard)
+    // Target format: Float32 interleaved stereo 48kHz.
     guard let targetFormat = AVAudioFormat(
         commonFormat: .pcmFormatFloat32,
         sampleRate: 48000,
         channels: 2,
-        interleaved: false
+        interleaved: true
     ) else {
         fputs("ERROR: could not create target format\n", stderr)
         exit(1)
