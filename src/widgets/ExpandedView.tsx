@@ -19,6 +19,7 @@ import { useSummary } from "@features/summary/hooks/useSummary";
 import { useMeetings } from "@features/meetings/hooks/useMeetings";
 import { usePythonEvent } from "@app/providers/IpcProvider";
 import { ReprocessModal } from "@features/meetings/components/ReprocessModal";
+import { CopilotSidebar } from "@features/rag/components/CopilotSidebar";
 
 export function ExpandedView({
   isTransitioning, toggleWindowMode
@@ -40,6 +41,7 @@ export function ExpandedView({
   const [showExportDropdown, setShowExportDropdown] = useState(false);
   const [toastMessage, setToastMessage] = useState("");
   const [toastLink, setToastLink] = useState("");
+  const [isCopilotOpen, setIsCopilotOpen] = useState(false);
 
   const isWin = detectOS() === "win";
 
@@ -399,6 +401,21 @@ export function ExpandedView({
                 {isRecording ? <span className="stop-square-sm" /> : <span className="record-circle-sm" />}
                 {isRecording ? "Stop" : selectedMeetingId ? "New Session" : "Record"}
               </button>
+              {settings.ragEnabled && (
+                <button
+                  className={`record-btn-expanded secondary ${isCopilotOpen ? "active" : ""}`}
+                  style={{ 
+                    marginLeft: "8px", 
+                    background: isCopilotOpen ? "var(--accent)" : "rgba(255,255,255,0.05)", 
+                    border: "1px solid var(--border)", 
+                    color: isCopilotOpen ? "#fff" : "var(--text)" 
+                  }}
+                  onClick={() => setIsCopilotOpen(!isCopilotOpen)}
+                  title="Toggle AI Copilot sidebar chat"
+                >
+                  🤖 Copilot
+                </button>
+              )}
             </div>
           </div>
 
@@ -494,6 +511,15 @@ export function ExpandedView({
             </div>
           )}
         </main>
+        
+        {isCopilotOpen && settings.ragEnabled && (
+          <CopilotSidebar
+            isOpen={isCopilotOpen}
+            onClose={() => setIsCopilotOpen(false)}
+            meetingsHistory={meetingsHistory}
+            setSelectedMeetingId={setSelectedMeetingId}
+          />
+        )}
       </div>
 
       {showReprocessModal && selectedMeetingId !== null && (() => {
