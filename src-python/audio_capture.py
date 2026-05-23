@@ -1,6 +1,7 @@
 # src-python/audio_capture.py
 import sys
 import os
+import time
 import subprocess
 import threading
 import wave
@@ -17,9 +18,25 @@ def list_audio_devices() -> list:
     """
     Returns a list of available audio input devices on the current platform.
     Each entry: {id, name, type}  where type is 'mic' or 'loopback'.
-    Safe to call at any time — opens and closes PyAudio internally.
+    Safe to call at any time — opens and closes PyAudio/soundcard internally.
     """
     devices = []
+    if sys.platform.startswith("linux"):
+        try:
+            import soundcard as sc
+            mics = sc.all_microphones(include_loopback=True, exclude_monitors=False)
+            for idx, mic in enumerate(mics):
+                name = mic.name
+                is_loopback = "monitor" in name.lower() or "loopback" in name.lower()
+                devices.append({
+                    "id": idx,
+                    "name": name,
+                    "type": "loopback" if is_loopback else "mic",
+                })
+        except Exception as e:
+            print(f"DEBUG: [Linux AudioDevices] Failed to enumerate devices: {e}", file=sys.stderr)
+        return devices
+
     try:
         p = pyaudio.PyAudio()
         count = p.get_device_count()
@@ -52,8 +69,8 @@ class AudioCaptureStrategy(ABC):
     Abstract base class defining the contract for all audio capture strategies.
     """
     @abstractmethod
-    def start_recording(self, telemetry_callback=None):
-        """Starts capturing audio. Optional callback(level: float) for RMS telemetry."""
+    def start_recording(self, telemetry_callback=None, system_audio: bool = False):
+        """Starts capturing audio. Optional callback(level: float) for RMS telemetry. Accepts system_audio toggle."""
         pass
 
     @abstractmethod
@@ -96,7 +113,7 @@ class WindowsAudioCapture(AudioCaptureStrategy):
         current_dir = os.path.dirname(os.path.abspath(__file__))
         self.output_file = os.path.join(current_dir, "temp_meeting_audio.wav")
 
-    def start_recording(self, telemetry_callback=None):
+    def start_recording(self, telemetry_callback=None, system_audio: bool = False):
         if self.is_recording:
             return
 
@@ -105,24 +122,35 @@ class WindowsAudioCapture(AudioCaptureStrategy):
         self.loopback_frames = []
         self.mic_frames = []
         
+        # Defensive programming: delete previous session audio if it exists
+        if os.path.exists(self.output_file):
+            try:
+                os.remove(self.output_file)
+                print("DEBUG: [Windows] Outdated meeting audio file removed.", file=sys.stderr)
+            except Exception as e:
+                print(f"DEBUG: [Windows] Failed to delete previous audio: {e}", file=sys.stderr)
+
         # 1. Initialize PyAudio ONCE in the main thread
         self.p = pyaudio.PyAudio()
 
         # 2. Safely open the Loopback stream
-        try:
-            loopback_device = self.p.get_default_wasapi_loopback()
-            self.loopback_channels = loopback_device["maxInputChannels"]
-            
-            self.loopback_stream = self.p.open(
-                format=pyaudio.paInt16,
-                channels=self.loopback_channels,
-                rate=self.master_sample_rate,
-                input=True,
-                input_device_index=loopback_device["index"],
-                frames_per_buffer=1024
-            )
-        except Exception as e:
-            print(f"DEBUG: [Windows Audio] Loopback stream failed to open: {str(e)}", file=sys.stderr)
+        if system_audio:
+            try:
+                loopback_device = self.p.get_default_wasapi_loopback()
+                self.loopback_channels = loopback_device["maxInputChannels"]
+                
+                self.loopback_stream = self.p.open(
+                    format=pyaudio.paInt16,
+                    channels=self.loopback_channels,
+                    rate=self.master_sample_rate,
+                    input=True,
+                    input_device_index=loopback_device["index"],
+                    frames_per_buffer=1024
+                )
+            except Exception as e:
+                print(f"DEBUG: [Windows Audio] Loopback stream failed to open: {str(e)}", file=sys.stderr)
+                self.loopback_stream = None
+        else:
             self.loopback_stream = None
 
         # 3. Safely open the Microphone stream
@@ -274,6 +302,14 @@ class MacosAudioCapture(AudioCaptureStrategy):
         self.telemetry_callback = telemetry_callback
         self.mic_frames = []
 
+        # Defensive programming: delete previous session audio if it exists
+        if os.path.exists(self.output_file):
+            try:
+                os.remove(self.output_file)
+                print("DEBUG: [macOS] Outdated meeting audio file removed.", file=sys.stderr)
+            except Exception as e:
+                print(f"DEBUG: [macOS] Failed to delete previous audio: {e}", file=sys.stderr)
+
         self._sys_mixer = None
         if system_audio:
             binary = MacosSystemAudioMixer.find_binary()
@@ -309,8 +345,7 @@ class MacosAudioCapture(AudioCaptureStrategy):
                     continue
                 audio_data = np.frombuffer(data, dtype=np.int16)
                 self.mic_frames.append(audio_data)
-                chunk_count += 1
-                if chunk_count % 5 == 0 and self.telemetry_callback:
+                if self.telemetry_callback:
                     rms = float(np.sqrt(np.mean(audio_data.astype(np.float32) ** 2)))
                     level = min(rms / 32768.0, 1.0)
                     self.telemetry_callback(level)
@@ -369,6 +404,185 @@ class MacosAudioCapture(AudioCaptureStrategy):
         print(f"DEBUG: [macOS] Audio saved to {self.output_file}", file=sys.stderr)
         return self.output_file
 
+
+class LinuxAudioCapture(AudioCaptureStrategy):
+    """
+    Robust Linux implementation capturing default microphone and monitor loopback
+    via standard PulseAudio/PipeWire using the soundcard library.
+    """
+    def __init__(self):
+        self.is_recording = False
+        self.is_paused = False
+        self.telemetry_callback = None
+
+        self.mic = None
+        self.loopback = None
+
+        self.mic_thread = None
+        self.loopback_thread = None
+
+        self.mic_frames = []
+        self.loopback_frames = []
+
+        self.sample_rate = 16000
+        self.channels = 1
+
+        current_dir = os.path.dirname(os.path.abspath(__file__))
+        self.output_file = os.path.join(current_dir, "temp_meeting_audio.wav")
+
+    def pause_recording(self):
+        self.is_paused = True
+        print("DEBUG: [Linux] Recording paused.", file=sys.stderr)
+
+    def resume_recording(self):
+        self.is_paused = False
+        print("DEBUG: [Linux] Recording resumed.", file=sys.stderr)
+
+    def start_recording(self, telemetry_callback=None, system_audio: bool = False):
+        if self.is_recording:
+            return
+
+        self.is_recording = True
+        self.is_paused = False
+        self.telemetry_callback = telemetry_callback
+        self.mic_frames = []
+        self.loopback_frames = []
+
+        # Defensive programming: delete previous session audio
+        if os.path.exists(self.output_file):
+            try:
+                os.remove(self.output_file)
+                print("DEBUG: [Linux] Outdated meeting audio file removed.", file=sys.stderr)
+            except Exception as e:
+                print(f"DEBUG: [Linux] Failed to delete previous audio: {e}", file=sys.stderr)
+
+        import soundcard as sc
+
+        # 1. Open default Microphone
+        try:
+            self.mic = sc.default_microphone()
+            self.mic_thread = threading.Thread(target=self._record_mic, daemon=True)
+            self.mic_thread.start()
+            print("DEBUG: [Linux] Microphone capture thread started.", file=sys.stderr)
+        except Exception as e:
+            print(f"DEBUG: [Linux] Failed to start microphone: {e}", file=sys.stderr)
+            self.mic = None
+
+        # 2. Open Loopback System Audio (monitor source)
+        self.loopback = None
+        if system_audio:
+            try:
+                mics = sc.all_microphones(include_loopback=True, exclude_monitors=False)
+                for dev in mics:
+                    if "monitor" in dev.name.lower() or "loopback" in dev.name.lower():
+                        self.loopback = dev
+                        break
+                
+                if self.loopback:
+                    self.loopback_thread = threading.Thread(target=self._record_loopback, daemon=True)
+                    self.loopback_thread.start()
+                    print(f"DEBUG: [Linux] System audio capture thread started ({self.loopback.name}).", file=sys.stderr)
+                else:
+                    print("DEBUG: [Linux Warning] Loopback monitor source not found. Mic-only capture.", file=sys.stderr)
+                    import json
+                    print(json.dumps({"event": "ERROR", "data": {"message": "System audio loopback is unavailable on Linux. Recording microphone only."}}))
+                    sys.stdout.flush()
+            except Exception as e:
+                print(f"DEBUG: [Linux] Failed to start loopback capture: {e}", file=sys.stderr)
+                import json
+                print(json.dumps({"event": "ERROR", "data": {"message": f"Failed to start system loopback capture: {str(e)}"}}))
+                sys.stdout.flush()
+
+    def _record_mic(self):
+        chunk_count = 0
+        try:
+            with self.mic.recorder(samplerate=self.sample_rate, channels=self.channels) as recorder:
+                while self.is_recording:
+                    if self.is_paused:
+                        time.sleep(0.05)
+                        continue
+                    data = recorder.record(numframes=1024)
+                    int_data = np.clip(data * 32767.0, -32768, 32767).astype(np.int16)
+                    
+                    if len(int_data.shape) > 1 and int_data.shape[1] > 1:
+                        int_data = np.mean(int_data, axis=1).astype(np.int16)
+                    else:
+                        int_data = int_data.flatten()
+
+                    self.mic_frames.append(int_data)
+
+                    if self.telemetry_callback:
+                        rms = float(np.sqrt(np.mean(int_data.astype(np.float32) ** 2)))
+                        level = min(rms / 32768.0, 1.0)
+                        self.telemetry_callback(level)
+        except Exception as e:
+            print(f"DEBUG: [Linux Mic Error] {e}", file=sys.stderr)
+
+    def _record_loopback(self):
+        try:
+            with self.loopback.recorder(samplerate=self.sample_rate, channels=self.channels) as recorder:
+                while self.is_recording:
+                    if self.is_paused:
+                        time.sleep(0.05)
+                        continue
+                    data = recorder.record(numframes=1024)
+                    int_data = np.clip(data * 32767.0, -32768, 32767).astype(np.int16)
+                    if len(int_data.shape) > 1 and int_data.shape[1] > 1:
+                        int_data = np.mean(int_data, axis=1).astype(np.int16)
+                    else:
+                        int_data = int_data.flatten()
+                    self.loopback_frames.append(int_data)
+        except Exception as e:
+            print(f"DEBUG: [Linux Loopback Error] {e}", file=sys.stderr)
+
+    def stop_recording(self) -> str:
+        if not self.is_recording:
+            return self.output_file
+
+        self.is_recording = False
+
+        if self.mic_thread:
+            self.mic_thread.join(timeout=2.0)
+        if self.loopback_thread:
+            self.loopback_thread.join(timeout=2.0)
+
+        if not self.mic_frames:
+            print("DEBUG: [Linux] No microphone frames captured.", file=sys.stderr)
+            return self.output_file
+
+        mic_full = np.concatenate(self.mic_frames)
+
+        if self.loopback_frames:
+            loopback_full = np.concatenate(self.loopback_frames)
+            min_len = min(len(mic_full), len(loopback_full))
+            # 50/50 mix
+            mixed = np.clip(
+                (mic_full[:min_len].astype(np.float32) + loopback_full[:min_len].astype(np.float32)) * 0.5,
+                -32768, 32767
+            ).astype(np.int16)
+            audio_input = mixed.reshape(-1, 1)
+            print("DEBUG: [Linux] Mixed mic + system audio (50/50).", file=sys.stderr)
+        else:
+            audio_input = mic_full.reshape(-1, 1)
+
+        print("DEBUG: [AI] Running Silero VAD to trim silence...", file=sys.stderr)
+        try:
+            vad = VADService()
+            audio_trimmed = vad.trim_silence(audio_input, self.sample_rate)
+        except Exception as e:
+            print(f"DEBUG: [AI VAD Error] Falling back to raw audio: {e}", file=sys.stderr)
+            audio_trimmed = audio_input
+
+        with wave.open(self.output_file, "wb") as wf:
+            wf.setnchannels(1)
+            wf.setsampwidth(2)
+            wf.setframerate(self.sample_rate)
+            wf.writeframes(audio_trimmed.tobytes())
+
+        print(f"DEBUG: [Linux] Audio saved to {self.output_file}", file=sys.stderr)
+        return self.output_file
+
+
 # ---------------------------------------------------------
 # FACTORY METHOD: Instantiates the correct strategy
 # ---------------------------------------------------------
@@ -381,6 +595,8 @@ class AudioCaptureFactory:
             return WindowsAudioCapture()
         elif platform == "darwin":
             return MacosAudioCapture()
+        elif platform.startswith("linux"):
+            return LinuxAudioCapture()
         else:
             raise NotImplementedError(f"Audio capture is not yet supported on OS: {platform}")
 
@@ -449,20 +665,17 @@ class MacosSystemAudioMixer:
 
     @staticmethod
     def _normalize(raw: bytes) -> np.ndarray:
-        """
-        Normalize Swift tap output to int16 mono 16kHz for mixing with mic.
-        Native format from Swift tap: Float32 interleaved stereo 48000 Hz.
-        """
+        """float32 stereo 48kHz → int16 mono 16kHz."""
         from scipy.signal import resample_poly
-        stereo_f32 = np.frombuffer(raw, dtype=np.float32)
-        if stereo_f32.size < 2:
-            return np.array([], dtype=np.int16)
-        # Ensure complete LR pairs and downmix stereo -> mono.
-        stereo_f32 = stereo_f32[:(stereo_f32.size // 2) * 2].reshape(-1, 2)
-        mono_f32 = stereo_f32.mean(axis=1)
-        # Resample 48000 Hz -> 16000 Hz (ratio 1:3)
+        samples = np.frombuffer(raw, dtype=np.float32)
+        # Reshape to (frames, 2) and downmix to mono
+        if len(samples) % 2 != 0:
+            samples = samples[:-1]
+        stereo = samples.reshape(-1, 2)
+        mono_f32 = stereo.mean(axis=1)
+        # Resample 48kHz → 16kHz (ratio 1:3)
         mono_16k = resample_poly(mono_f32, 1, 3).astype(np.float32)
-        # Convert float32 -> int16
+        # Convert float32 → int16
         return (mono_16k * 32768).clip(-32768, 32767).astype(np.int16)
 
     def stop(self) -> np.ndarray | None:

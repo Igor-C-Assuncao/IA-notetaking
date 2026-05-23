@@ -34,6 +34,10 @@
     "macOS": {
       "entitlements": "entitlements.plist"
     },
+    "linux": {
+      "appimage": { "bundleMediaFramework": false },
+      "deb": { "depends": ["libwebkit2gtk-4.1-0", "libpulse0"] }
+    },
     "externalBin": [
       "binaries/audio-tap"
     ],

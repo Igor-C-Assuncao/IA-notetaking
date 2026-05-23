@@ -53,7 +53,7 @@ Built with a high-performance hybrid architecture: **Tauri 2 + Rust + Python**.
 | Pattern | Where it's used |
 |---|---|
 | **Strategy** | BYOK system — `OllamaStrategy`, `OpenAIStrategy`, `GeminiStrategy`, `AnthropicStrategy` share a common `LLMProvider` interface and are swapped at runtime from user settings. |
-| **Factory Method** | Audio capture — `AudioCaptureFactory` evaluates the OS and instantiates either `WASAPICapture` (Windows) or `ScreenCaptureKitAdapter` (macOS). |
+| **Factory Method** | Audio capture — `AudioCaptureFactory` evaluates the OS and instantiates either `WindowsAudioCapture` (Windows), `MacosAudioCapture` (macOS), or `LinuxAudioCapture` (Linux). |
 | **Observer / Pub-Sub** | UI reactivity — the Python engine emits events (`VAD_SPEECH_DETECTED`, `TRANSCRIPTION_COMPLETED`, etc.) over IPC; the Tauri frontend listens and updates state in real time. |
 | **Pipeline / Chain of Responsibility** | Audio-to-notes flow — `Audio Mixer → Silero VAD → WhisperX → LangGraph Agent`. Each stage has a single responsibility and can be replaced independently. |
 

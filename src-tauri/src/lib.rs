@@ -1,7 +1,7 @@
 use rusqlite::Connection;
 use std::io::{BufRead, BufReader, Write};
 use std::path::PathBuf;
-use std::process::{ChildStdin, Command, Stdio};
+use std::process::{Child, ChildStdin, Command, Stdio};
 use std::sync::{Arc, Mutex};
 use tauri::{AppHandle, Emitter, Manager, State, WebviewWindowBuilder, WebviewUrl};
 use tauri::{LogicalSize, Window};
@@ -26,6 +26,7 @@ struct Meeting {
 struct AppState {
     db: Mutex<Connection>,
     python_stdin: Arc<Mutex<Option<ChildStdin>>>,
+    python_child: Arc<Mutex<Option<Child>>>,
 }
 
 // ── 3. Database commands ──────────────────────────────────────
@@ -40,7 +41,7 @@ fn save_meeting(
     speakers: Option<String>,
     tags: Option<String>,
     structured_summary: Option<String>,
-) -> Result<(), String> {
+) -> Result<i64, String> {
     let db = state.db.lock().unwrap();
     db.execute(
         "INSERT INTO meetings
@@ -51,7 +52,8 @@ fn save_meeting(
             &speakers, &tags, &structured_summary,
         ],
     ).map_err(|e| e.to_string())?;
-    Ok(())
+    let id = db.last_insert_rowid();
+    Ok(id)
 }
 
 #[tauri::command]
@@ -178,6 +180,96 @@ fn request_audio_devices(state: State<'_, AppState>) -> Result<(), String> {
     Err("Python process not available".to_string())
 }
 
+#[tauri::command]
+fn reprocess_meeting(
+    state: State<'_, AppState>,
+    meeting_id: i32,
+    system_prompt: String,
+    provider: String,
+    model: String,
+    api_key: String,
+) -> Result<(), String> {
+    println!("[RUST DEBUG] Reprocess requested for meeting {}", meeting_id);
+    
+    // Fetch raw_transcript and structured_summary from the DB
+    let db = state.db.lock().unwrap();
+    let mut stmt = db.prepare(
+        "SELECT raw_transcript, structured_summary FROM meetings WHERE id = ?1"
+    ).map_err(|e| e.to_string())?;
+    
+    let (raw_transcript, structured_summary): (String, Option<String>) = stmt.query_row(
+        rusqlite::params![meeting_id],
+        |row| Ok((row.get(0)?, row.get(1)?))
+    ).map_err(|e| e.to_string())?;
+    
+    // Dispatch to Python stdin
+    let lock = state.python_stdin.lock().unwrap();
+    if let Some(mut stdin) = lock.as_ref() {
+        let payload = serde_json::json!({
+            "action": "REPROCESS_REQUESTED",
+            "meeting_id": meeting_id,
+            "raw_transcript": raw_transcript,
+            "system_prompt": system_prompt,
+            "provider": provider,
+            "model": model,
+            "api_key": api_key,
+            "structured_summary": structured_summary,
+        });
+        writeln!(stdin, "{}", payload).map_err(|e| e.to_string())?;
+        return Ok(());
+    }
+    Err("Python process not initialized or stdin unavailable".to_string())
+}
+
+#[derive(serde::Serialize)]
+struct BackfillMeeting {
+    id: i32,
+    title: String,
+    date: String,
+    raw_transcript: String,
+}
+
+#[tauri::command]
+fn trigger_index_backfill(
+    state: State<'_, AppState>,
+    provider: String,
+    model: String,
+) -> Result<(), String> {
+    println!("[RUST DEBUG] Index backfill requested for RAG using {} ({})", provider, model);
+    
+    let db = state.db.lock().unwrap();
+    let mut stmt = db.prepare(
+        "SELECT id, title, date, raw_transcript FROM meetings"
+    ).map_err(|e| e.to_string())?;
+    
+    let iter = stmt.query_map([], |row| {
+        Ok(BackfillMeeting {
+            id: row.get(0)?,
+            title: row.get(1)?,
+            date: row.get(2)?,
+            raw_transcript: row.get(3)?,
+        })
+    }).map_err(|e| e.to_string())?;
+    
+    let mut meetings = Vec::new();
+    for m in iter {
+        meetings.push(m.map_err(|e| e.to_string())?);
+    }
+    
+    let lock = state.python_stdin.lock().unwrap();
+    if let Some(mut stdin) = lock.as_ref() {
+        let payload = serde_json::json!({
+            "action": "BACKFILL_INDEX_REQUESTED",
+            "meetings": meetings,
+            "embedding_provider": provider,
+            "embedding_model": model,
+        });
+        writeln!(stdin, "{}", payload.to_string()).map_err(|e| e.to_string())?;
+        return Ok(());
+    }
+    Err("Python process not initialized or stdin unavailable".to_string())
+}
+
 // ── 7. Settings popover window ────────────────────────────────
 // The popover is a separate frameless OS window (label: "popover"),
 // positioned above the compact widget by Rust. Toggled on each call.
@@ -293,42 +385,20 @@ pub fn run() {
     let python_stdin = Arc::new(Mutex::new(None));
     let python_stdin_clone = Arc::clone(&python_stdin);
 
-    tauri::Builder::default()
+    let python_child = Arc::new(Mutex::new(None));
+    let python_child_clone = Arc::clone(&python_child);
+
+    let builder = tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_store::Builder::new().build())
         .plugin(tauri_plugin_clipboard_manager::init())
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_fs::init())
         .plugin(tauri_plugin_http::init())
-        .plugin(
-            tauri_plugin_global_shortcut::Builder::new()
-                .with_handler(move |app, shortcut, event| {
-                    if event.state() != ShortcutState::Pressed {
-                        return;
-                    }
-                    let m = if cfg!(target_os = "macos") {
-                        Modifiers::SUPER | Modifiers::SHIFT
-                    } else {
-                        Modifiers::CONTROL | Modifiers::SHIFT
-                    };
-                    let cmd = if shortcut.matches(m, Code::KeyR) {
-                        Some("shortcut:toggle-recording")
-                    } else if shortcut.matches(m, Code::KeyP) {
-                        Some("shortcut:toggle-pause")
-                    } else if shortcut.matches(m, Code::KeyE) {
-                        Some("shortcut:toggle-expand")
-                    } else {
-                        None
-                    };
-                    if let Some(name) = cmd {
-                        app.emit(name, ()).ok();
-                    }
-                })
-                .build(),
-        )
-        .manage(AppState {
-            db: Mutex::new(conn),
+        .manage(AppState { 
+            db: Mutex::new(conn), 
             python_stdin,
+            python_child: Arc::clone(&python_child),
         })
         .setup(move |app| {
             let app_handle = app.handle().clone();
@@ -362,6 +432,9 @@ pub fn run() {
             // as a "python-event" Tauri event. VAD_TELEMETRY is suppressed from the
             // console (~10/sec) but still forwarded to the frontend.
             let stdout = child.stdout.take().expect("Failed to open Python stdout");
+
+            *python_child_clone.lock().unwrap() = Some(child);
+
             std::thread::spawn(move || {
                 let reader = BufReader::new(stdout);
                 for line in reader.lines() {
@@ -369,24 +442,79 @@ pub fn run() {
                         if !content.contains("VAD_TELEMETRY") {
                             println!("[PYTHON STDOUT] {}", content);
                         }
+                        
+                        // Parse JSON to check for REPROCESS_COMPLETED
+                        if let Ok(json) = serde_json::from_str::<serde_json::Value>(&content) {
+                            if json["event"] == "REPROCESS_COMPLETED" {
+                                if let Some(data) = json["data"].as_object() {
+                                    let meeting_id = data.get("meeting_id").and_then(|v| v.as_i64());
+                                    let markdown = data.get("markdown").and_then(|v| v.as_str());
+                                    let structured = data.get("structured").map(|v| v.to_string());
+                                    
+                                    if let (Some(id), Some(md)) = (meeting_id, markdown) {
+                                        let state = app_handle.state::<AppState>();
+                                        let db = state.db.lock().unwrap();
+                                        if let Err(e) = db.execute(
+                                            "UPDATE meetings SET markdown_summary = ?1, structured_summary = ?2 WHERE id = ?3",
+                                            rusqlite::params![md, structured, id],
+                                        ) {
+                                            eprintln!("[RUST ERROR] Failed to update reprocessed meeting: {}", e);
+                                        } else {
+                                            println!("[RUST SUCCESS] Reprocessed meeting {} updated in DB", id);
+                                        }
+                                    }
+                                }
+                            }
+                        }
+
                         app_handle.emit("python-event", content).unwrap();
                     }
                 }
             });
 
-            // ── Global keyboard shortcuts ──────────────────────────
-            // Plugin is already initialized above; only register shortcuts here.
+            // Register global keyboard shortcuts.
+            // Use Cmd+Shift on macOS, Ctrl+Shift on Windows/Linux.
+            // Registering only one modifier set per platform avoids the
+            // "HotKey already registered" panic that occurs when the same
+            // physical key combination is registered twice on Windows.
+            let shortcut_handle = app.handle().clone();
+            app.handle().plugin(
+                tauri_plugin_global_shortcut::Builder::new()
+                    .with_handler(move |_app, shortcut, event| {
+                        if event.state() != ShortcutState::Pressed {
+                            return;
+                        }
+                        let m = if cfg!(target_os = "macos") {
+                            Modifiers::SUPER | Modifiers::SHIFT
+                        } else {
+                            Modifiers::CONTROL | Modifiers::SHIFT
+                        };
+                        let cmd = if shortcut.matches(m, Code::KeyR) {
+                            Some("shortcut:toggle-recording")
+                        } else if shortcut.matches(m, Code::KeyP) {
+                            Some("shortcut:toggle-pause")
+                        } else if shortcut.matches(m, Code::KeyE) {
+                            Some("shortcut:toggle-expand")
+                        } else {
+                            None
+                        };
+                        if let Some(name) = cmd {
+                            shortcut_handle.emit(name, ()).ok();
+                        }
+                    })
+                    .build(),
+            )?;
+
             let modifier = if cfg!(target_os = "macos") {
                 Modifiers::SUPER | Modifiers::SHIFT
             } else {
                 Modifiers::CONTROL | Modifiers::SHIFT
             };
-            let shortcuts = [
-                Shortcut::new(Some(modifier), Code::KeyR),
-                Shortcut::new(Some(modifier), Code::KeyP),
-                Shortcut::new(Some(modifier), Code::KeyE),
-            ];
-            app.global_shortcut().register_multiple(shortcuts)?;
+            app.global_shortcut().register_multiple([
+                Shortcut::new(Some(modifier), Code::KeyR), // toggle recording
+                Shortcut::new(Some(modifier), Code::KeyP), // pause / resume
+                Shortcut::new(Some(modifier), Code::KeyE), // expand / collapse
+            ])?;
 
             Ok(())
         })
@@ -401,7 +529,23 @@ pub fn run() {
             open_popover_window,
             close_popover_window,
             request_audio_devices,
-        ])
-        .run(tauri::generate_context!())
-        .expect("Error while running tauri application");
+            reprocess_meeting,
+            trigger_index_backfill,
+        ]);
+
+    let app = builder
+        .build(tauri::generate_context!())
+        .expect("Error while building tauri application");
+
+    app.run(move |app_handle, event| {
+        if let tauri::RunEvent::Exit = event {
+            println!("[RUST INFO] Tauri application exiting, terminating Python engine...");
+            let state = app_handle.state::<AppState>();
+            let mut lock = state.python_child.lock().unwrap();
+            if let Some(mut child) = lock.take() {
+                let _ = child.kill();
+                println!("[RUST SUCCESS] Python child process terminated.");
+            }
+        }
+    });
 }

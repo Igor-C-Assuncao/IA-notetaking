@@ -18,6 +18,13 @@ export interface Settings {
   selectedDeviceId: number | null;
   customModel: string;
   systemPrompt: string;
+  obsidianVaultPath: string;
+  notionToken: string;
+  notionDatabaseId: string;
+  ragEnabled: boolean;
+  ragProvider: "ollama" | "local";
+  ragEmbeddingModel: string;
+  ragHistorySynced: boolean;
 }
 
 const DEFAULT_SETTINGS: Settings = {
@@ -34,6 +41,13 @@ const DEFAULT_SETTINGS: Settings = {
   selectedDeviceId: null,
   customModel: "",
   systemPrompt: DEFAULTS.systemPrompt,
+  obsidianVaultPath: "",
+  notionToken: "",
+  notionDatabaseId: "",
+  ragEnabled: true,
+  ragProvider: "ollama",
+  ragEmbeddingModel: "nomic-embed-text",
+  ragHistorySynced: false,
 };
 
 interface SettingsContextType {
