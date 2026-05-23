@@ -41,7 +41,7 @@ fn save_meeting(
     speakers: Option<String>,
     tags: Option<String>,
     structured_summary: Option<String>,
-) -> Result<(), String> {
+) -> Result<i64, String> {
     let db = state.db.lock().unwrap();
     db.execute(
         "INSERT INTO meetings
@@ -52,7 +52,8 @@ fn save_meeting(
             &speakers, &tags, &structured_summary,
         ],
     ).map_err(|e| e.to_string())?;
-    Ok(())
+    let id = db.last_insert_rowid();
+    Ok(id)
 }
 
 #[tauri::command]
@@ -215,6 +216,55 @@ fn reprocess_meeting(
             "structured_summary": structured_summary,
         });
         writeln!(stdin, "{}", payload).map_err(|e| e.to_string())?;
+        return Ok(());
+    }
+    Err("Python process not initialized or stdin unavailable".to_string())
+}
+
+#[derive(serde::Serialize)]
+struct BackfillMeeting {
+    id: i32,
+    title: String,
+    date: String,
+    raw_transcript: String,
+}
+
+#[tauri::command]
+fn trigger_index_backfill(
+    state: State<'_, AppState>,
+    provider: String,
+    model: String,
+) -> Result<(), String> {
+    println!("[RUST DEBUG] Index backfill requested for RAG using {} ({})", provider, model);
+    
+    let db = state.db.lock().unwrap();
+    let mut stmt = db.prepare(
+        "SELECT id, title, date, raw_transcript FROM meetings"
+    ).map_err(|e| e.to_string())?;
+    
+    let iter = stmt.query_map([], |row| {
+        Ok(BackfillMeeting {
+            id: row.get(0)?,
+            title: row.get(1)?,
+            date: row.get(2)?,
+            raw_transcript: row.get(3)?,
+        })
+    }).map_err(|e| e.to_string())?;
+    
+    let mut meetings = Vec::new();
+    for m in iter {
+        meetings.push(m.map_err(|e| e.to_string())?);
+    }
+    
+    let lock = state.python_stdin.lock().unwrap();
+    if let Some(mut stdin) = lock.as_ref() {
+        let payload = serde_json::json!({
+            "action": "BACKFILL_INDEX_REQUESTED",
+            "meetings": meetings,
+            "embedding_provider": provider,
+            "embedding_model": model,
+        });
+        writeln!(stdin, "{}", payload.to_string()).map_err(|e| e.to_string())?;
         return Ok(());
     }
     Err("Python process not initialized or stdin unavailable".to_string())
@@ -480,6 +530,7 @@ pub fn run() {
             close_popover_window,
             request_audio_devices,
             reprocess_meeting,
+            trigger_index_backfill,
         ]);
 
     let app = builder
