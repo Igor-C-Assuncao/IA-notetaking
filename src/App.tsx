@@ -5,7 +5,7 @@ import { invoke } from "@tauri-apps/api/core";
 
 import { SettingsProvider, useSettings } from "@app/providers/SettingsProvider";
 import { ThemeProvider } from "@app/providers/ThemeProvider";
-import { IpcProvider } from "@app/providers/IpcProvider";
+import { IpcProvider, usePythonEvent } from "@app/providers/IpcProvider";
 
 import { CompactWidget } from "@widgets/CompactWidget";
 import { ExpandedView } from "@widgets/ExpandedView";
@@ -14,6 +14,8 @@ import { PopoverWidget } from "@widgets/PopoverWidget";
 import { useWindowMode } from "@features/window-chrome/hooks/useWindowMode";
 import { useRecording } from "@features/recording/hooks/useRecording";
 import { OnboardingWizard } from "@features/onboarding/OnboardingWizard";
+import { useTranscription } from "@features/transcription/hooks/useTranscription";
+import { useMeetings } from "@features/meetings/hooks/useMeetings";
 
 import "./App.css";
 
@@ -22,8 +24,37 @@ function MainApp() {
   const { isExpanded, isTransitioning, toggleWindowMode } = useWindowMode();
   const { settings } = useSettings();
   const { isRecording, toggleRecording } = useRecording();
+  const { transcription } = useTranscription();
+  const { loadHistory } = useMeetings();
   const [isPaused, setIsPaused] = useState(false);
   const win = getCurrentWindow();
+
+  usePythonEvent("NOTES_GENERATED", async (data) => {
+    if (!transcription) return;
+    try {
+      const now = new Date();
+      const dateStr = now.toISOString().slice(0, 19).replace('T', ' ');
+      const titleStr = `Meeting on ${now.toLocaleDateString()}`;
+      
+      const speakers = data.structured?.speakers ? JSON.stringify(data.structured.speakers) : null;
+      const tags = data.structured?.tags ? JSON.stringify(data.structured.tags) : null;
+      const structuredStr = JSON.stringify(data.structured);
+      
+      await invoke("save_meeting", {
+        date: dateStr,
+        title: titleStr,
+        raw_transcript: transcription,
+        markdown_summary: data.markdown,
+        speakers,
+        tags,
+        structured_summary: structuredStr,
+      });
+      
+      loadHistory();
+    } catch (err) {
+      console.error("Failed to save auto-summarized meeting:", err);
+    }
+  });
 
   useEffect(() => {
     win.setAlwaysOnTop(settings.alwaysOnTop).catch(console.error);

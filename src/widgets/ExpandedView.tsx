@@ -17,6 +17,8 @@ import { useRecording } from "@features/recording/hooks/useRecording";
 import { useTranscription } from "@features/transcription/hooks/useTranscription";
 import { useSummary } from "@features/summary/hooks/useSummary";
 import { useMeetings } from "@features/meetings/hooks/useMeetings";
+import { usePythonEvent } from "@app/providers/IpcProvider";
+import { ReprocessModal } from "@features/meetings/components/ReprocessModal";
 
 export function ExpandedView({
   isTransitioning, toggleWindowMode
@@ -28,13 +30,234 @@ export function ExpandedView({
   const { isRecording, recordingSeconds, status, toggleRecording } = useRecording();
   const { setTranscriptionText, search, setSearch, filteredTranscript } = useTranscription();
   const { notes, setNotesText, tldr, actionItems } = useSummary();
-  const { meetingsHistory, selectedMeetingId, setSelectedMeetingId, sidebarSearch, setSidebarSearch } = useMeetings();
+  const { meetingsHistory, selectedMeetingId, setSelectedMeetingId, sidebarSearch, setSidebarSearch, loadHistory } = useMeetings();
   
   const [activeTab, setActiveTab] = useState<"transcript" | "summary" | "actions">("transcript");
   const [copiedNotes, setCopiedNotes] = useState(false);
   const [copiedWebAI, setCopiedWebAI] = useState(false);
 
+  const [showReprocessModal, setShowReprocessModal] = useState(false);
+  const [showExportDropdown, setShowExportDropdown] = useState(false);
+  const [toastMessage, setToastMessage] = useState("");
+  const [toastLink, setToastLink] = useState("");
+
   const isWin = detectOS() === "win";
+
+  usePythonEvent("NOTION_EXPORT_COMPLETED", (data) => {
+    if (data.success) {
+      setToastMessage("✓ Exported to Notion!");
+      setToastLink(`notion://www.notion.so/${data.page_id}`);
+      setTimeout(() => {
+        setToastMessage("");
+        setToastLink("");
+      }, 8000);
+    } else {
+      setToastMessage(`❌ Notion failed: ${data.error || "Unknown error"}`);
+      setTimeout(() => setToastMessage(""), 5000);
+    }
+  });
+
+  const triggerExport = async (format: "md" | "obsidian" | "notion" | "json") => {
+    setShowExportDropdown(false);
+    const currentMeeting = meetingsHistory.find(m => m.id === selectedMeetingId);
+    
+    if (format === "notion") {
+      if (!settings.notionToken || !settings.notionDatabaseId) {
+        setToastMessage("❌ Notion connection not configured in Settings.");
+        setTimeout(() => setToastMessage(""), 4000);
+        return;
+      }
+      
+      setToastMessage("Exporting to Notion...");
+      
+      try {
+        const titleStr = currentMeeting?.title || `Meeting on ${new Date().toLocaleDateString()}`;
+        const dateStr = currentMeeting?.date || new Date().toISOString();
+        let tagsArr: string[] = [];
+        let speakersArr: string[] = [];
+        
+        if (currentMeeting) {
+          try {
+            if (currentMeeting.tags) tagsArr = JSON.parse(currentMeeting.tags);
+          } catch(e) {}
+          try {
+            if (currentMeeting.speakers) speakersArr = JSON.parse(currentMeeting.speakers);
+          } catch(e) {}
+        }
+        
+        await invoke("send_command_to_python", {
+          payload: JSON.stringify({
+            action: "EXPORT_NOTION",
+            notion_token: settings.notionToken,
+            notion_database_id: settings.notionDatabaseId,
+            title: titleStr,
+            date: dateStr,
+            tags: tagsArr,
+            speakers: speakersArr,
+            markdown: notes,
+          })
+        });
+      } catch (err) {
+        setToastMessage(`❌ Export failed: ${String(err)}`);
+        setTimeout(() => setToastMessage(""), 4000);
+      }
+      return;
+    }
+
+    if (format === "md") {
+      const path = await save({
+        filters: [{ name: "Markdown", extensions: ["md"] }],
+        defaultPath: currentMeeting ? `${currentMeeting.title.replace(/\s+/g, "_")}.md` : `Notes_${Date.now()}.md`
+      });
+      if (path) {
+        await writeTextFile(path, notes);
+        setToastMessage("✓ Exported successfully!");
+        setTimeout(() => setToastMessage(""), 3000);
+      }
+      return;
+    }
+
+    if (format === "obsidian") {
+      const titleStr = currentMeeting?.title || `Meeting on ${new Date().toLocaleDateString()}`;
+      const dateStr = currentMeeting?.date || new Date().toISOString();
+      const dateOnly = dateStr.split(" ")[0];
+      
+      let speakersArr: string[] = [];
+      let tagsArr: string[] = [];
+      
+      if (currentMeeting) {
+        try {
+          if (currentMeeting.speakers) speakersArr = JSON.parse(currentMeeting.speakers);
+        } catch(e) {}
+        try {
+          if (currentMeeting.tags) tagsArr = JSON.parse(currentMeeting.tags);
+        } catch(e) {}
+      }
+
+      const yamlFrontmatter = [
+        "---",
+        `title: "${titleStr}"`,
+        `date: ${dateOnly}`,
+        `participants: [${speakersArr.map(s => `"[[${s}]]"`).join(", ")}]`,
+        `tags: [${tagsArr.join(", ")}]`,
+        "---",
+        ""
+      ].join("\n");
+      
+      let body = notes;
+      
+      speakersArr.forEach(name => {
+        const escaped = name.replace(/[-\/\\^$*+?.()|[\]{}]/g, '\\$&');
+        const regex = new RegExp(`\\b${escaped}\\b`, 'g');
+        body = body.replace(regex, `[[${name}]]`);
+      });
+
+      if (currentMeeting?.structured_summary) {
+        try {
+          const structured = JSON.parse(currentMeeting.structured_summary);
+          if (structured.actions && Array.isArray(structured.actions)) {
+            const obsidianActions = structured.actions.map((act: any) => {
+              let line = `- [ ] ${act.what}`;
+              if (act.due) line += ` 📅 ${act.due}`;
+              if (act.who) line += ` 👤 [[${act.who}]]`;
+              return line;
+            }).join("\n");
+            
+            const actionItemsHeaderIndex = body.indexOf("## 🎯 Action Items");
+            if (actionItemsHeaderIndex !== -1) {
+              const nextHeaderIndex = body.indexOf("## ", actionItemsHeaderIndex + 3);
+              if (nextHeaderIndex !== -1) {
+                body = body.substring(0, actionItemsHeaderIndex) + "## 🎯 Action Items\n" + obsidianActions + "\n\n" + body.substring(nextHeaderIndex);
+              } else {
+                body = body.substring(0, actionItemsHeaderIndex) + "## 🎯 Action Items\n" + obsidianActions + "\n";
+              }
+            }
+          }
+        } catch (e) {}
+      }
+      
+      if (tagsArr.length > 0) {
+        body += "\n\n" + tagsArr.map(t => `#${t}`).join(" ");
+      }
+      
+      const obsidianNotes = yamlFrontmatter + body;
+      
+      const defaultVaultPath = settings.obsidianVaultPath 
+        ? `${settings.obsidianVaultPath}/Meetings/${currentMeeting ? currentMeeting.title.replace(/\s+/g, "_") : `Notes_${Date.now()}`}.md`
+        : currentMeeting ? `${currentMeeting.title.replace(/\s+/g, "_")}.md` : `Notes_${Date.now()}.md`;
+
+      const path = await save({
+        filters: [{ name: "Markdown", extensions: ["md"] }],
+        defaultPath: defaultVaultPath
+      });
+      if (path) {
+        await writeTextFile(path, obsidianNotes);
+        setToastMessage("✓ Exported to Obsidian!");
+        setTimeout(() => setToastMessage(""), 3000);
+      }
+      return;
+    }
+
+    if (format === "json") {
+      let structured: any = {};
+      let speakersArr: any[] = [];
+      let tagsArr: string[] = [];
+      
+      if (currentMeeting) {
+        try {
+          if (currentMeeting.structured_summary) structured = JSON.parse(currentMeeting.structured_summary);
+        } catch(e) {}
+        try {
+          if (currentMeeting.speakers) speakersArr = JSON.parse(currentMeeting.speakers);
+        } catch(e) {}
+        try {
+          if (currentMeeting.tags) tagsArr = JSON.parse(currentMeeting.tags);
+        } catch(e) {}
+      }
+      
+      const jsonContent = JSON.stringify({
+        meta: {
+          id: currentMeeting?.id || Date.now(),
+          date: currentMeeting?.date || new Date().toISOString(),
+          title: currentMeeting?.title || "Live Session Summary",
+          duration_seconds: 0,
+          provider: settings.provider,
+          model: settings.modelName,
+        },
+        transcript: {
+          raw: currentMeeting?.raw_transcript || filteredTranscript || "",
+          diarized: [],
+        },
+        summary: {
+          tldr: structured.tldr || "",
+          decisions: structured.decisions || [],
+          actions: structured.actions || [],
+          tags: tagsArr,
+          markdown: notes,
+        },
+        entities: {
+          speakers: speakersArr,
+          numbers: [],
+          dates: [],
+        }
+      }, null, 2);
+
+      const yyyymmdd = (currentMeeting?.date || new Date().toISOString().split(" ")[0]).split(" ")[0];
+      const defaultFilename = `meeting_${currentMeeting?.id || "live"}_${yyyymmdd}.json`;
+
+      const path = await save({
+        filters: [{ name: "JSON", extensions: ["json"] }],
+        defaultPath: defaultFilename
+      });
+      
+      if (path) {
+        await writeTextFile(path, jsonContent);
+        setToastMessage("✓ JSON Exported!");
+        setTimeout(() => setToastMessage(""), 3000);
+      }
+      return;
+    }
+  };
 
   const safeWriteText = async (text: string) => {
     try {
@@ -62,10 +285,7 @@ export function ExpandedView({
     }
   };
 
-  const handleExport = async () => {
-    const path = await save({ filters: [{ name: "Markdown", extensions: ["md"] }], defaultPath: `Notes_${Date.now()}.md` });
-    if (path) { await writeTextFile(path, notes); }
-  };
+
 
   const handleExportForWebAI = async () => {
     const prompt = `Here is a transcript of a meeting. Please provide a brief TL;DR, identify key decisions, and list action items assigned to people.\n\n[Transcript]\n\n${filteredTranscript || "No transcript available."}`;
@@ -162,6 +382,15 @@ export function ExpandedView({
             </div>
             <div className="meeting-header-right">
               {isRecording && <Waveform width={60} height={14} color={waveColor} active bars={14} />}
+              {selectedMeetingId !== null && !isRecording && (
+                <button
+                  className="record-btn-expanded secondary"
+                  style={{ marginRight: "8px", background: "rgba(255,255,255,0.05)", border: "1px solid var(--border)", color: "var(--text)" }}
+                  onClick={() => setShowReprocessModal(true)}
+                >
+                  Reprocess
+                </button>
+              )}
               <button
                 className={`record-btn-expanded ${isRecording ? "recording" : ""}`}
                 onClick={toggleRecording}
@@ -222,12 +451,110 @@ export function ExpandedView({
           {notes && (
             <div className="footer-actions">
               <button className="chip-btn" onClick={handleCopy}><CopyIcon size={13} /> {copiedNotes ? "✓ Copied!" : "Copy"}</button>
-              <button className="chip-btn" onClick={handleExport}><ExportIcon size={13} /> Export .MD</button>
+              
+              <div style={{ position: "relative" }}>
+                <button className="chip-btn" onClick={() => setShowExportDropdown(!showExportDropdown)}>
+                  <ExportIcon size={13} /> Export ▾
+                </button>
+                {showExportDropdown && (
+                  <div className="popover-window" style={{
+                    position: "absolute",
+                    bottom: "100%",
+                    left: "0",
+                    marginBottom: "8px",
+                    width: "160px",
+                    display: "flex",
+                    flexDirection: "column",
+                    gap: "4px",
+                    padding: "6px",
+                    zIndex: 50,
+                    boxShadow: "var(--shadow-panel)",
+                    background: "var(--popover-bg, var(--bg-panel))",
+                    border: "1px solid var(--border-strong)",
+                    borderRadius: "var(--radius-sm)",
+                    backdropFilter: "blur(10px)"
+                  }}>
+                    <button className="popover-tab-btn" style={{ textAlign: "left", padding: "6px 8px", fontSize: "12px", width: "100%" }} onClick={() => triggerExport("md")}>
+                      Markdown (.md)
+                    </button>
+                    <button className="popover-tab-btn" style={{ textAlign: "left", padding: "6px 8px", fontSize: "12px", width: "100%" }} onClick={() => triggerExport("obsidian")}>
+                      Obsidian (.md)
+                    </button>
+                    <button className="popover-tab-btn" style={{ textAlign: "left", padding: "6px 8px", fontSize: "12px", width: "100%" }} onClick={() => triggerExport("notion")}>
+                      Notion Database
+                    </button>
+                    <button className="popover-tab-btn" style={{ textAlign: "left", padding: "6px 8px", fontSize: "12px", width: "100%" }} onClick={() => triggerExport("json")}>
+                      JSON (.json)
+                    </button>
+                  </div>
+                )}
+              </div>
+              
               <button className="chip-btn" onClick={handleExportForWebAI}><ChatCircleIcon size={13} /> {copiedWebAI ? "✓ Copied for Web AI!" : "Copy for Web AI"}</button>
             </div>
           )}
         </main>
       </div>
+
+      {showReprocessModal && selectedMeetingId !== null && (() => {
+        const m = meetingsHistory.find(meet => meet.id === selectedMeetingId);
+        return m ? (
+          <ReprocessModal
+            meetingId={selectedMeetingId}
+            originalTitle={m.title}
+            originalDate={m.date}
+            originalSummary={m.markdown_summary}
+            onClose={() => setShowReprocessModal(false)}
+            onSuccess={(newMarkdown) => {
+              setNotesText(newMarkdown);
+              loadHistory();
+              setToastMessage(`✓ Reprocessed summary successfully!`);
+              setTimeout(() => setToastMessage(""), 3000);
+            }}
+          />
+        ) : null;
+      })()}
+
+      {toastMessage && (
+        <div style={{
+          position: "fixed",
+          bottom: "24px",
+          right: "24px",
+          background: "var(--bg-panel)",
+          border: "1px solid var(--border-strong)",
+          borderRadius: "var(--radius-md)",
+          padding: "10px 14px",
+          boxShadow: "var(--shadow-panel)",
+          backdropFilter: "blur(10px)",
+          display: "flex",
+          alignItems: "center",
+          gap: "10px",
+          zIndex: 1000,
+          animation: "toast-fade-in 200ms ease-out"
+        }}>
+          <span style={{ fontSize: "12px", fontWeight: 500, color: "var(--text)" }}>{toastMessage}</span>
+          {toastLink && (
+            <a 
+              href={toastLink} 
+              target="_blank" 
+              rel="noreferrer" 
+              className="popover-btn primary" 
+              style={{
+                padding: "4px 8px",
+                fontSize: "10.5px",
+                minHeight: "unset",
+                height: "22px",
+                borderRadius: "var(--radius-sm)",
+                display: "inline-flex",
+                alignItems: "center",
+                textDecoration: "none"
+              }}
+            >
+              Open
+            </a>
+          )}
+        </div>
+      )}
     </div>
   );
 }
