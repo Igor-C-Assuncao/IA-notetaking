@@ -178,6 +178,47 @@ fn request_audio_devices(state: State<'_, AppState>) -> Result<(), String> {
     Err("Python process not available".to_string())
 }
 
+#[tauri::command]
+fn reprocess_meeting(
+    state: State<'_, AppState>,
+    meeting_id: i32,
+    system_prompt: String,
+    provider: String,
+    model: String,
+    api_key: String,
+) -> Result<(), String> {
+    println!("[RUST DEBUG] Reprocess requested for meeting {}", meeting_id);
+    
+    // Fetch raw_transcript and structured_summary from the DB
+    let db = state.db.lock().unwrap();
+    let mut stmt = db.prepare(
+        "SELECT raw_transcript, structured_summary FROM meetings WHERE id = ?1"
+    ).map_err(|e| e.to_string())?;
+    
+    let (raw_transcript, structured_summary): (String, Option<String>) = stmt.query_row(
+        rusqlite::params![meeting_id],
+        |row| Ok((row.get(0)?, row.get(1)?))
+    ).map_err(|e| e.to_string())?;
+    
+    // Dispatch to Python stdin
+    let lock = state.python_stdin.lock().unwrap();
+    if let Some(mut stdin) = lock.as_ref() {
+        let payload = serde_json::json!({
+            "action": "REPROCESS_REQUESTED",
+            "meeting_id": meeting_id,
+            "raw_transcript": raw_transcript,
+            "system_prompt": system_prompt,
+            "provider": provider,
+            "model": model,
+            "api_key": api_key,
+            "structured_summary": structured_summary,
+        });
+        writeln!(stdin, "{}", payload).map_err(|e| e.to_string())?;
+        return Ok(());
+    }
+    Err("Python process not initialized or stdin unavailable".to_string())
+}
+
 // ── 7. Settings popover window ────────────────────────────────
 // The popover is a separate frameless OS window (label: "popover"),
 // positioned above the compact widget by Rust. Toggled on each call.
@@ -340,6 +381,31 @@ pub fn run() {
                         if !content.contains("VAD_TELEMETRY") {
                             println!("[PYTHON STDOUT] {}", content);
                         }
+                        
+                        // Parse JSON to check for REPROCESS_COMPLETED
+                        if let Ok(json) = serde_json::from_str::<serde_json::Value>(&content) {
+                            if json["event"] == "REPROCESS_COMPLETED" {
+                                if let Some(data) = json["data"].as_object() {
+                                    let meeting_id = data.get("meeting_id").and_then(|v| v.as_i64());
+                                    let markdown = data.get("markdown").and_then(|v| v.as_str());
+                                    let structured = data.get("structured").map(|v| v.to_string());
+                                    
+                                    if let (Some(id), Some(md)) = (meeting_id, markdown) {
+                                        let state = app_handle.state::<AppState>();
+                                        let db = state.db.lock().unwrap();
+                                        if let Err(e) = db.execute(
+                                            "UPDATE meetings SET markdown_summary = ?1, structured_summary = ?2 WHERE id = ?3",
+                                            rusqlite::params![md, structured, id],
+                                        ) {
+                                            eprintln!("[RUST ERROR] Failed to update reprocessed meeting: {}", e);
+                                        } else {
+                                            println!("[RUST SUCCESS] Reprocessed meeting {} updated in DB", id);
+                                        }
+                                    }
+                                }
+                            }
+                        }
+
                         app_handle.emit("python-event", content).unwrap();
                     }
                 }
@@ -402,6 +468,7 @@ pub fn run() {
             open_popover_window,
             close_popover_window,
             request_audio_devices,
+            reprocess_meeting,
         ])
         .run(tauri::generate_context!())
         .expect("Error while running tauri application");

@@ -18,4 +18,6 @@ export type PythonEvent =
   | { event: "SIDECAR_RESTARTING"; data: { attempt: number } }
   | { event: "SIDECAR_UP"; data: null }
   | { event: "SIDECAR_FAILED"; data: null }
-  | { event: "REPROCESS_COMPLETED"; data: { markdown: string; structured: any } };
+  | { event: "REPROCESS_COMPLETED"; data: { meeting_id: number; markdown: string; structured: any } }
+  | { event: "NOTION_EXPORT_COMPLETED"; data: { success: boolean; page_id?: string; error?: string } }
+  | { event: "NOTION_VALIDATED"; data: { success: boolean; workspace_name?: string; error?: string } };
