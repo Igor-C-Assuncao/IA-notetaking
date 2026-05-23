@@ -1,7 +1,7 @@
 use rusqlite::Connection;
 use std::io::{BufRead, BufReader, Write};
 use std::path::PathBuf;
-use std::process::{ChildStdin, Command, Stdio};
+use std::process::{Child, ChildStdin, Command, Stdio};
 use std::sync::{Arc, Mutex};
 use tauri::{AppHandle, Emitter, Manager, State, WebviewWindowBuilder, WebviewUrl};
 use tauri::{LogicalSize, Window};
@@ -26,6 +26,7 @@ struct Meeting {
 struct AppState {
     db: Mutex<Connection>,
     python_stdin: Arc<Mutex<Option<ChildStdin>>>,
+    python_child: Arc<Mutex<Option<Child>>>,
 }
 
 // ── 3. Database commands ──────────────────────────────────────
@@ -334,14 +335,21 @@ pub fn run() {
     let python_stdin = Arc::new(Mutex::new(None));
     let python_stdin_clone = Arc::clone(&python_stdin);
 
-    tauri::Builder::default()
+    let python_child = Arc::new(Mutex::new(None));
+    let python_child_clone = Arc::clone(&python_child);
+
+    let builder = tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_store::Builder::new().build())
         .plugin(tauri_plugin_clipboard_manager::init())
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_fs::init())
         .plugin(tauri_plugin_http::init())
-        .manage(AppState { db: Mutex::new(conn), python_stdin })
+        .manage(AppState { 
+            db: Mutex::new(conn), 
+            python_stdin,
+            python_child: Arc::clone(&python_child),
+        })
         .setup(move |app| {
             let app_handle = app.handle().clone();
 
@@ -374,6 +382,9 @@ pub fn run() {
             // as a "python-event" Tauri event. VAD_TELEMETRY is suppressed from the
             // console (~10/sec) but still forwarded to the frontend.
             let stdout = child.stdout.take().expect("Failed to open Python stdout");
+
+            *python_child_clone.lock().unwrap() = Some(child);
+
             std::thread::spawn(move || {
                 let reader = BufReader::new(stdout);
                 for line in reader.lines() {
@@ -469,7 +480,21 @@ pub fn run() {
             close_popover_window,
             request_audio_devices,
             reprocess_meeting,
-        ])
-        .run(tauri::generate_context!())
-        .expect("Error while running tauri application");
+        ]);
+
+    let app = builder
+        .build(tauri::generate_context!())
+        .expect("Error while building tauri application");
+
+    app.run(move |app_handle, event| {
+        if let tauri::RunEvent::Exit = event {
+            println!("[RUST INFO] Tauri application exiting, terminating Python engine...");
+            let state = app_handle.state::<AppState>();
+            let mut lock = state.python_child.lock().unwrap();
+            if let Some(mut child) = lock.take() {
+                let _ = child.kill();
+                println!("[RUST SUCCESS] Python child process terminated.");
+            }
+        }
+    });
 }
