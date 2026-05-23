@@ -18,6 +18,9 @@ export interface Settings {
   selectedDeviceId: number | null;
   customModel: string;
   systemPrompt: string;
+  obsidianVaultPath: string;
+  notionToken: string;
+  notionDatabaseId: string;
 }
 
 const DEFAULT_SETTINGS: Settings = {
@@ -34,6 +37,9 @@ const DEFAULT_SETTINGS: Settings = {
   selectedDeviceId: null,
   customModel: "",
   systemPrompt: DEFAULTS.systemPrompt,
+  obsidianVaultPath: "",
+  notionToken: "",
+  notionDatabaseId: "",
 };
 
 interface SettingsContextType {

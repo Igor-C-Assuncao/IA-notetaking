@@ -22,6 +22,40 @@ export function PopoverWidget() {
   const [testCountdown, setTestCountdown] = useState(0);
   const win = getCurrentWindow();
 
+  const [showNotionSettings, setShowNotionSettings] = useState(false);
+  const [isValidatingNotion, setIsValidatingNotion] = useState(false);
+  const [notionStatus, setNotionStatus] = useState("");
+
+  usePythonEvent("NOTION_VALIDATED", (data) => {
+    setIsValidatingNotion(false);
+    if (data.success) {
+      setNotionStatus(`✓ Connected to ${data.workspace_name}`);
+    } else {
+      setNotionStatus(`❌ ${data.error || "Validation failed"}`);
+    }
+  });
+
+  const validateNotionConnection = async () => {
+    if (!localSettings.notionToken || !localSettings.notionDatabaseId) {
+      setNotionStatus("❌ Token and Database ID are required");
+      return;
+    }
+    setIsValidatingNotion(true);
+    setNotionStatus("Validating connection...");
+    try {
+      await invoke("send_command_to_python", {
+        payload: JSON.stringify({
+          action: "VALIDATE_NOTION",
+          notion_token: localSettings.notionToken,
+          notion_database_id: localSettings.notionDatabaseId,
+        })
+      });
+    } catch (e) {
+      setIsValidatingNotion(false);
+      setNotionStatus(`❌ Error: ${String(e)}`);
+    }
+  };
+
   const startTest = async () => {
     if (isTestingMic) return;
     setIsTestingMic(true);
@@ -283,6 +317,62 @@ Your task is to analyze this transcript and generate a premium-grade executive s
                 </div>
                 <Toggle on={localSettings.alwaysOnTop} onChange={(v) => setLocalSettings({ ...localSettings, alwaysOnTop: v })} />
               </div>
+            </div>
+
+            <div className="popover-section" style={{ marginTop: "16px" }}>
+              <label className="popover-label">Obsidian Vault Path</label>
+              <input
+                className="popover-input"
+                value={localSettings.obsidianVaultPath || ""}
+                onChange={(e) => setLocalSettings({ ...localSettings, obsidianVaultPath: e.target.value })}
+                placeholder="e.g. C:\Users\Name\Documents\MyVault"
+              />
+            </div>
+
+            <div className="popover-section" style={{ borderTop: "1px solid var(--border)", paddingTop: "12px", marginTop: "16px" }}>
+              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", cursor: "pointer" }} onClick={() => setShowNotionSettings(!showNotionSettings)}>
+                <label className="popover-label" style={{ cursor: "pointer", margin: 0 }}>Notion Integration</label>
+                <span style={{ fontSize: "11px", color: "var(--text-faint)" }}>{showNotionSettings ? "▼" : "▶"}</span>
+              </div>
+              
+              {showNotionSettings && (
+                <div style={{ marginTop: "10px", display: "flex", flexDirection: "column", gap: "10px" }}>
+                  <div>
+                    <label className="popover-label" style={{ fontSize: "11px", opacity: 0.8 }}>Notion Token</label>
+                    <input
+                      type="password"
+                      className="popover-input"
+                      value={localSettings.notionToken || ""}
+                      onChange={(e) => setLocalSettings({ ...localSettings, notionToken: e.target.value })}
+                      placeholder="secret_..."
+                    />
+                  </div>
+                  <div>
+                    <label className="popover-label" style={{ fontSize: "11px", opacity: 0.8 }}>Database ID</label>
+                    <input
+                      className="popover-input"
+                      value={localSettings.notionDatabaseId || ""}
+                      onChange={(e) => setLocalSettings({ ...localSettings, notionDatabaseId: e.target.value })}
+                      placeholder="32-character ID"
+                    />
+                  </div>
+                  <div style={{ display: "flex", flexDirection: "column", gap: "6px" }}>
+                    <button
+                      className="popover-btn secondary"
+                      style={{ height: "26px", minHeight: "unset", fontSize: "11px", padding: 0 }}
+                      onClick={validateNotionConnection}
+                      disabled={isValidatingNotion}
+                    >
+                      {isValidatingNotion ? "Validating..." : "Validate Connection"}
+                    </button>
+                    {notionStatus && (
+                      <span style={{ fontSize: "11px", color: notionStatus.startsWith("✓") ? "#34c759" : "#ff3b30", textAlign: "center", fontWeight: 500 }}>
+                        {notionStatus}
+                      </span>
+                    )}
+                  </div>
+                </div>
+              )}
             </div>
 
             <div className="popover-section danger-zone-section" style={{ marginTop: "24px", paddingTop: "12px", borderTop: "1px solid var(--border)" }}>
