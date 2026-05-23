@@ -49,6 +49,7 @@ export function useRecording() {
             llm_provider: settings.provider,
             llm_model: settings.modelName,
             api_key: settings.apiKey || "",
+            hf_token: settings.hf_token || "",
           })
         });
       }

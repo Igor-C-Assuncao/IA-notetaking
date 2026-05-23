@@ -48,5 +48,11 @@
       "icons/icon.icns",
       "icons/icon.ico"
     ]
+  },
+  "plugins": {
+    "updater": {
+      "endpoints": ["https://github.com/Igor-C-Assuncao/IA-notetaking/releases/latest/download/latest.json"],
+      "pubkey": "dW51c2VkX3B1YmtleV9mb3JfZGV2ZWxvcG1lbnRfcGxhY2Vob2xkZXI="
+    }
   }
 }
