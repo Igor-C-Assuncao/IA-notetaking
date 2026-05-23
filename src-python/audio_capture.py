@@ -52,8 +52,8 @@ class AudioCaptureStrategy(ABC):
     Abstract base class defining the contract for all audio capture strategies.
     """
     @abstractmethod
-    def start_recording(self, telemetry_callback=None):
-        """Starts capturing audio. Optional callback(level: float) for RMS telemetry."""
+    def start_recording(self, telemetry_callback=None, system_audio: bool = False):
+        """Starts capturing audio. Optional callback(level: float) for RMS telemetry. Accepts system_audio toggle."""
         pass
 
     @abstractmethod
@@ -96,7 +96,7 @@ class WindowsAudioCapture(AudioCaptureStrategy):
         current_dir = os.path.dirname(os.path.abspath(__file__))
         self.output_file = os.path.join(current_dir, "temp_meeting_audio.wav")
 
-    def start_recording(self, telemetry_callback=None):
+    def start_recording(self, telemetry_callback=None, system_audio: bool = False):
         if self.is_recording:
             return
 
@@ -105,24 +105,35 @@ class WindowsAudioCapture(AudioCaptureStrategy):
         self.loopback_frames = []
         self.mic_frames = []
         
+        # Defensive programming: delete previous session audio if it exists
+        if os.path.exists(self.output_file):
+            try:
+                os.remove(self.output_file)
+                print("DEBUG: [Windows] Outdated meeting audio file removed.", file=sys.stderr)
+            except Exception as e:
+                print(f"DEBUG: [Windows] Failed to delete previous audio: {e}", file=sys.stderr)
+
         # 1. Initialize PyAudio ONCE in the main thread
         self.p = pyaudio.PyAudio()
 
         # 2. Safely open the Loopback stream
-        try:
-            loopback_device = self.p.get_default_wasapi_loopback()
-            self.loopback_channels = loopback_device["maxInputChannels"]
-            
-            self.loopback_stream = self.p.open(
-                format=pyaudio.paInt16,
-                channels=self.loopback_channels,
-                rate=self.master_sample_rate,
-                input=True,
-                input_device_index=loopback_device["index"],
-                frames_per_buffer=1024
-            )
-        except Exception as e:
-            print(f"DEBUG: [Windows Audio] Loopback stream failed to open: {str(e)}", file=sys.stderr)
+        if system_audio:
+            try:
+                loopback_device = self.p.get_default_wasapi_loopback()
+                self.loopback_channels = loopback_device["maxInputChannels"]
+                
+                self.loopback_stream = self.p.open(
+                    format=pyaudio.paInt16,
+                    channels=self.loopback_channels,
+                    rate=self.master_sample_rate,
+                    input=True,
+                    input_device_index=loopback_device["index"],
+                    frames_per_buffer=1024
+                )
+            except Exception as e:
+                print(f"DEBUG: [Windows Audio] Loopback stream failed to open: {str(e)}", file=sys.stderr)
+                self.loopback_stream = None
+        else:
             self.loopback_stream = None
 
         # 3. Safely open the Microphone stream
@@ -273,6 +284,14 @@ class MacosAudioCapture(AudioCaptureStrategy):
         self.is_paused = False
         self.telemetry_callback = telemetry_callback
         self.mic_frames = []
+
+        # Defensive programming: delete previous session audio if it exists
+        if os.path.exists(self.output_file):
+            try:
+                os.remove(self.output_file)
+                print("DEBUG: [macOS] Outdated meeting audio file removed.", file=sys.stderr)
+            except Exception as e:
+                print(f"DEBUG: [macOS] Failed to delete previous audio: {e}", file=sys.stderr)
 
         self._sys_mixer = None
         if system_audio:

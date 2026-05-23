@@ -8,6 +8,38 @@ from langchain_core.messages import SystemMessage, HumanMessage
 import json as json_lib
 from config import DEFAULTS
 
+def extract_json_payload(text: str) -> str:
+    """
+    Strips conversational LLM intros/outros and extracts a pure JSON block.
+    """
+    text = text.strip()
+    
+    # Strip markdown code blocks if present
+    if "```" in text:
+        parts = text.split("```")
+        for part in parts[1::2]: # inspect content inside markdown blocks
+            part_str = part.strip()
+            if part_str.startswith("json"):
+                part_str = part_str[4:].strip()
+            if part_str.startswith("{") or part_str.startswith("["):
+                return part_str
+
+    # Fallback to brace matching
+    start_idx = text.find("{")
+    array_start_idx = text.find("[")
+    
+    if start_idx == -1 and array_start_idx == -1:
+        return text
+        
+    start = start_idx if (start_idx != -1 and (array_start_idx == -1 or start_idx < array_start_idx)) else array_start_idx
+    
+    end = text.rfind("}") if start == start_idx else text.rfind("]")
+    if end == -1:
+        return text
+        
+    return text[start:end+1]
+
+
 # ---------------------------------------------------------
 # GRAPH STATE DEFINITION
 # ---------------------------------------------------------
@@ -102,14 +134,9 @@ class MeetingWorkflowEngine:
         ])
         
         raw = response.content.strip()
-        if raw.startswith("```"):
-            raw = raw.split("```")[1]
-            if raw.startswith("json"):
-                raw = raw[4:]
-            raw = raw.strip()
-
         try:
-            entities = json_lib.loads(raw)
+            cleaned_raw = extract_json_payload(raw)
+            entities = json_lib.loads(cleaned_raw)
             # Ensure safe fallback keys
             for k in ["speakers", "numbers", "dates", "projects", "acronyms"]:
                 if k not in entities: entities[k] = []
@@ -180,14 +207,9 @@ class MeetingWorkflowEngine:
         ])
         
         raw = response.content.strip()
-        if raw.startswith("```"):
-            raw = raw.split("```")[1]
-            if raw.startswith("json"):
-                raw = raw[4:]
-            raw = raw.strip()
-
         try:
-            data = json_lib.loads(raw)
+            cleaned_raw = extract_json_payload(raw)
+            data = json_lib.loads(cleaned_raw)
             decisions = data.get("decisions", [])
             actions = data.get("actions", [])
         except Exception:
@@ -244,16 +266,9 @@ class MeetingWorkflowEngine:
         ])
 
         raw = response.content.strip()
-
-        # Strip markdown fences
-        if raw.startswith("```"):
-            raw = raw.split("```")[1]
-            if raw.startswith("json"):
-                raw = raw[4:]
-            raw = raw.strip()
-
         try:
-            structured = json_lib.loads(raw)
+            cleaned_raw = extract_json_payload(raw)
+            structured = json_lib.loads(cleaned_raw)
         except Exception:
             print("DEBUG: [LangGraph] Node 4 JSON parse failed, falling back to markdown.", file=sys.stderr)
             structured = {
