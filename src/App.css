@@ -1647,3 +1647,69 @@ input, select { font-family: inherit; }
 }
 
 .btn-save:hover { opacity: 0.88; }
+
+/* ── Reprocess Modal Styles ────────────────────────────────── */
+.modal-container {
+  background: var(--bg-panel);
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-lg);
+  padding: 22px;
+  box-shadow: var(--shadow-panel);
+  display: flex;
+  flex-direction: column;
+  color: var(--text);
+  backdrop-filter: blur(10px);
+}
+
+.modal-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 16px;
+  border-bottom: 1px solid var(--border);
+  padding-bottom: 12px;
+}
+
+.modal-title {
+  font-size: 16px;
+  font-weight: 600;
+  color: var(--text);
+}
+
+.modal-close {
+  background: none;
+  border: none;
+  color: var(--text-faint);
+  font-size: 16px;
+  cursor: pointer;
+  padding: 4px;
+  transition: color 120ms;
+}
+
+.modal-close:hover {
+  color: var(--text);
+}
+
+.original-context-banner {
+  background: rgba(255, 255, 255, 0.05);
+  border: 1px dashed var(--border);
+  padding: 10px 12px;
+  border-radius: var(--radius-sm);
+  font-size: 12px;
+  color: var(--text-dim);
+}
+
+[data-theme="minimalist-notebook"] .original-context-banner {
+  background: rgba(0, 0, 0, 0.02);
+}
+
+.animated-loading-bar {
+  background: linear-gradient(90deg, var(--accent) 0%, rgba(52, 199, 89, 0.3) 50%, var(--accent) 100%);
+  background-size: 200% 100%;
+  animation: loading-bar-flow 1.5s infinite linear;
+}
+
+@keyframes loading-bar-flow {
+  0% { background-position: 200% 0; }
+  100% { background-position: -200% 0; }
+}
