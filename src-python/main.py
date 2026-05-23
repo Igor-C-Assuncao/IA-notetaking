@@ -6,7 +6,9 @@ import time
 # Internal services
 from audio_capture import AudioCaptureFactory, list_audio_devices
 from transcription_service import TranscriptionService
-from llm_service import LLMFactory
+from llm_service import LLMFactory, MeetingWorkflowEngine
+from langchain_core.messages import SystemMessage, HumanMessage
+from rag_service import RAGService
 from config import DEFAULTS
 
 def send_event(event_type: str, payload: dict):
@@ -39,6 +41,13 @@ def main():
         send_event("ERROR", {"message": f"Failed to initialize WhisperX: {str(e)}"})
         transcriber = None
 
+    # 3. Initialize RAG Service
+    try:
+        rag_service = RAGService()
+    except Exception as e:
+        send_event("ERROR", {"message": f"Failed to initialize local RAG: {str(e)}"})
+        rag_service = None
+
     # Main loop listening for IPC commands from Rust
     for line in sys.stdin:
         try:
@@ -47,6 +56,111 @@ def main():
 
             if action == "LIST_DEVICES":
                 send_event("DEVICE_LIST", {"devices": list_audio_devices()})
+
+            elif action == "INDEX_MEETING":
+                meeting_id = command.get("meeting_id")
+                title = command.get("title", "")
+                date = command.get("date", "")
+                raw_transcript = command.get("raw_transcript", "")
+                provider = command.get("embedding_provider", "ollama")
+                model_name = command.get("embedding_model", "nomic-embed-text")
+                if rag_service:
+                    try:
+                        rag_service.index_meeting(meeting_id, title, date, raw_transcript, provider, model_name)
+                    except Exception as e:
+                        print(f"DEBUG: [RAG] Failed to index meeting {meeting_id}: {e}", file=sys.stderr)
+
+            elif action == "BACKFILL_INDEX_REQUESTED":
+                meetings = command.get("meetings", [])
+                provider = command.get("embedding_provider", "ollama")
+                model_name = command.get("embedding_model", "nomic-embed-text")
+                if rag_service:
+                    try:
+                        rag_service.clear_index()
+                        total = len(meetings)
+                        indexed_count = 0
+                        for idx, m in enumerate(meetings):
+                            m_id = m.get("id")
+                            m_title = m.get("title", "")
+                            m_date = m.get("date", "")
+                            m_transcript = m.get("raw_transcript", "")
+                            
+                            send_event("BACKFILL_STATUS", {
+                                "progress": (idx + 1) / total if total > 0 else 1.0,
+                                "current": idx + 1,
+                                "total": total,
+                                "message": f"Syncing: {idx + 1}/{total} ({m_title})"
+                            })
+                            
+                            rag_service.index_meeting(m_id, m_title, m_date, m_transcript, provider, model_name)
+                            indexed_count += 1
+                            
+                        send_event("BACKFILL_COMPLETED", {"success": True, "count": indexed_count})
+                    except Exception as e:
+                        send_event("BACKFILL_COMPLETED", {"success": False, "error": str(e)})
+                else:
+                    send_event("BACKFILL_COMPLETED", {"success": False, "error": "RAG Service is offline."})
+
+            elif action == "COPILOT_QUERY":
+                query = command.get("query", "")
+                provider_name = command.get("provider", "ollama")
+                model_name = command.get("model", "llama3")
+                api_key = command.get("api_key", "")
+                system_prompt = command.get("system_prompt", "")
+                emb_provider = command.get("embedding_provider", "ollama")
+                emb_model = command.get("embedding_model", "nomic-embed-text")
+                
+                if rag_service:
+                    try:
+                        # Step 1: Perform vector search
+                        results = rag_service.query_similarity(query, emb_provider, emb_model, top_k=5)
+                        
+                        # Step 2: Format LLM context
+                        context_str = ""
+                        if results:
+                            context_str = "\n".join([
+                                f"--- [Meeting: {r['title']} ({r['date']})] ---\n{r['text']}"
+                                for r in results
+                            ])
+                        else:
+                            context_str = "(No relevant past meetings found in vector database.)"
+                        
+                        # Step 3: Set up RAG prompt
+                        default_system = (
+                            "You are the AI Copilot, a helpful and precise assistant for the user's meeting history.\n"
+                            "Below is the relevant context retrieved from the user's past meetings to answer their query.\n"
+                            "Analyze this context and answer the user query clearly and professionally.\n"
+                            "CRITICAL: You must cite the meetings you reference using their title and date in bracket format like this: [Meeting Title](date).\n"
+                            "If the retrieved context does not contain enough information to answer, state this clearly, but answer as best as possible."
+                        )
+                        
+                        final_system = default_system
+                        if system_prompt:
+                            final_system += f"\n\nUser Custom Guidelines:\n{system_prompt}"
+                        
+                        final_system += f"\n\nRETRIEVED MEETING CONTEXT:\n{context_str}"
+                        
+                        # Step 4: Stream response from LLM
+                        engine = MeetingWorkflowEngine(provider_name, model_name, api_key=api_key)
+                        
+                        messages = [
+                            SystemMessage(content=final_system),
+                            HumanMessage(content=query)
+                        ]
+                        
+                        print("DEBUG: [Copilot] Initializing streaming response...", file=sys.stderr)
+                        response_text = ""
+                        for chunk in engine.llm.stream(messages):
+                            content = chunk.content if hasattr(chunk, 'content') else str(chunk)
+                            if content:
+                                response_text += content
+                                send_event("COPILOT_STREAM", {"chunk": content})
+                        
+                        send_event("COPILOT_COMPLETED", {"success": True, "answer": response_text})
+                    except Exception as e:
+                        send_event("COPILOT_COMPLETED", {"success": False, "error": str(e)})
+                else:
+                    send_event("COPILOT_COMPLETED", {"success": False, "error": "RAG Service is offline."})
 
             elif action == "REPROCESS_REQUESTED":
                 send_event("PIPELINE_STATUS", {"step": "Reprocessing Notes with AI..."})

@@ -21,6 +21,10 @@ export interface Settings {
   obsidianVaultPath: string;
   notionToken: string;
   notionDatabaseId: string;
+  ragEnabled: boolean;
+  ragProvider: "ollama" | "local";
+  ragEmbeddingModel: string;
+  ragHistorySynced: boolean;
 }
 
 const DEFAULT_SETTINGS: Settings = {
@@ -40,6 +44,10 @@ const DEFAULT_SETTINGS: Settings = {
   obsidianVaultPath: "",
   notionToken: "",
   notionDatabaseId: "",
+  ragEnabled: true,
+  ragProvider: "ollama",
+  ragEmbeddingModel: "nomic-embed-text",
+  ragHistorySynced: false,
 };
 
 interface SettingsContextType {

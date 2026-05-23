@@ -16,7 +16,9 @@ export function PopoverWidget() {
   const [devices, setDevices] = useState<AudioDevice[]>([]);
   const [audioLevel, setAudioLevel] = useState(0);
   const [showShortcuts, setShowShortcuts] = useState(false);
-  const [activeTab, setActiveTab] = useState<"audio" | "ai" | "behavior">("audio");
+  const [activeTab, setActiveTab] = useState<"audio" | "ai" | "behavior" | "copilot">("audio");
+  const [isSyncing, setIsSyncing] = useState(false);
+  const [syncStatus, setSyncStatus] = useState("");
   const [copiedPrompt, setCopiedPrompt] = useState(false);
   const [isTestingMic, setIsTestingMic] = useState(false);
   const [testCountdown, setTestCountdown] = useState(0);
@@ -34,6 +36,35 @@ export function PopoverWidget() {
       setNotionStatus(`❌ ${data.error || "Validation failed"}`);
     }
   });
+
+  usePythonEvent("BACKFILL_STATUS", (data) => {
+    if (data.progress) {
+      setSyncStatus(`Syncing: ${Math.round(data.progress * 100)}% (${data.current}/${data.total})`);
+    } else if (data.message) {
+      setSyncStatus(data.message);
+    }
+  });
+
+  usePythonEvent("BACKFILL_COMPLETED", (data) => {
+    setIsSyncing(false);
+    if (data.success) {
+      setSyncStatus(`✓ Successfully synced ${data.count} meetings!`);
+      setLocalSettings(prev => ({ ...prev, ragHistorySynced: true }));
+    } else {
+      setSyncStatus(`❌ Sync failed: ${data.error || "Unknown error"}`);
+    }
+  });
+
+  const triggerHistorySync = async () => {
+    setIsSyncing(true);
+    setSyncStatus("Initializing indexing backfill...");
+    try {
+      await invoke("trigger_index_backfill");
+    } catch (e) {
+      setIsSyncing(false);
+      setSyncStatus(`❌ Error starting sync: ${String(e)}`);
+    }
+  };
 
   const validateNotionConnection = async () => {
     if (!localSettings.notionToken || !localSettings.notionDatabaseId) {
@@ -179,6 +210,12 @@ Your task is to analyze this transcript and generate a premium-grade executive s
           onClick={() => setActiveTab("behavior")}
         >
           Behavior
+        </button>
+        <button
+          className={`popover-tab-btn ${activeTab === "copilot" ? "active" : ""}`}
+          onClick={() => setActiveTab("copilot")}
+        >
+          Copilot
         </button>
       </div>
 
@@ -380,6 +417,81 @@ Your task is to analyze this transcript and generate a premium-grade executive s
                 Restart Setup Wizard
               </button>
             </div>
+          </div>
+        )}
+
+        {activeTab === "copilot" && (
+          <div className="popover-tab-content">
+            <div className="popover-toggles-section">
+              <div className="popover-toggle-row">
+                <div className="popover-toggle-meta">
+                  <span className="popover-toggle-label">Enable AI Copilot</span>
+                  <span className="popover-toggle-hint">Activate vector database indexing to search and converse with your history.</span>
+                </div>
+                <Toggle on={localSettings.ragEnabled} onChange={(v) => setLocalSettings({ ...localSettings, ragEnabled: v })} />
+              </div>
+            </div>
+
+            {localSettings.ragEnabled && (
+              <>
+                <div className="popover-section" style={{ marginTop: "16px" }}>
+                  <label className="popover-label">Embedding Provider</label>
+                  <select
+                    className="popover-select"
+                    value={localSettings.ragProvider}
+                    onChange={(e) => {
+                      const prov = e.target.value as "ollama" | "local";
+                      setLocalSettings({ 
+                        ...localSettings, 
+                        ragProvider: prov,
+                        ragEmbeddingModel: prov === "ollama" ? "nomic-embed-text" : "all-MiniLM-L6-v2"
+                      });
+                    }}
+                  >
+                    <option value="ollama">Ollama (Local API)</option>
+                    <option value="local">Local Model (ONNX / Sentence-Transformers)</option>
+                  </select>
+                </div>
+
+                <div className="popover-section">
+                  <label className="popover-label">Embedding Model</label>
+                  <input
+                    className="popover-input"
+                    value={localSettings.ragEmbeddingModel}
+                    onChange={(e) => setLocalSettings({ ...localSettings, ragEmbeddingModel: e.target.value })}
+                    placeholder={localSettings.ragProvider === "ollama" ? "nomic-embed-text" : "all-MiniLM-L6-v2"}
+                  />
+                  <span style={{ fontSize: "10px", color: "var(--text-faint)", marginTop: "4px", display: "block", lineHeight: "1.3" }}>
+                    {localSettings.ragProvider === "local" 
+                      ? "Note: First use will download all-MiniLM-L6-v2 (~90MB) in the background."
+                      : "Make sure this model is pulled in your local Ollama instance (run: ollama pull <model>)."}
+                  </span>
+                </div>
+
+                <div className="popover-section" style={{ borderTop: "1px solid var(--border)", paddingTop: "16px", marginTop: "20px" }}>
+                  <label className="popover-label">History Vector Index</label>
+                  <p style={{ fontSize: "11px", color: "var(--text-muted)", marginBottom: "12px", lineHeight: "1.4" }}>
+                    To chat with your past meetings, they need to be vectorized and indexed. Newly recorded meetings are indexed automatically.
+                  </p>
+                  
+                  <div style={{ display: "flex", flexDirection: "column", gap: "10px" }}>
+                    <button
+                      className="popover-btn primary"
+                      style={{ width: "100%", height: "30px", minHeight: "unset", fontSize: "12px", padding: 0 }}
+                      onClick={triggerHistorySync}
+                      disabled={isSyncing}
+                    >
+                      {isSyncing ? "Syncing History..." : "Sync Past Meeting History"}
+                    </button>
+                    {syncStatus && (
+                      <span style={{ fontSize: "11px", color: syncStatus.startsWith("✓") ? "#34c759" : syncStatus.startsWith("❌") ? "#ff3b30" : "var(--text-muted)", textAlign: "center", fontWeight: 500 }}>
+                        {syncStatus}
+                      </span>
+                    )}
+                  </div>
+                </div>
+              </>
+            )}
           </div>
         )}
       </div>

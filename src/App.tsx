@@ -40,7 +40,7 @@ function MainApp() {
       const tags = data.structured?.tags ? JSON.stringify(data.structured.tags) : null;
       const structuredStr = JSON.stringify(data.structured);
       
-      await invoke("save_meeting", {
+      const meetingId = await invoke<number>("save_meeting", {
         date: dateStr,
         title: titleStr,
         raw_transcript: transcription,
@@ -51,6 +51,21 @@ function MainApp() {
       });
       
       loadHistory();
+
+      // Trigger background RAG vector indexing for the newly created meeting
+      if (settings.ragEnabled) {
+        await invoke("send_command_to_python", {
+          payload: JSON.stringify({
+            action: "INDEX_MEETING",
+            meeting_id: meetingId,
+            title: titleStr,
+            date: dateStr,
+            raw_transcript: transcription,
+            embedding_provider: settings.ragProvider,
+            embedding_model: settings.ragEmbeddingModel
+          })
+        });
+      }
     } catch (err) {
       console.error("Failed to save auto-summarized meeting:", err);
     }
