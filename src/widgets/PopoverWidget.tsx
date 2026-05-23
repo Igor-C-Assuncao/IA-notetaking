@@ -24,6 +24,65 @@ export function PopoverWidget() {
   const [testCountdown, setTestCountdown] = useState(0);
   const win = getCurrentWindow();
 
+  // Sprint 15: Sidecar Supervisor & Preflight Diagnostic States
+  const [sidecarState, setSidecarState] = useState<"up" | "down" | "restarting" | "failed">("up");
+  const [restartAttempt, setRestartAttempt] = useState(0);
+  const [preflightData, setPreflightData] = useState<{
+    audio_devices: boolean;
+    transcription_model_loaded: boolean;
+    llm_provider_reachable: boolean;
+    errors: string[];
+    warnings: string[];
+  } | null>(null);
+
+  usePythonEvent("SIDECAR_DOWN", () => {
+    setSidecarState("down");
+  });
+
+  usePythonEvent("SIDECAR_RESTARTING", (data: any) => {
+    setSidecarState("restarting");
+    setRestartAttempt(data.attempt);
+  });
+
+  usePythonEvent("SIDECAR_UP", () => {
+    setSidecarState("up");
+    setRestartAttempt(0);
+    invoke("send_command_to_python", {
+      payload: JSON.stringify({
+        action: "PREFLIGHT_CHECK",
+        provider: settings.provider,
+        model: settings.modelName,
+      })
+    }).catch(console.error);
+  });
+
+  usePythonEvent("SIDECAR_FAILED", () => {
+    setSidecarState("failed");
+  });
+
+  usePythonEvent("PREFLIGHT_RESULT", (data: any) => {
+    setPreflightData(data);
+  });
+
+  useEffect(() => {
+    if (loading) return;
+    const triggerPreflight = async () => {
+      try {
+        await invoke("send_command_to_python", {
+          payload: JSON.stringify({
+            action: "PREFLIGHT_CHECK",
+            provider: settings.provider,
+            model: settings.modelName,
+          })
+        });
+      } catch (err) {
+        console.error("Failed to trigger preflight check:", err);
+      }
+    };
+    const timer = setTimeout(triggerPreflight, 500);
+    return () => clearTimeout(timer);
+  }, [settings.provider, settings.modelName, loading]);
+
   const [showNotionSettings, setShowNotionSettings] = useState(false);
   const [isValidatingNotion, setIsValidatingNotion] = useState(false);
   const [notionStatus, setNotionStatus] = useState("");
@@ -192,6 +251,107 @@ Your task is to analyze this transcript and generate a premium-grade executive s
         <button className="popover-close" onClick={() => win.close()}>✕</button>
       </div>
 
+      <style>{`
+        .sidecar-status-banner {
+          display: flex;
+          justify-content: space-between;
+          align-items: center;
+          padding: 8px 12px;
+          margin: 8px 12px 0 12px;
+          border-radius: 8px;
+          font-size: 11px;
+          font-weight: 500;
+          backdrop-filter: blur(10px);
+          border: 1px solid rgba(255, 255, 255, 0.1);
+          box-shadow: 0 4px 12px rgba(0, 0, 0, 0.15);
+          animation: slideDown 0.3s ease-out;
+        }
+        .sidecar-status-banner.warning {
+          background: rgba(245, 158, 11, 0.12);
+          color: #fbbf24;
+          border-color: rgba(245, 158, 11, 0.25);
+        }
+        .sidecar-status-banner.info {
+          background: rgba(59, 130, 246, 0.12);
+          color: #93c5fd;
+          border-color: rgba(59, 130, 246, 0.25);
+        }
+        .sidecar-status-banner.error {
+          background: rgba(239, 68, 68, 0.12);
+          color: #fca5a5;
+          border-color: rgba(239, 68, 68, 0.25);
+        }
+        .reconnect-btn {
+          background: rgba(239, 68, 68, 0.25);
+          border: 1px solid rgba(239, 68, 68, 0.4);
+          color: #fff;
+          padding: 4px 10px;
+          border-radius: 6px;
+          font-size: 10px;
+          font-weight: 600;
+          cursor: pointer;
+          transition: all 0.2s;
+        }
+        .reconnect-btn:hover {
+          background: rgba(239, 68, 68, 0.45);
+          transform: translateY(-1px);
+        }
+        .preflight-banner {
+          margin: 8px 12px 0 12px;
+          display: flex;
+          flex-direction: column;
+          gap: 4px;
+        }
+        .preflight-item {
+          padding: 6px 10px;
+          border-radius: 6px;
+          font-size: 10.5px;
+          font-weight: 500;
+          backdrop-filter: blur(8px);
+          border: 1px solid rgba(255, 255, 255, 0.05);
+        }
+        .preflight-item.error {
+          background: rgba(239, 68, 68, 0.06);
+          color: #fca5a5;
+          border-color: rgba(239, 68, 68, 0.12);
+        }
+        .preflight-item.warning {
+          background: rgba(245, 158, 11, 0.06);
+          color: #fde047;
+          border-color: rgba(245, 158, 11, 0.12);
+        }
+      `}</style>
+
+      {sidecarState === "down" && (
+        <div className="sidecar-status-banner warning">
+          <span>⚠️ AI Engine connection interrupted...</span>
+        </div>
+      )}
+      {sidecarState === "restarting" && (
+        <div className="sidecar-status-banner info">
+          <span>🔄 Reconnecting AI Engine (Attempt {restartAttempt}/3)...</span>
+        </div>
+      )}
+      {sidecarState === "failed" && (
+        <div className="sidecar-status-banner error">
+          <span>❌ AI Engine Offline.</span>
+          <button className="reconnect-btn" onClick={() => invoke("reconnect_sidecar")}>
+            Reconnect
+          </button>
+        </div>
+      )}
+
+      {preflightData && (preflightData.errors.length > 0 || preflightData.warnings.length > 0) && (
+        <div className="preflight-banner">
+          {preflightData.errors.map((err, i) => (
+            <div key={i} className="preflight-item error">⚠️ {err}</div>
+          ))}
+          {preflightData.warnings.map((warn, i) => (
+            <div key={i} className="preflight-item warning">ℹ️ {warn}</div>
+          ))}
+        </div>
+      )}
+
       <div className="popover-tabs">
         <button
           className={`popover-tab-btn ${activeTab === "audio" ? "active" : ""}`}
@@ -342,10 +502,27 @@ Your task is to analyze this transcript and generate a premium-grade executive s
               <div className="popover-toggle-row">
                 <div className="popover-toggle-meta">
                   <span className="popover-toggle-label">Speaker Diarization</span>
-                  <span className="popover-toggle-hint">Identify who spoke which words using Whispex / PyAnnote.</span>
+                  <span className="popover-toggle-hint">Identify who spoke which words using WhisperX / PyAnnote.</span>
                 </div>
                 <Toggle on={localSettings.speakerDiarization} onChange={(v) => setLocalSettings({ ...localSettings, speakerDiarization: v })} />
               </div>
+
+              {localSettings.speakerDiarization && (
+                <div className="popover-section" style={{ paddingLeft: "8px", borderLeft: "2px dashed rgba(255, 255, 255, 0.15)", margin: "4px 8px 12px 8px", animation: "fadeIn 0.2s ease-out" }}>
+                  <label className="popover-label" style={{ fontSize: "10px", textTransform: "uppercase", letterSpacing: "0.5px" }}>HuggingFace Token</label>
+                  <input
+                    type="password"
+                    className="popover-input"
+                    value={localSettings.hf_token || ""}
+                    onChange={(e) => setLocalSettings({ ...localSettings, hf_token: e.target.value })}
+                    placeholder="hf_..."
+                    style={{ fontSize: "11px", padding: "6px" }}
+                  />
+                  <span className="popover-toggle-hint" style={{ fontSize: "9px", marginTop: "2px" }}>
+                    Required for pyannote speaker segmentation weights access.
+                  </span>
+                </div>
+              )}
 
               <div className="popover-toggle-row">
                 <div className="popover-toggle-meta">
@@ -410,6 +587,44 @@ Your task is to analyze this transcript and generate a premium-grade executive s
                   </div>
                 </div>
               )}
+            </div>
+
+            <div className="popover-section" style={{ borderTop: "1px solid var(--border)", paddingTop: "12px", marginTop: "16px" }}>
+              <label className="popover-label">Advanced / Diagnostics</label>
+              <div style={{ display: "flex", gap: "8px", marginTop: "6px" }}>
+                <button
+                  className="popover-btn secondary"
+                  style={{ flex: 1, fontSize: "11px", height: "30px", minHeight: "unset", padding: 0 }}
+                  onClick={async () => {
+                    try {
+                      await invoke("open_logs_folder");
+                    } catch (err) {
+                      console.error("Failed to open logs directory:", err);
+                    }
+                  }}
+                >
+                  📁 Open Logs Folder
+                </button>
+                <button
+                  className="popover-btn secondary"
+                  style={{ flex: 1, fontSize: "11px", height: "30px", minHeight: "unset", padding: 0 }}
+                  onClick={async () => {
+                    try {
+                      await invoke("send_command_to_python", {
+                        payload: JSON.stringify({
+                          action: "PREFLIGHT_CHECK",
+                          provider: settings.provider,
+                          model: settings.modelName,
+                        })
+                      });
+                    } catch (err) {
+                      console.error("Failed to run preflight check:", err);
+                    }
+                  }}
+                >
+                  🔍 Run Preflight
+                </button>
+              </div>
             </div>
 
             <div className="popover-section danger-zone-section" style={{ marginTop: "24px", paddingTop: "12px", borderTop: "1px solid var(--border)" }}>

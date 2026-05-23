@@ -6,6 +6,7 @@ use std::sync::{Arc, Mutex};
 use tauri::{AppHandle, Emitter, Manager, State, WebviewWindowBuilder, WebviewUrl};
 use tauri::{LogicalSize, Window};
 use tauri_plugin_global_shortcut::{Code, GlobalShortcutExt, Modifiers, Shortcut, ShortcutState};
+use keyring::Entry;
 
 // ── 1. Data structures ────────────────────────────────────────
 
@@ -24,7 +25,7 @@ struct Meeting {
 // ── 2. Global application state ───────────────────────────────
 
 struct AppState {
-    db: Mutex<Connection>,
+    db: Arc<Mutex<Connection>>,
     python_stdin: Arc<Mutex<Option<ChildStdin>>>,
     python_child: Arc<Mutex<Option<Child>>>,
 }
@@ -270,6 +271,53 @@ fn trigger_index_backfill(
     Err("Python process not initialized or stdin unavailable".to_string())
 }
 
+#[tauri::command]
+fn set_secret(key: String, value: String) -> Result<(), String> {
+    let entry = Entry::new("com.opensource.ainotetaker", &key).map_err(|e| e.to_string())?;
+    entry.set_password(&value).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn get_secret(key: String) -> Result<Option<String>, String> {
+    let entry = Entry::new("com.opensource.ainotetaker", &key).map_err(|e| e.to_string())?;
+    match entry.get_password() {
+        Ok(pass) => Ok(Some(pass)),
+        Err(keyring::Error::NoEntry) => Ok(None),
+        Err(e) => Err(e.to_string()),
+    }
+}
+
+#[tauri::command]
+fn delete_secret(key: String) -> Result<(), String> {
+    let entry = Entry::new("com.opensource.ainotetaker", &key).map_err(|e| e.to_string())?;
+    match entry.delete_credential() {
+        Ok(_) => Ok(()),
+        Err(keyring::Error::NoEntry) => Ok(()),
+        Err(e) => Err(e.to_string()),
+    }
+}
+
+#[tauri::command]
+fn open_logs_folder(app: AppHandle) -> Result<(), String> {
+    let app_data_dir = app.path().app_data_dir().unwrap_or_else(|_| PathBuf::from("."));
+    let logs_dir = app_data_dir.join("logs");
+    let _ = std::fs::create_dir_all(&logs_dir);
+    
+    #[cfg(target_os = "windows")]
+    {
+        Command::new("explorer").arg(logs_dir).spawn().map_err(|e| e.to_string())?;
+    }
+    #[cfg(target_os = "macos")]
+    {
+        Command::new("open").arg(logs_dir).spawn().map_err(|e| e.to_string())?;
+    }
+    #[cfg(target_os = "linux")]
+    {
+        Command::new("xdg-open").arg(logs_dir).spawn().map_err(|e| e.to_string())?;
+    }
+    Ok(())
+}
+
 // ── 7. Settings popover window ────────────────────────────────
 // The popover is a separate frameless OS window (label: "popover"),
 // positioned above the compact widget by Rust. Toggled on each call.
@@ -316,6 +364,243 @@ async fn close_popover_window(app: AppHandle) -> Result<(), String> {
     if let Some(window) = app.get_webview_window("popover") {
         window.close().map_err(|e| e.to_string())?;
     }
+    Ok(())
+}
+
+fn migrate_settings_to_keychain(app: &tauri::App) {
+    if let Ok(config_dir) = app.path().app_config_dir() {
+        let settings_path = config_dir.join("settings.json");
+        if settings_path.exists() {
+            if let Ok(content) = std::fs::read_to_string(&settings_path) {
+                if let Ok(mut json) = serde_json::from_str::<serde_json::Value>(&content) {
+                    let mut modified = false;
+                    
+                    let provider = json.get("provider").and_then(|v| v.as_str()).unwrap_or("openai");
+                    let provider_key = format!("{}_api_key", provider.to_lowercase());
+                    
+                    // Keys to migrate: (json_key, keychain_key)
+                    let keys_to_migrate = [
+                        ("apiKey", provider_key.clone()),
+                        ("notionToken", "notion_token".to_string()),
+                        ("hf_token", "hf_token".to_string()),
+                    ];
+                    
+                    for (json_key, keychain_key) in keys_to_migrate.iter() {
+                        if let Some(val_str) = json.get(*json_key).and_then(|v| v.as_str()) {
+                            if !val_str.is_empty() {
+                                // Save to keychain
+                                if let Ok(entry) = Entry::new("com.opensource.ainotetaker", keychain_key) {
+                                    if let Err(e) = entry.set_password(val_str) {
+                                        eprintln!("[Keychain Migration Error] Failed to set password for {}: {}", keychain_key, e);
+                                    } else {
+                                        println!("[Keychain Migration] Successfully migrated {} to OS keychain", keychain_key);
+                                    }
+                                }
+                                // Clear from JSON
+                                json[*json_key] = serde_json::json!("");
+                                modified = true;
+                            }
+                        }
+                    }
+                    
+                    if modified {
+                        if let Ok(updated_content) = serde_json::to_string_pretty(&json) {
+                            if let Err(e) = std::fs::write(&settings_path, updated_content) {
+                                eprintln!("[Keychain Migration Error] Failed to write settings.json: {}", e);
+                            } else {
+                                println!("[Keychain Migration] Atomically updated settings.json and cleared plaintext keys.");
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+fn spawn_and_supervise_python(
+    app_handle: AppHandle,
+    db: Arc<Mutex<Connection>>,
+    python_stdin: Arc<Mutex<Option<ChildStdin>>>,
+    python_child: Arc<Mutex<Option<Child>>>,
+) {
+    std::thread::spawn(move || {
+        let mut restart_attempts = 0;
+        let max_attempts = 3;
+        
+        loop {
+            println!("[Supervisor] Spawning Python sidecar (Attempt {})...", restart_attempts + 1);
+            if restart_attempts > 0 {
+                app_handle.emit("python-event", serde_json::json!({
+                    "event": "SIDECAR_RESTARTING",
+                    "data": { "attempt": restart_attempts }
+                }).to_string()).ok();
+            }
+            
+            let child_res = if cfg!(target_os = "windows") {
+                Command::new(r"..\src-python\.venv\Scripts\python.exe")
+                    .arg(r"..\src-python\main.py")
+                    .stdin(Stdio::piped())
+                    .stdout(Stdio::piped())
+                    .stderr(Stdio::inherit())
+                    .spawn()
+            } else {
+                Command::new("bash")
+                    .current_dir("../")
+                    .arg("src-python/run.sh")
+                    .stdin(Stdio::piped())
+                    .stdout(Stdio::piped())
+                    .stderr(Stdio::inherit())
+                    .spawn()
+            };
+            
+            match child_res {
+                Ok(mut child) => {
+                    let stdin = child.stdin.take().expect("Failed to open Python stdin");
+                    let stdout = child.stdout.take().expect("Failed to open Python stdout");
+                    
+                    // Update global AppState
+                    {
+                        let mut stdin_lock = python_stdin.lock().unwrap();
+                        *stdin_lock = Some(stdin);
+                    }
+                    {
+                        let mut child_lock = python_child.lock().unwrap();
+                        *child_lock = Some(child);
+                    }
+                    
+                    // Reset restart attempts on successful startup
+                    restart_attempts = 0;
+                    app_handle.emit("python-event", serde_json::json!({
+                        "event": "SIDECAR_UP",
+                        "data": {}
+                    }).to_string()).ok();
+                    
+                    // Start the stdout reader thread for this child
+                    let app_handle_clone = app_handle.clone();
+                    let db_clone = Arc::clone(&db);
+                    let python_child_clone = Arc::clone(&python_child);
+                    std::thread::spawn(move || {
+                        let reader = BufReader::new(stdout);
+                        for line in reader.lines() {
+                            if let Ok(content) = line {
+                                if !content.contains("VAD_TELEMETRY") {
+                                    println!("[PYTHON STDOUT] {}", content);
+                                }
+                                
+                                // Parse JSON to check for REPROCESS_COMPLETED
+                                if let Ok(json) = serde_json::from_str::<serde_json::Value>(&content) {
+                                    if json["event"] == "REPROCESS_COMPLETED" {
+                                        if let Some(data) = json["data"].as_object() {
+                                            let meeting_id = data.get("meeting_id").and_then(|v| v.as_i64());
+                                            let markdown = data.get("markdown").and_then(|v| v.as_str());
+                                            let structured = data.get("structured").map(|v| v.to_string());
+                                            
+                                            if let (Some(id), Some(md)) = (meeting_id, markdown) {
+                                                let db_lock = db_clone.lock().unwrap();
+                                                if let Err(e) = db_lock.execute(
+                                                    "UPDATE meetings SET markdown_summary = ?1, structured_summary = ?2 WHERE id = ?3",
+                                                    rusqlite::params![md, structured, id],
+                                                ) {
+                                                    eprintln!("[RUST ERROR] Failed to update reprocessed meeting: {}", e);
+                                                } else {
+                                                    println!("[RUST SUCCESS] Reprocessed meeting {} updated in DB", id);
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+                                
+                                app_handle_clone.emit("python-event", content).unwrap();
+                            }
+                        }
+                    });
+                    
+                    // Wait for the child to exit
+                    let mut child_to_wait = None;
+                    {
+                        // Safely take child ownership to wait on it
+                        let mut child_lock = python_child_clone.lock().unwrap();
+                        if let Some(c) = child_lock.take() {
+                            child_to_wait = Some(c);
+                        }
+                    }
+                    if let Some(mut c) = child_to_wait {
+                        match c.wait() {
+                            Ok(status) => {
+                                println!("[Supervisor] Python process exited with status: {}", status);
+                            }
+                            Err(e) => {
+                                eprintln!("[Supervisor Error] Failed to wait on child process: {}", e);
+                            }
+                        }
+                    }
+                    
+                    // Ensure the stdin handle is cleared
+                    {
+                        let mut stdin_lock = python_stdin.lock().unwrap();
+                        *stdin_lock = None;
+                    }
+                    
+                    // Sidecar went down
+                    app_handle.emit("python-event", serde_json::json!({
+                        "event": "SIDECAR_DOWN",
+                        "data": {}
+                    }).to_string()).ok();
+                }
+                Err(e) => {
+                    eprintln!("[Supervisor Error] Failed to spawn Python sidecar: {}", e);
+                    app_handle.emit("python-event", serde_json::json!({
+                        "event": "SIDECAR_DOWN",
+                        "data": { "error": e.to_string() }
+                    }).to_string()).ok();
+                }
+            }
+            
+            // Increment restart attempts and wait with exponential backoff
+            restart_attempts += 1;
+            if restart_attempts > max_attempts {
+                eprintln!("[Supervisor] Maximum restart attempts reached. Process marked as FAILED.");
+                app_handle.emit("python-event", serde_json::json!({
+                    "event": "SIDECAR_FAILED",
+                    "data": {}
+                }).to_string()).ok();
+                break;
+            }
+            
+            let backoff_secs = match restart_attempts {
+                1 => 1,
+                2 => 2,
+                _ => 4,
+            };
+            println!("[Supervisor] Waiting {}s before auto-restarting...", backoff_secs);
+            std::thread::sleep(std::time::Duration::from_secs(backoff_secs));
+        }
+    });
+}
+
+#[tauri::command]
+fn reconnect_sidecar(app: AppHandle, state: State<'_, AppState>) -> Result<(), String> {
+    println!("[RUST INFO] Manual sidecar reconnection triggered.");
+    // Clear any existing child just in case
+    {
+        let mut child_lock = state.python_child.lock().unwrap();
+        if let Some(mut child) = child_lock.take() {
+            let _ = child.kill();
+        }
+    }
+    {
+        let mut stdin_lock = state.python_stdin.lock().unwrap();
+        *stdin_lock = None;
+    }
+    
+    // Spawn supervisor thread
+    spawn_and_supervise_python(
+        app,
+        Arc::clone(&state.db),
+        Arc::clone(&state.python_stdin),
+        Arc::clone(&state.python_child),
+    );
     Ok(())
 }
 
@@ -383,10 +668,7 @@ pub fn run() {
     ).expect("Failed to create FTS5 table and triggers");
 
     let python_stdin = Arc::new(Mutex::new(None));
-    let python_stdin_clone = Arc::clone(&python_stdin);
-
     let python_child = Arc::new(Mutex::new(None));
-    let python_child_clone = Arc::clone(&python_child);
 
     let builder = tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
@@ -396,81 +678,44 @@ pub fn run() {
         .plugin(tauri_plugin_fs::init())
         .plugin(tauri_plugin_http::init())
         .manage(AppState { 
-            db: Mutex::new(conn), 
+            db: Arc::new(Mutex::new(conn)), 
             python_stdin,
             python_child: Arc::clone(&python_child),
         })
         .setup(move |app| {
             let app_handle = app.handle().clone();
 
-            // Spawn the Python AI engine as a child process.
-            // Windows: invoke the .venv interpreter directly (no bash in PATH).
-            // macOS/Linux: use run.sh which activates the venv before launching main.py.
-            let mut child = if cfg!(target_os = "windows") {
-                Command::new(r"..\src-python\.venv\Scripts\python.exe")
-                    .arg(r"..\src-python\main.py")
-                    .stdin(Stdio::piped())
-                    .stdout(Stdio::piped())
-                    .stderr(Stdio::inherit())
-                    .spawn()
-                    .expect("Failed to start Python engine")
-            } else {
-                Command::new("bash")
-                    .current_dir("../")
-                    .arg("src-python/run.sh")
-                    .stdin(Stdio::piped())
-                    .stdout(Stdio::piped())
-                    .stderr(Stdio::inherit())
-                    .spawn()
-                    .expect("Failed to start Python engine")
-            };
+            // 1. Initialize Daily Rotating Logs
+            let app_data_dir = app.path().app_data_dir().unwrap_or_else(|_| PathBuf::from("."));
+            let logs_dir = app_data_dir.join("logs");
+            let _ = std::fs::create_dir_all(&logs_dir);
+            
+            let file_appender = tracing_appender::rolling::daily(&logs_dir, "app.log");
+            let (non_blocking, _guard) = tracing_appender::non_blocking(file_appender);
+            std::mem::forget(_guard); // Leak guard so logging remains active
+            
+            use tracing_subscriber::{fmt, prelude::*, Registry};
+            let filter = tracing_subscriber::EnvFilter::try_from_default_env()
+                .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("info"));
+            
+            let _ = Registry::default()
+                .with(filter)
+                .with(fmt::layer().with_writer(non_blocking))
+                .try_init();
 
-            let stdin = child.stdin.take().expect("Failed to open Python stdin");
-            *python_stdin_clone.lock().unwrap() = Some(stdin);
+            println!("[RUST INFO] Daily rotating logs initialized at: {:?}", logs_dir.join("app.log"));
 
-            // Spawn a reader thread that forwards every Python stdout line to React
-            // as a "python-event" Tauri event. VAD_TELEMETRY is suppressed from the
-            // console (~10/sec) but still forwarded to the frontend.
-            let stdout = child.stdout.take().expect("Failed to open Python stdout");
+            // 2. Atomically Migrate settings.json secrets to OS Keychain
+            migrate_settings_to_keychain(app);
 
-            *python_child_clone.lock().unwrap() = Some(child);
-
-            std::thread::spawn(move || {
-                let reader = BufReader::new(stdout);
-                for line in reader.lines() {
-                    if let Ok(content) = line {
-                        if !content.contains("VAD_TELEMETRY") {
-                            println!("[PYTHON STDOUT] {}", content);
-                        }
-                        
-                        // Parse JSON to check for REPROCESS_COMPLETED
-                        if let Ok(json) = serde_json::from_str::<serde_json::Value>(&content) {
-                            if json["event"] == "REPROCESS_COMPLETED" {
-                                if let Some(data) = json["data"].as_object() {
-                                    let meeting_id = data.get("meeting_id").and_then(|v| v.as_i64());
-                                    let markdown = data.get("markdown").and_then(|v| v.as_str());
-                                    let structured = data.get("structured").map(|v| v.to_string());
-                                    
-                                    if let (Some(id), Some(md)) = (meeting_id, markdown) {
-                                        let state = app_handle.state::<AppState>();
-                                        let db = state.db.lock().unwrap();
-                                        if let Err(e) = db.execute(
-                                            "UPDATE meetings SET markdown_summary = ?1, structured_summary = ?2 WHERE id = ?3",
-                                            rusqlite::params![md, structured, id],
-                                        ) {
-                                            eprintln!("[RUST ERROR] Failed to update reprocessed meeting: {}", e);
-                                        } else {
-                                            println!("[RUST SUCCESS] Reprocessed meeting {} updated in DB", id);
-                                        }
-                                    }
-                                }
-                            }
-                        }
-
-                        app_handle.emit("python-event", content).unwrap();
-                    }
-                }
-            });
+            // 3. Spawn Python Engine via Supervisor Process
+            let state = app.state::<AppState>();
+            spawn_and_supervise_python(
+                app_handle.clone(),
+                Arc::clone(&state.db),
+                Arc::clone(&state.python_stdin),
+                Arc::clone(&state.python_child),
+            );
 
             // Register global keyboard shortcuts.
             // Use Cmd+Shift on macOS, Ctrl+Shift on Windows/Linux.
@@ -531,6 +776,11 @@ pub fn run() {
             request_audio_devices,
             reprocess_meeting,
             trigger_index_backfill,
+            set_secret,
+            get_secret,
+            delete_secret,
+            reconnect_sidecar,
+            open_logs_folder,
         ]);
 
     let app = builder

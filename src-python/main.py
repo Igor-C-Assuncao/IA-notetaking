@@ -2,6 +2,11 @@
 import sys
 import json
 import time
+import os
+import platform
+import logging
+from logging.handlers import TimedRotatingFileHandler
+import threading
 
 # Internal services
 from audio_capture import AudioCaptureFactory, list_audio_devices
@@ -11,6 +16,49 @@ from langchain_core.messages import SystemMessage, HumanMessage
 from rag_service import RAGService
 from config import DEFAULTS
 
+def get_app_data_dir():
+    system = platform.system()
+    if system == "Windows":
+        base = os.environ.get("APPDATA", os.path.expanduser("~\\AppData\\Roaming"))
+    elif system == "Darwin":
+        base = os.path.expanduser("~/Library/Application Support")
+    else:
+        base = os.environ.get("XDG_DATA_HOME", os.path.expanduser("~/.local/share"))
+    
+    app_dir = os.path.join(base, "com.opensource.ainotetaker")
+    os.makedirs(app_dir, exist_ok=True)
+    return app_dir
+
+def setup_logging():
+    app_data_dir = get_app_data_dir()
+    logs_dir = os.path.join(app_data_dir, "logs")
+    os.makedirs(logs_dir, exist_ok=True)
+    
+    log_file = os.path.join(logs_dir, "python.log")
+    
+    handler = TimedRotatingFileHandler(
+        log_file, when="midnight", interval=1, backupCount=7, encoding="utf-8"
+    )
+    handler.setFormatter(logging.Formatter(
+        "%(asctime)s - %(levelname)s - %(filename)s:%(lineno)d - %(message)s"
+    ))
+    
+    logger = logging.getLogger()
+    logger.setLevel(logging.INFO)
+    logger.addHandler(handler)
+    
+    class StreamToLogger:
+        def __init__(self, level):
+            self.level = level
+        def write(self, buf):
+            for line in buf.rstrip().splitlines():
+                if line.strip():
+                    logging.log(self.level, line.strip())
+        def flush(self):
+            pass
+            
+    sys.stderr = StreamToLogger(logging.ERROR)
+
 def send_event(event_type: str, payload: dict):
     """
     Observer Pattern: Emits events for Rust/Tauri to capture via stdout.
@@ -19,7 +67,53 @@ def send_event(event_type: str, payload: dict):
     print(json.dumps(message))
     sys.stdout.flush()
 
+def run_preflight_check(transcriber, provider=None, model=None):
+    results = {
+        "audio_devices": False,
+        "transcription_model_loaded": False,
+        "llm_provider_reachable": True,
+        "errors": [],
+        "warnings": []
+    }
+    
+    try:
+        devices = list_audio_devices()
+        if len(devices) > 0:
+            results["audio_devices"] = True
+        else:
+            results["errors"].append("No audio input devices detected. Please plug in a microphone.")
+    except Exception as e:
+        results["errors"].append(f"Audio device check failed: {str(e)}")
+        
+    if transcriber and transcriber.model is not None:
+        results["transcription_model_loaded"] = True
+    else:
+        results["errors"].append("WhisperX transcription model failed to load. Please verify your system has sufficient RAM/VRAM.")
+        
+    if provider == "ollama":
+        try:
+            import urllib.request
+            req = urllib.request.Request("http://localhost:11434/api/tags", method="GET")
+            with urllib.request.urlopen(req, timeout=2.0) as response:
+                if response.status == 200:
+                    tags_data = json.loads(response.read().decode())
+                    models = [m.get("name") for m in tags_data.get("models", [])]
+                    if model and model not in models and f"{model}:latest" not in models:
+                        results["warnings"].append(f"Ollama model '{model}' is not currently downloaded. Please run 'ollama pull {model}'.")
+                        results["llm_provider_reachable"] = False
+                else:
+                    results["errors"].append("Ollama service responded with error status.")
+                    results["llm_provider_reachable"] = False
+        except Exception:
+            results["errors"].append("Ollama service is not running. Please start Ollama on your machine.")
+            results["llm_provider_reachable"] = False
+            
+    send_event("PREFLIGHT_RESULT", results)
+
 def main():
+    setup_logging()
+    logging.info("Python Engine Booting up...")
+    
     # Allow React time to mount and start listening to IPC events
     time.sleep(2)
     send_event("SYSTEM_READY", {"status": "Python engine is ready and listening."})
@@ -48,6 +142,9 @@ def main():
         send_event("ERROR", {"message": f"Failed to initialize local RAG: {str(e)}"})
         rag_service = None
 
+    # Run initial preflight check on boot in a background thread
+    threading.Thread(target=run_preflight_check, args=(transcriber,), daemon=True).start()
+
     # Main loop listening for IPC commands from Rust
     for line in sys.stdin:
         try:
@@ -56,6 +153,11 @@ def main():
 
             if action == "LIST_DEVICES":
                 send_event("DEVICE_LIST", {"devices": list_audio_devices()})
+
+            elif action == "PREFLIGHT_CHECK":
+                provider = command.get("provider")
+                model = command.get("model")
+                threading.Thread(target=run_preflight_check, args=(transcriber, provider, model), daemon=True).start()
 
             elif action == "INDEX_MEETING":
                 meeting_id = command.get("meeting_id")
@@ -378,6 +480,7 @@ def main():
                     "llm_provider": command.get("llm_provider", DEFAULTS["provider"]),
                     "llm_model": command.get("llm_model", DEFAULTS["model"]),
                     "api_key": command.get("api_key", ""),
+                    "hf_token": command.get("hf_token", ""),
                     "is_test": command.get("is_test", False),
                 }
 
@@ -404,9 +507,20 @@ def main():
                 if transcriber:
                     send_event("PIPELINE_STATUS", {"step": "Transcribing with WhisperX..."})
                     lang = current_config.get("language", "auto")
+                    
+                    diarize = current_config.get("speaker_diarization", False)
+                    hf_tok = current_config.get("hf_token", "").strip()
+                    
+                    if diarize and not hf_tok:
+                        print("WARNING: Speaker diarization is toggled on but hf_token is missing. Skipping diarization.", file=sys.stderr)
+                        send_event("WARNING", {"message": "Speaker diarization requires a HuggingFace Token. Skipping diarization."})
+                        diarize = False
+                    
                     transcription_result = transcriber.transcribe(
                         saved_file_path,
-                        language=None if lang == "auto" else lang
+                        language=None if lang == "auto" else lang,
+                        speaker_diarization=diarize,
+                        hf_token=hf_tok if diarize else None
                     )
                     send_event("TRANSCRIPTION_COMPLETED", {
                         "text": transcription_result["text"],
