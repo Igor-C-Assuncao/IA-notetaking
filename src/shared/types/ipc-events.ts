@@ -20,4 +20,8 @@ export type PythonEvent =
   | { event: "SIDECAR_FAILED"; data: null }
   | { event: "REPROCESS_COMPLETED"; data: { meeting_id: number; markdown: string; structured: any } }
   | { event: "NOTION_EXPORT_COMPLETED"; data: { success: boolean; page_id?: string; error?: string } }
-  | { event: "NOTION_VALIDATED"; data: { success: boolean; workspace_name?: string; error?: string } };
+  | { event: "NOTION_VALIDATED"; data: { success: boolean; workspace_name?: string; error?: string } }
+  | { event: "BACKFILL_STATUS"; data: { progress: number; current: number; total: number; message: string } }
+  | { event: "BACKFILL_COMPLETED"; data: { success: boolean; count?: number; error?: string } }
+  | { event: "COPILOT_STREAM"; data: { chunk: string } }
+  | { event: "COPILOT_COMPLETED"; data: { success: boolean; answer?: string; error?: string } };
