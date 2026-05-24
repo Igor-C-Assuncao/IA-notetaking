@@ -1,6 +1,6 @@
 import { describe, test, expect, vi, beforeEach } from "vitest";
 import { renderHook, act } from "@testing-library/react";
-import { useRecording } from "./useRecording";
+import { useRecording, resetGlobalRecordingState } from "./useRecording";
 import { invoke } from "@tauri-apps/api/core";
 
 // Mock the settings provider
@@ -36,6 +36,7 @@ describe("useRecording Hook", () => {
   beforeEach(() => {
     eventHandlers = {};
     vi.clearAllMocks();
+    resetGlobalRecordingState();
   });
 
   test("initializes with correct defaults", () => {

@@ -298,6 +298,15 @@ export function ExpandedView({
     }
   };
 
+  const handleRecordClick = () => {
+    if (selectedMeetingId !== null) {
+      setSelectedMeetingId(null);
+      if (setTranscriptionText) setTranscriptionText("");
+      if (setNotesText) setNotesText("");
+    }
+    toggleRecording();
+  };
+
   return (
     <div className={`app-layout ${isWin ? "win" : "mac"} ${isTransitioning ? "transitioning" : "entered"}`}>
       <div className={`titlebar ${isWin ? "win" : "mac"}`} data-tauri-drag-region>
@@ -332,7 +341,16 @@ export function ExpandedView({
             </div>
           </div>
           {!sidebarSearch && (
-            <div className={`history-item current ${isRecording ? "recording" : ""}`}>
+            <div 
+              className={`history-item current ${isRecording ? "recording" : ""} ${selectedMeetingId === null ? "active" : ""}`}
+              style={{ cursor: "pointer" }}
+              onClick={() => {
+                setSelectedMeetingId(null);
+                if (setTranscriptionText) setTranscriptionText("");
+                if (setNotesText) setNotesText("");
+                setActiveTab("transcript");
+              }}
+            >
               <div className="history-item-header">
                 <StatusDot isRecording={isRecording} size={6} isLG={isLG} />
                 <span className="history-item-title">Current Session</span>
@@ -395,8 +413,7 @@ export function ExpandedView({
               )}
               <button
                 className={`record-btn-expanded ${isRecording ? "recording" : ""}`}
-                onClick={toggleRecording}
-                disabled={selectedMeetingId !== null && !isRecording}
+                onClick={handleRecordClick}
               >
                 {isRecording ? <span className="stop-square-sm" /> : <span className="record-circle-sm" />}
                 {isRecording ? "Stop" : selectedMeetingId ? "New Session" : "Record"}

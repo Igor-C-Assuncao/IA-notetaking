@@ -239,33 +239,44 @@ class WindowsAudioCapture(AudioCaptureStrategy):
         mic_full = np.concatenate(self.mic_frames) if self.mic_frames else np.array([], dtype=np.int16)
         loopback_full = np.concatenate(self.loopback_frames) if self.loopback_frames else np.array([], dtype=np.int16)
 
-        # Sync lengths
-        max_len = max(len(mic_full), len(loopback_full))
-        if len(mic_full) < max_len:
-            mic_full = np.pad(mic_full, (0, max_len - len(mic_full)), mode='constant')
-        if len(loopback_full) < max_len:
-            loopback_full = np.pad(loopback_full, (0, max_len - len(loopback_full)), mode='constant')
+        # Mix streams
+        if loopback_full.size > 0:
+            # Sync lengths
+            max_len = max(len(mic_full), len(loopback_full))
+            if len(mic_full) < max_len:
+                mic_full = np.pad(mic_full, (0, max_len - len(mic_full)), mode='constant')
+            if len(loopback_full) < max_len:
+                loopback_full = np.pad(loopback_full, (0, max_len - len(loopback_full)), mode='constant')
+            
+            # 50/50 Mix
+            mixed_48k = np.clip(
+                (mic_full.astype(np.float32) + loopback_full.astype(np.float32)) * 0.5,
+                -32768, 32767
+            ).astype(np.int16)
+        else:
+            mixed_48k = mic_full
 
-        # NEW: Apply VAD to remove silence before saving
+        # Resample 48kHz → 16kHz via decimation (slicing every 3rd sample)
+        mixed_16k = mixed_48k[::3]
+
+        # Apply VAD to remove silence before saving
         print("DEBUG: [AI] Running Silero VAD to trim silence...", file=sys.stderr)
-        stereo_raw = np.column_stack((mic_full, loopback_full))
-        
         try:
             vad = VADService()
-            # The VAD will analyze the combined signal and keep only speech segments
-            stereo_mix = vad.trim_silence(stereo_raw, self.master_sample_rate)
+            # The VAD will analyze the mono 16kHz signal and keep only speech segments
+            mono_trimmed = vad.trim_silence(mixed_16k, 16000)
         except Exception as e:
             print(f"DEBUG: [AI VAD Error] Falling back to raw audio: {str(e)}", file=sys.stderr)
-            stereo_mix = stereo_raw
+            mono_trimmed = mixed_16k
 
         # Save to WAV
         with wave.open(self.output_file, 'wb') as wf:
-            wf.setnchannels(2)
+            wf.setnchannels(1)
             wf.setsampwidth(2)
-            wf.setframerate(self.master_sample_rate)
-            wf.writeframes(stereo_mix.tobytes())
+            wf.setframerate(16000)
+            wf.writeframes(mono_trimmed.tobytes())
             
-        print(f"DEBUG: [Windows] VAD-trimmed audio saved to {self.output_file}", file=sys.stderr)
+        print(f"DEBUG: [Windows] VAD-trimmed mono 16kHz audio saved to {self.output_file}", file=sys.stderr)
         return self.output_file
     
 class MacosAudioCapture(AudioCaptureStrategy):

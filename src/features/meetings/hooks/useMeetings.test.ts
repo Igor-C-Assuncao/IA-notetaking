@@ -1,6 +1,6 @@
 import { describe, test, expect, vi, beforeEach, afterEach } from "vitest";
 import { renderHook, act } from "@testing-library/react";
-import { useMeetings } from "./useMeetings";
+import { useMeetings, resetGlobalMeetingsState } from "./useMeetings";
 import { invoke } from "@tauri-apps/api/core";
 
 // Mock Tauri invoke to return customized lists
@@ -13,6 +13,7 @@ describe("useMeetings Hook", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     vi.useFakeTimers();
+    resetGlobalMeetingsState();
     
     // Default invoke stubbing
     vi.mocked(invoke).mockImplementation(async (cmd: string, args?: any) => {
