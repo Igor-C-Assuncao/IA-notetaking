@@ -15,11 +15,9 @@ from vad_service import VADService
 
 
 def list_audio_devices() -> list:
-    """
-    Returns a list of available audio input devices on the current platform.
-    Each entry: {id, name, type}  where type is 'mic' or 'loopback'.
-    Safe to call at any time — opens and closes PyAudio/soundcard internally.
-    """
+    if os.environ.get("IS_TESTING") == "1":
+        return [{"id": 0, "name": "Mock Microphone", "type": "mic"}]
+
     devices = []
     if sys.platform.startswith("linux"):
         try:
@@ -590,6 +588,15 @@ class AudioCaptureFactory:
     """Factory class to provide the correct audio capture strategy based on the OS."""
     @staticmethod
     def get_strategy() -> AudioCaptureStrategy:
+        if os.environ.get("IS_TESTING") == "1":
+            print("DEBUG: [AI] Using MockAudioCapture strategy for testing.", file=sys.stderr)
+            class MockAudioCapture:
+                def start_recording(self, *args, **kwargs): pass
+                def stop_recording(self, *args, **kwargs): return "temp_meeting_audio.wav"
+                def pause_recording(self): pass
+                def resume_recording(self): pass
+            return MockAudioCapture()
+
         platform = sys.platform
         if platform == "win32":
             return WindowsAudioCapture()

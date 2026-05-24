@@ -604,12 +604,7 @@ fn reconnect_sidecar(app: AppHandle, state: State<'_, AppState>) -> Result<(), S
     Ok(())
 }
 
-// ── 8. Entry point ────────────────────────────────────────────
-
-#[cfg_attr(mobile, tauri::mobile_entry_point)]
-pub fn run() {
-    let conn = Connection::open("notetaker.db").expect("Failed to open local database");
-
+pub fn initialize_db_schema(conn: &Connection) -> Result<(), rusqlite::Error> {
     // Create the meetings table with the full schema (new installs)
     conn.execute(
         "CREATE TABLE IF NOT EXISTS meetings (
@@ -623,7 +618,7 @@ pub fn run() {
             structured_summary TEXT
         )",
         [],
-    ).expect("Failed to create meetings table");
+    )?;
 
     // Migrate existing databases — SQLite has no IF NOT EXISTS for ALTER TABLE,
     // so we attempt each column and silently ignore "duplicate column name" errors.
@@ -665,7 +660,19 @@ pub fn run() {
          AFTER DELETE ON meetings BEGIN
              DELETE FROM meetings_fts WHERE rowid = old.id;
          END;",
-    ).expect("Failed to create FTS5 table and triggers");
+    )?;
+
+    Ok(())
+}
+
+// Register testing modules
+#[cfg(test)]
+mod db_tests;
+
+#[cfg_attr(mobile, tauri::mobile_entry_point)]
+pub fn run() {
+    let conn = Connection::open("notetaker.db").expect("Failed to open local database");
+    initialize_db_schema(&conn).expect("Failed to initialize database schema");
 
     let python_stdin = Arc::new(Mutex::new(None));
     let python_child = Arc::new(Mutex::new(None));
