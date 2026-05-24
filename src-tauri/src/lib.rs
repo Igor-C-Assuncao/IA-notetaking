@@ -418,6 +418,7 @@ fn migrate_settings_to_keychain(app: &tauri::App) {
     }
 }
 
+
 fn spawn_and_supervise_python(
     app_handle: AppHandle,
     db: Arc<Mutex<Connection>>,
@@ -605,6 +606,7 @@ fn reconnect_sidecar(app: AppHandle, state: State<'_, AppState>) -> Result<(), S
 }
 
 pub fn initialize_db_schema(conn: &Connection) -> Result<(), rusqlite::Error> {
+
     // Create the meetings table with the full schema (new installs)
     conn.execute(
         "CREATE TABLE IF NOT EXISTS meetings (

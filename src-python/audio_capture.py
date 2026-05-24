@@ -15,8 +15,14 @@ from vad_service import VADService
 
 
 def list_audio_devices() -> list:
+    """
+    Returns a list of available audio input devices on the current platform.
+    Each entry: {id, name, type}  where type is 'mic' or 'loopback'.
+    Safe to call at any time — opens and closes PyAudio/soundcard internally.
+    """
     if os.environ.get("IS_TESTING") == "1":
         return [{"id": 0, "name": "Mock Microphone", "type": "mic"}]
+
 
     devices = []
     if sys.platform.startswith("linux"):

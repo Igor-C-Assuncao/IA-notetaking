@@ -54,5 +54,8 @@ __pycache__/
 # Temporary Audio Files
 *.wav
 temp_*.wav
+
 .antigravitycli
 .claude
+
+src-tauri/binaries/audio-tap-aarch64-apple-darwin
