@@ -17,6 +17,15 @@ class TranscriptionService:
     """
 
     def __init__(self):
+        if os.environ.get("IS_TESTING") == "1":
+            from unittest.mock import MagicMock
+            print("DEBUG: [AI] Mocking WhisperX model for testing.", file=sys.stderr)
+            self.device = "cpu"
+            self.compute_type = "int8"
+            self.model = MagicMock()
+            self.model.transcribe.return_value = {"segments": [{"text": "Mocked test transcription text."}]}
+            return
+
         # ── Hardware detection ─────────────────────────────────────
         if torch.cuda.is_available():
             self.device = "cuda"

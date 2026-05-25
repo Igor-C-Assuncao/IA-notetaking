@@ -62,10 +62,15 @@ def setup_logging():
 def send_event(event_type: str, payload: dict):
     """
     Observer Pattern: Emits events for Rust/Tauri to capture via stdout.
+    Resilient to broken pipes (OSError) when the Rust parent process has closed.
     """
     message = {"event": event_type, "data": payload}
-    print(json.dumps(message))
-    sys.stdout.flush()
+    try:
+        print(json.dumps(message))
+        sys.stdout.flush()
+    except OSError:
+        # stdout pipe is broken (Rust parent closed). Log to file instead of crashing.
+        logging.error(f"[send_event] Broken pipe — event lost: {event_type}")
 
 def run_preflight_check(transcriber, provider=None, model=None):
     results = {
@@ -551,6 +556,7 @@ def main():
                         send_event("NOTES_GENERATED", {
                             "markdown": result.get("markdown", ""),
                             "structured": result.get("structured", {}),
+                            "raw_transcript": transcription_result["text"],
                         })
                         send_event("PIPELINE_STATUS", {"step": "Done."})
                     except Exception as e:

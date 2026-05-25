@@ -3,37 +3,97 @@ import { usePythonEvent } from "@app/providers/IpcProvider";
 import { useSettings } from "@app/providers/SettingsProvider";
 import { invoke } from "@tauri-apps/api/core";
 
+// Global state variables
+let globalIsRecording = false;
+let globalRecordingSeconds = 0;
+let globalAudioLevel = 0;
+let globalStatus = "Ready";
+
+const recordingListeners = new Set<() => void>();
+
+function emitRecordingChange() {
+  recordingListeners.forEach((l) => l());
+}
+
+let globalTimerInterval: any = null;
+
+function startGlobalTimer() {
+  if (globalTimerInterval) return;
+  globalTimerInterval = setInterval(() => {
+    globalRecordingSeconds += 1;
+    emitRecordingChange();
+  }, 1000);
+}
+
+function stopGlobalTimer() {
+  if (globalTimerInterval) {
+    clearInterval(globalTimerInterval);
+    globalTimerInterval = null;
+  }
+  globalRecordingSeconds = 0;
+  emitRecordingChange();
+}
+
+function setGlobalIsRecording(recording: boolean) {
+  if (globalIsRecording === recording) return;
+  globalIsRecording = recording;
+  if (recording) {
+    startGlobalTimer();
+  } else {
+    stopGlobalTimer();
+  }
+  emitRecordingChange();
+}
+
+export function resetGlobalRecordingState() {
+  globalIsRecording = false;
+  globalRecordingSeconds = 0;
+  globalAudioLevel = 0;
+  globalStatus = "Ready";
+  if (globalTimerInterval) {
+    clearInterval(globalTimerInterval);
+    globalTimerInterval = null;
+  }
+  recordingListeners.clear();
+}
+
 export function useRecording() {
   const { settings } = useSettings();
-  const [isRecording, setIsRecording] = useState(false);
-  const [recordingSeconds, setRecordingSeconds] = useState(0);
-  const [audioLevel, setAudioLevel] = useState(0);
-  const [status, setStatus] = useState("Ready");
+  const [isRecording, setIsRecordingState] = useState(globalIsRecording);
+  const [recordingSeconds, setRecordingSecondsState] = useState(globalRecordingSeconds);
+  const [audioLevel, setAudioLevelState] = useState(globalAudioLevel);
+  const [status, setStatusState] = useState(globalStatus);
+
+  useEffect(() => {
+    const handleChange = () => {
+      setIsRecordingState(globalIsRecording);
+      setRecordingSecondsState(globalRecordingSeconds);
+      setAudioLevelState(globalAudioLevel);
+      setStatusState(globalStatus);
+    };
+    recordingListeners.add(handleChange);
+    return () => {
+      recordingListeners.delete(handleChange);
+    };
+  }, []);
 
   usePythonEvent("RECORDING_STATUS", (data) => {
-    setIsRecording(data.is_recording);
+    setGlobalIsRecording(data.is_recording);
   });
 
   usePythonEvent("VAD_TELEMETRY", (data) => {
-    setAudioLevel(data.level);
+    globalAudioLevel = data.level;
+    emitRecordingChange();
   });
 
   usePythonEvent("PIPELINE_STATUS", (data) => {
-    setStatus(data.step);
+    globalStatus = data.step;
+    emitRecordingChange();
   });
-
-  useEffect(() => {
-    if (!isRecording) {
-      setRecordingSeconds(0);
-      return;
-    }
-    const id = setInterval(() => setRecordingSeconds((s) => s + 1), 1000);
-    return () => clearInterval(id);
-  }, [isRecording]);
 
   const toggleRecording = async () => {
     try {
-      if (isRecording) {
+      if (globalIsRecording) {
         await invoke("send_command_to_python", {
           payload: JSON.stringify({ action: "STOP_RECORDING" })
         });

@@ -50,12 +50,13 @@ notetaker.db
 __pycache__/
 *.py[cod]
 *$py.class
+*.npy
 
 # Temporary Audio Files
 *.wav
 temp_*.wav
 
+.antigravitycli
 .claude
-
 
 src-tauri/binaries/audio-tap-aarch64-apple-darwin

@@ -11,7 +11,7 @@ export type PythonEvent =
   | { event: "RECORDING_STATUS"; data: { is_recording: boolean } }
   | { event: "PIPELINE_STATUS"; data: { step: string } }
   | { event: "TRANSCRIPTION_COMPLETED"; data: { text: string; segments: any[] | null; diarized: boolean } }
-  | { event: "NOTES_GENERATED"; data: { markdown: string; structured: any } }
+  | { event: "NOTES_GENERATED"; data: { markdown: string; structured: any; raw_transcript?: string } }
   | { event: "ERROR"; data: { message: string } }
   | { event: "PREFLIGHT_RESULT"; data: any }
   | { event: "SIDECAR_DOWN"; data: null }

@@ -2,7 +2,7 @@ export function parseActionItems(md: string): string[] {
   return md
     .split("\n")
     .filter((l) => /^[\-\*]\s*\[\s*\]/.test(l.trim()))
-    .map((l) => l.replace(/^[\-\*]\s*\[\s*\]\s*/, "").trim())
+    .map((l) => l.trim().replace(/^[\-\*]\s*\[\s*\]\s*/, "").trim())
     .filter(Boolean);
 }
 

@@ -3,7 +3,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { useSettings } from "@app/providers/SettingsProvider";
 import { useTheme } from "@app/providers/ThemeProvider";
-import { Toggle } from "@shared/ui/Toggle";
+import { Toggle } from "@shared/components/Toggle";
 import { ShortcutsModal } from "@features/settings/ShortcutsModal";
 import { usePythonEvent } from "@app/providers/IpcProvider";
 import { AudioDevice } from "@shared/types/ipc-events";
@@ -419,7 +419,7 @@ Your task is to analyze this transcript and generate a premium-grade executive s
                   <span className="popover-toggle-label">System Audio (Loopback)</span>
                   <span className="popover-toggle-hint">Tap speaker output alongside microphone.</span>
                 </div>
-                <Toggle on={localSettings.systemAudio} onChange={(v) => setLocalSettings({ ...localSettings, systemAudio: v })} />
+                <Toggle checked={localSettings.systemAudio} onChange={(v) => setLocalSettings({ ...localSettings, systemAudio: v })} />
               </div>
             </div>
           </div>
@@ -496,7 +496,7 @@ Your task is to analyze this transcript and generate a premium-grade executive s
                   <span className="popover-toggle-label">Auto-Summarize</span>
                   <span className="popover-toggle-hint">Automatically compile summary when recording stops.</span>
                 </div>
-                <Toggle on={localSettings.autoSummarize} onChange={(v) => setLocalSettings({ ...localSettings, autoSummarize: v })} />
+                <Toggle checked={localSettings.autoSummarize} onChange={(v) => setLocalSettings({ ...localSettings, autoSummarize: v })} />
               </div>
 
               <div className="popover-toggle-row">
@@ -504,7 +504,7 @@ Your task is to analyze this transcript and generate a premium-grade executive s
                   <span className="popover-toggle-label">Speaker Diarization</span>
                   <span className="popover-toggle-hint">Identify who spoke which words using WhisperX / PyAnnote.</span>
                 </div>
-                <Toggle on={localSettings.speakerDiarization} onChange={(v) => setLocalSettings({ ...localSettings, speakerDiarization: v })} />
+                <Toggle checked={localSettings.speakerDiarization} onChange={(v) => setLocalSettings({ ...localSettings, speakerDiarization: v })} />
               </div>
 
               {localSettings.speakerDiarization && (
@@ -529,7 +529,7 @@ Your task is to analyze this transcript and generate a premium-grade executive s
                   <span className="popover-toggle-label">Always on Top</span>
                   <span className="popover-toggle-hint">Keep widget overlay visible above other windows.</span>
                 </div>
-                <Toggle on={localSettings.alwaysOnTop} onChange={(v) => setLocalSettings({ ...localSettings, alwaysOnTop: v })} />
+                <Toggle checked={localSettings.alwaysOnTop} onChange={(v) => setLocalSettings({ ...localSettings, alwaysOnTop: v })} />
               </div>
             </div>
 
@@ -643,7 +643,7 @@ Your task is to analyze this transcript and generate a premium-grade executive s
                   <span className="popover-toggle-label">Enable AI Copilot</span>
                   <span className="popover-toggle-hint">Activate vector database indexing to search and converse with your history.</span>
                 </div>
-                <Toggle on={localSettings.ragEnabled} onChange={(v) => setLocalSettings({ ...localSettings, ragEnabled: v })} />
+                <Toggle checked={localSettings.ragEnabled} onChange={(v) => setLocalSettings({ ...localSettings, ragEnabled: v })} />
               </div>
             </div>
 
