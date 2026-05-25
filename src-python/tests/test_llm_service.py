@@ -122,9 +122,13 @@ def test_generate_summary_node_with_custom_prompt(mock_llm):
     
     mock_response = MagicMock()
     mock_response.content = json.dumps({
+        "metadata": {"title": "DB Launch", "date": "2026-05-24", "tags": ["db", "launch"]},
         "tldr": "We decided to deploy database.",
-        "tags": ["db", "launch"],
-        "markdown": "## 📝 TL;DR\nWe decided to deploy database.\n\n## ✅ Decisions\n- Adopt Postgres"
+        "participants": [],
+        "metrics": [],
+        "key_decisions": [{"decision": "Adopt Postgres", "rationale": "Better performance", "owner": "Alice"}],
+        "action_items": [],
+        "summary_points": []
     })
     mock_llm.invoke.return_value = mock_response
     
@@ -136,8 +140,8 @@ def test_generate_summary_node_with_custom_prompt(mock_llm):
     
     res = engine.generate_summary_node(state)
     assert res["structured_summary"]["tldr"] == "We decided to deploy database."
-    assert "launch" in res["structured_summary"]["tags"]
-    assert res["final_markdown"].startswith("## 📝")
+    assert "launch" in res["structured_summary"]["metadata"]["tags"]
+    assert res["final_markdown"] == ""
 
 def test_generate_summary_node_fallback(mock_llm):
     engine = MeetingWorkflowEngine(provider_name="ollama", model_name="llama3")
@@ -154,8 +158,8 @@ def test_generate_summary_node_fallback(mock_llm):
     }
     
     res = engine.generate_summary_node(state)
-    assert res["structured_summary"]["tldr"] is None
-    assert res["final_markdown"] == "Unparseable summary raw body"
+    assert res["structured_summary"]["tldr"] == "Failed to generate structured summary."
+    assert res["final_markdown"] == ""
 
 def test_langgraph_strategy_and_llm_factory(mock_llm, monkeypatch):
     # Mocking MeetingWorkflowEngine.run to avoid building full graphs during simple checks

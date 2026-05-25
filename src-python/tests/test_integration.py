@@ -128,9 +128,13 @@ def test_full_audio_to_summary_pipeline():
         # In Node 4 (generate structured summary)
         mock_resp_4 = MagicMock()
         mock_resp_4.content = json.dumps({
+            "metadata": {"title": "Setup", "date": "2026-05-24", "tags": ["servidores", "carlos"]},
             "tldr": "Configuração dos servidores concluída.",
-            "tags": ["servidores", "carlos"],
-            "markdown": "## 📝 TL;DR\nConfiguração dos servidores concluída.\n\n## ✅ Decisions\n- Configurar servidores"
+            "participants": [],
+            "metrics": [],
+            "key_decisions": [{"decision": "Configurar servidores", "rationale": "", "owner": ""}],
+            "action_items": [],
+            "summary_points": []
         })
         
         mock_llm.invoke.side_effect = [mock_resp_1, mock_resp_2, mock_resp_3, mock_resp_4]
@@ -145,7 +149,6 @@ def test_full_audio_to_summary_pipeline():
     
     assert "markdown" in summary_res
     assert "structured" in summary_res
-    assert len(summary_res["markdown"].strip()) > 0
-    assert "decisions" in summary_res["structured"]
-    assert "actions" in summary_res["structured"]
+    assert "key_decisions" in summary_res["structured"]
+    assert "action_items" in summary_res["structured"]
     print("Integration: E2E Pipeline verified successfully!")
