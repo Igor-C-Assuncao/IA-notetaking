@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useState, useMemo } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { writeText } from "@tauri-apps/plugin-clipboard-manager";
 import { save } from "@tauri-apps/plugin-dialog";
@@ -21,6 +21,7 @@ import { usePythonEvent } from "@app/providers/IpcProvider";
 import { ReprocessModal } from "@features/meetings/components/ReprocessModal";
 import { CopilotSidebar } from "@features/rag/components/CopilotSidebar";
 import { parseActionItems, parseTldr } from "@features/summary/lib/parsers";
+import { SummaryDashboard } from "@features/summary/components/SummaryDashboard";
 
 export function ExpandedView({
   isTransitioning, toggleWindowMode
@@ -31,7 +32,7 @@ export function ExpandedView({
   const { isLG, waveColor } = useTheme();
   const { isRecording, recordingSeconds, status, toggleRecording } = useRecording();
   const { setTranscriptionText, search, setSearch, filteredTranscript } = useTranscription();
-  const { notes, setNotesText, tldr, actionItems } = useSummary();
+  const { notes, setNotesText, tldr, actionItems, structuredSummary } = useSummary();
   const { meetingsHistory, selectedMeetingId, setSelectedMeetingId, sidebarSearch, setSidebarSearch, loadHistory } = useMeetings();
   
   const [activeTab, setActiveTab] = useState<"transcript" | "summary" | "actions">("transcript");
@@ -63,6 +64,20 @@ export function ExpandedView({
   const displayedActionItems = selectedMeetingId !== null && currentMeeting
     ? (currentMeeting.markdown_summary ? parseActionItems(currentMeeting.markdown_summary) : [])
     : actionItems;
+
+  const displayedStructured = useMemo(() => {
+    if (selectedMeetingId !== null && currentMeeting) {
+      if (currentMeeting.structured_summary) {
+        try {
+          return JSON.parse(currentMeeting.structured_summary);
+        } catch (e) {
+          return null;
+        }
+      }
+      return null;
+    }
+    return structuredSummary;
+  }, [selectedMeetingId, currentMeeting, structuredSummary]);
 
   const [showReprocessModal, setShowReprocessModal] = useState(false);
   const [showExportDropdown, setShowExportDropdown] = useState(false);
@@ -493,18 +508,29 @@ export function ExpandedView({
             )}
             {activeTab === "summary" && (
               <div className="tab-panel">
-                {displayedNotes
-                  ? <>{displayedTldr && <div className="tldr-card"><div className="tldr-label">TL;DR</div><p className="tldr-body">{displayedTldr}</p></div>}<pre className="summary-text">{displayedNotes}</pre></>
-                  : <div className="empty-state"><span>Summary will appear here once recording is processed.</span></div>}
+                {displayedStructured ? (
+                  <SummaryDashboard summary={displayedStructured} />
+                ) : displayedNotes ? (
+                  <>
+                    {displayedTldr && <div className="tldr-card"><div className="tldr-label">TL;DR</div><p className="tldr-body">{displayedTldr}</p></div>}
+                    <pre className="summary-text">{displayedNotes}</pre>
+                  </>
+                ) : (
+                  <div className="empty-state"><span>Summary will appear here once recording is processed.</span></div>
+                )}
               </div>
             )}
             {activeTab === "actions" && (
               <div className="tab-panel">
-                {displayedActionItems.length > 0
+                {displayedStructured && displayedStructured.action_items && displayedStructured.action_items.length > 0
+                  ? <ul className="action-list">{displayedStructured.action_items.map((item: any, i: number) => (
+                    <li key={i} className="action-item"><span className="action-checkbox" /><span className="action-text">{item.task} {item.assignee ? `(${item.assignee})` : ""}</span></li>
+                  ))}</ul>
+                  : displayedActionItems.length > 0
                   ? <ul className="action-list">{displayedActionItems.map((item, i) => (
                     <li key={i} className="action-item"><span className="action-checkbox" /><span className="action-text">{item}</span></li>
                   ))}</ul>
-                  : <div className="empty-state"><span>{displayedNotes ? "No action items found. Use `- [ ] task` format." : "Action items will appear here after processing."}</span></div>}
+                  : <div className="empty-state"><span>{displayedNotes || displayedStructured ? "No action items found." : "Action items will appear here after processing."}</span></div>}
               </div>
             )}
           </div>

@@ -219,7 +219,7 @@ class MeetingWorkflowEngine:
 
         return {"decisions": decisions, "actions": actions}
 
-    # --- NODE 4: Structured Summary (JSON) + Markdown fallback ---
+    # --- NODE 4: Structured Summary (JSON) ---
     def generate_summary_node(self, state: AgentState):
         print("DEBUG: [LangGraph] Node 4: Generating structured summary...", file=sys.stderr)
 
@@ -230,21 +230,24 @@ class MeetingWorkflowEngine:
         speakers = entities.get("speakers", [])
 
         base_prompt = (
-            "You are an executive assistant. Generate a highly structured JSON summary of the meeting.\n"
-            "Use the provided Decisions, Actions, and Entities to construct the 'markdown' field.\n\n"
-            "The JSON MUST follow this exact schema:\n"
+            "You are an expert AI meeting analyst and executive assistant. Your task is to process the following meeting transcript and extract the key information into a highly structured JSON object.\n\n"
+            "Follow these strict extraction rules:\n"
+            "1. 'metadata.title': Create a short, descriptive title (max 5 words).\n"
+            "2. 'tldr': Write exactly ONE sentence capturing the ultimate outcome or bottom line.\n"
+            "3. 'metrics': Extract any quantifiable data, numbers, or KPIs mentioned. If none, return an empty array [].\n"
+            "4. 'key_decisions': Focus only on finalized choices. Include the rationale behind them.\n"
+            "5. 'action_items': Extract distinct tasks. Infer the assignee and priority (High, Medium, Low) based on the context.\n\n"
+            "You MUST output ONLY valid JSON matching the exact schema below. Do not include markdown code blocks, prefaces, or explanations.\n\n"
+            "OUTPUT SCHEMA:\n"
             "{\n"
-            '  "tldr": "One sentence that captures the core outcome of the meeting.",\n'
-            '  "tags": ["tag1", "tag2"],\n'
-            '  "markdown": "## 📝 TL;DR\\n...\\n## 👥 Participants\\n...\\n## 📊 Numbers & Metrics\\n...\\n## ✅ Key Decisions\\n...\\n## 🎯 Action Items\\n..."\n'
-            "}\n\n"
-            "Rules for 'markdown' field:\n"
-            "1. TL;DR MUST include at least one key number from the numbers list if any exist.\n"
-            "2. Participants list must come from the speakers list.\n"
-            "3. Key Decisions should list the decision and the quote in italics.\n"
-            "4. Action Items MUST be a checkbox list `- [ ] Name: Task (by Due)`.\n"
-            "5. Include a Numbers & Metrics section if numbers are provided.\n"
-            "Output ONLY the raw JSON object."
+            '  "metadata": {"title": "string", "date": "string", "tags": ["string"]},\n'
+            '  "tldr": "string",\n'
+            '  "participants": [{"name": "string", "role": "string", "engagement_level": "string"}],\n'
+            '  "metrics": [{"label": "string", "value": "string", "trend": "string"}],\n'
+            '  "key_decisions": [{"decision": "string", "rationale": "string", "owner": "string"}],\n'
+            '  "action_items": [{"task": "string", "assignee": "string", "priority": "string", "status": "string", "due_date": "string"}],\n'
+            '  "summary_points": ["string"]\n'
+            "}\n"
         )
 
         if self.system_prompt:
@@ -270,31 +273,19 @@ class MeetingWorkflowEngine:
             cleaned_raw = extract_json_payload(raw)
             structured = json_lib.loads(cleaned_raw)
         except Exception:
-            print("DEBUG: [LangGraph] Node 4 JSON parse failed, falling back to markdown.", file=sys.stderr)
+            print("DEBUG: [LangGraph] Node 4 JSON parse failed.", file=sys.stderr)
             structured = {
-                "tldr": None,
-                "tags": [],
-                "markdown": raw,
+                "metadata": {"title": "Summary", "date": "", "tags": []},
+                "tldr": "Failed to generate structured summary.",
+                "participants": [],
+                "metrics": [],
+                "key_decisions": [],
+                "action_items": [],
+                "summary_points": []
             }
-        
-        structured["decisions"] = [d.get("text") for d in decisions if type(d) == dict and d.get("text")]
-        structured["actions"] = actions
-
-        # Basic fallback markdown if empty
-        if not structured.get("markdown"):
-            lines = []
-            if structured.get("tldr"):
-                lines.append(f"## 📝 TL;DR\n{structured['tldr']}\n")
-            if decisions:
-                lines.append("## ✅ Decisions\n" + "\n".join(f"- {d.get('text', '')}" for d in decisions if type(d) == dict) + "\n")
-            if actions:
-                items = [f"- [ ] {a.get('what', '')}" + (f" — {a['who']}" if type(a) == dict and a.get("who") else "") for a in actions if type(a) == dict]
-                if items:
-                    lines.append("## 🎯 Action Items\n" + "\n".join(items) + "\n")
-            structured["markdown"] = "\n".join(lines) if lines else raw
 
         return {
-            "final_markdown": structured.get("markdown", raw),
+            "final_markdown": "",
             "structured_summary": structured,
         }
 
