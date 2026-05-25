@@ -1,10 +1,10 @@
-export function Toggle({ on, onChange }: { on: boolean; onChange: (v: boolean) => void }) {
+export function Toggle({ checked, onChange }: { checked: boolean; onChange: (v: boolean) => void }) {
   return (
     <button
-      className={`toggle ${on ? "on" : ""}`}
-      onClick={() => onChange(!on)}
+      className={`toggle ${checked ? "on" : ""}`}
+      onClick={() => onChange(!checked)}
       role="switch"
-      aria-checked={on}
+      aria-checked={checked}
     >
       <span className="toggle-thumb" />
     </button>

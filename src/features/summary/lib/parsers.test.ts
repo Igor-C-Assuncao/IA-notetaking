@@ -46,7 +46,7 @@ describe("Markdown Parsers", () => {
         { text: "* [ ] Multi\nline\ntask", count: 1 }, // Matches only the check line
       ];
 
-      fixtures.forEach((fix, index) => {
+      fixtures.forEach((fix) => {
         const result = parseActionItems(fix.text);
         expect(result.length).toBe(fix.count);
       });

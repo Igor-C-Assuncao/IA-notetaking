@@ -20,6 +20,7 @@ import { useMeetings } from "@features/meetings/hooks/useMeetings";
 import { usePythonEvent } from "@app/providers/IpcProvider";
 import { ReprocessModal } from "@features/meetings/components/ReprocessModal";
 import { CopilotSidebar } from "@features/rag/components/CopilotSidebar";
+import { parseActionItems, parseTldr } from "@features/summary/lib/parsers";
 
 export function ExpandedView({
   isTransitioning, toggleWindowMode
@@ -36,6 +37,32 @@ export function ExpandedView({
   const [activeTab, setActiveTab] = useState<"transcript" | "summary" | "actions">("transcript");
   const [copiedNotes, setCopiedNotes] = useState(false);
   const [copiedWebAI, setCopiedWebAI] = useState(false);
+
+  const currentMeeting = meetingsHistory.find(m => m.id === selectedMeetingId);
+
+  // Derive displayed transcript (applying search filter if active)
+  const displayedTranscript = selectedMeetingId !== null && currentMeeting
+    ? (search.trim()
+        ? currentMeeting.raw_transcript
+            .split("\n")
+            .filter((l) => l.toLowerCase().includes(search.toLowerCase()))
+            .join("\n")
+        : currentMeeting.raw_transcript)
+    : filteredTranscript;
+
+  // Derive displayed summary notes
+  const displayedNotes = selectedMeetingId !== null && currentMeeting
+    ? currentMeeting.markdown_summary
+    : notes;
+
+  // Derive active TL;DR and action items from the displayed summary notes
+  const displayedTldr = selectedMeetingId !== null && currentMeeting
+    ? (currentMeeting.markdown_summary ? parseTldr(currentMeeting.markdown_summary) : null)
+    : tldr;
+
+  const displayedActionItems = selectedMeetingId !== null && currentMeeting
+    ? (currentMeeting.markdown_summary ? parseActionItems(currentMeeting.markdown_summary) : [])
+    : actionItems;
 
   const [showReprocessModal, setShowReprocessModal] = useState(false);
   const [showExportDropdown, setShowExportDropdown] = useState(false);
@@ -96,7 +123,7 @@ export function ExpandedView({
             date: dateStr,
             tags: tagsArr,
             speakers: speakersArr,
-            markdown: notes,
+            markdown: displayedNotes,
           })
         });
       } catch (err) {
@@ -112,7 +139,7 @@ export function ExpandedView({
         defaultPath: currentMeeting ? `${currentMeeting.title.replace(/\s+/g, "_")}.md` : `Notes_${Date.now()}.md`
       });
       if (path) {
-        await writeTextFile(path, notes);
+        await writeTextFile(path, displayedNotes);
         setToastMessage("✓ Exported successfully!");
         setTimeout(() => setToastMessage(""), 3000);
       }
@@ -146,7 +173,7 @@ export function ExpandedView({
         ""
       ].join("\n");
       
-      let body = notes;
+      let body = displayedNotes;
       
       speakersArr.forEach(name => {
         const escaped = name.replace(/[-\/\\^$*+?.()|[\]{}]/g, '\\$&');
@@ -227,7 +254,7 @@ export function ExpandedView({
           model: settings.modelName,
         },
         transcript: {
-          raw: currentMeeting?.raw_transcript || filteredTranscript || "",
+          raw: displayedTranscript || "",
           diarized: [],
         },
         summary: {
@@ -235,7 +262,7 @@ export function ExpandedView({
           decisions: structured.decisions || [],
           actions: structured.actions || [],
           tags: tagsArr,
-          markdown: notes,
+          markdown: displayedNotes,
         },
         entities: {
           speakers: speakersArr,
@@ -280,7 +307,7 @@ export function ExpandedView({
   };
 
   const handleCopy = async () => {
-    const success = await safeWriteText(notes);
+    const success = await safeWriteText(displayedNotes);
     if (success) {
       setCopiedNotes(true);
       setTimeout(() => setCopiedNotes(false), 2000);
@@ -290,7 +317,7 @@ export function ExpandedView({
 
 
   const handleExportForWebAI = async () => {
-    const prompt = `Here is a transcript of a meeting. Please provide a brief TL;DR, identify key decisions, and list action items assigned to people.\n\n[Transcript]\n\n${filteredTranscript || "No transcript available."}`;
+    const prompt = `Here is a transcript of a meeting. Please provide a brief TL;DR, identify key decisions, and list action items assigned to people.\n\n[Transcript]\n\n${displayedTranscript || "No transcript available."}`;
     const success = await safeWriteText(prompt);
     if (success) {
       setCopiedWebAI(true);
@@ -442,7 +469,7 @@ export function ExpandedView({
                 <button key={t} className={`tab-btn ${activeTab === t ? "active" : ""}`} onClick={() => setActiveTab(t)}>
                   {t === "transcript" && "Transcript"}
                   {t === "summary" && "Summary"}
-                  {t === "actions" && `Action Items${actionItems.length ? ` · ${actionItems.length}` : ""}`}
+                  {t === "actions" && `Action Items${displayedActionItems.length ? ` · ${displayedActionItems.length}` : ""}`}
                 </button>
               ))}
             </div>
@@ -455,8 +482,8 @@ export function ExpandedView({
           <div className="tab-content">
             {activeTab === "transcript" && (
               <div className="tab-panel">
-                {filteredTranscript
-                  ? <pre className="transcript-text">{filteredTranscript}</pre>
+                {displayedTranscript
+                  ? <pre className="transcript-text">{displayedTranscript}</pre>
                   : <div className="empty-state">
                     {isRecording
                       ? <><Waveform width={60} height={14} color={waveColor} active bars={14} /><span>Transcribing…</span></>
@@ -466,23 +493,23 @@ export function ExpandedView({
             )}
             {activeTab === "summary" && (
               <div className="tab-panel">
-                {notes
-                  ? <>{tldr && <div className="tldr-card"><div className="tldr-label">TL;DR</div><p className="tldr-body">{tldr}</p></div>}<pre className="summary-text">{notes}</pre></>
+                {displayedNotes
+                  ? <>{displayedTldr && <div className="tldr-card"><div className="tldr-label">TL;DR</div><p className="tldr-body">{displayedTldr}</p></div>}<pre className="summary-text">{displayedNotes}</pre></>
                   : <div className="empty-state"><span>Summary will appear here once recording is processed.</span></div>}
               </div>
             )}
             {activeTab === "actions" && (
               <div className="tab-panel">
-                {actionItems.length > 0
-                  ? <ul className="action-list">{actionItems.map((item, i) => (
+                {displayedActionItems.length > 0
+                  ? <ul className="action-list">{displayedActionItems.map((item, i) => (
                     <li key={i} className="action-item"><span className="action-checkbox" /><span className="action-text">{item}</span></li>
                   ))}</ul>
-                  : <div className="empty-state"><span>{notes ? "No action items found. Use `- [ ] task` format." : "Action items will appear here after processing."}</span></div>}
+                  : <div className="empty-state"><span>{displayedNotes ? "No action items found. Use `- [ ] task` format." : "Action items will appear here after processing."}</span></div>}
               </div>
             )}
           </div>
 
-          {notes && (
+          {displayedNotes && (
             <div className="footer-actions">
               <button className="chip-btn" onClick={handleCopy}><CopyIcon size={13} /> {copiedNotes ? "✓ Copied!" : "Copy"}</button>
               

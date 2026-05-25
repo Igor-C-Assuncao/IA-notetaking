@@ -336,13 +336,40 @@ async fn open_popover_window(app: AppHandle, window: Window) -> Result<(), Strin
     let popover_h = 620.0_f64;
     let gap = 8.0_f64;
 
-    // Right-align with the compact widget; fall back to below if near top of screen
-    let x = (pos.x as f64 + size.width as f64 - popover_w - 8.0).max(0.0);
-    let y = if pos.y as f64 >= popover_h + gap {
-        pos.y as f64 - popover_h - gap
+    let scale_factor = window.scale_factor().map_err(|e| e.to_string())?;
+
+    // Convert physical widget position & size to logical coordinates
+    let widget_x_logical = pos.x as f64 / scale_factor;
+    let widget_y_logical = pos.y as f64 / scale_factor;
+    let widget_w_logical = size.width as f64 / scale_factor;
+    let widget_h_logical = size.height as f64 / scale_factor;
+
+    // Calculate logical x and y for popover
+    let mut x_logical = widget_x_logical + widget_w_logical - popover_w - gap;
+    let mut y_logical = if widget_y_logical >= popover_h + gap {
+        widget_y_logical - popover_h - gap
     } else {
-        pos.y as f64 + size.height as f64 + gap
+        widget_y_logical + widget_h_logical + gap
     };
+
+    // Constrain to monitor boundaries in logical coordinates to prevent screen cutoff
+    if let Some(monitor) = window.current_monitor().map_err(|e| e.to_string())? {
+        let m_pos = monitor.position();
+        let m_size = monitor.size();
+        
+        let m_pos_x_logical = m_pos.x as f64 / scale_factor;
+        let m_pos_y_logical = m_pos.y as f64 / scale_factor;
+        let m_size_w_logical = m_size.width as f64 / scale_factor;
+        let m_size_h_logical = m_size.height as f64 / scale_factor;
+        
+        let min_x = m_pos_x_logical;
+        let max_x = m_pos_x_logical + m_size_w_logical - popover_w;
+        let min_y = m_pos_y_logical;
+        let max_y = m_pos_y_logical + m_size_h_logical - popover_h;
+        
+        x_logical = x_logical.clamp(min_x, max_x);
+        y_logical = y_logical.clamp(min_y, max_y);
+    }
 
     WebviewWindowBuilder::new(&app, "popover", WebviewUrl::App(PathBuf::from("index.html")))
         .title("")
@@ -350,7 +377,7 @@ async fn open_popover_window(app: AppHandle, window: Window) -> Result<(), Strin
         .always_on_top(true)
         .resizable(false)
         .inner_size(popover_w, popover_h)
-        .position(x, y)
+        .position(x_logical, y_logical)
         .skip_taskbar(true)
         .shadow(true)
         .build()
@@ -489,9 +516,57 @@ fn spawn_and_supervise_python(
                                     println!("[PYTHON STDOUT] {}", content);
                                 }
                                 
-                                // Parse JSON to check for REPROCESS_COMPLETED
+                                // Parse JSON to check for DB-persisted events
                                 if let Ok(json) = serde_json::from_str::<serde_json::Value>(&content) {
-                                    if json["event"] == "REPROCESS_COMPLETED" {
+                                    let event_name = json["event"].as_str().unwrap_or("");
+                                    
+                                    // Save newly generated meeting notes directly to DB
+                                    // (bypasses fragile frontend roundtrip that can lose data
+                                    //  if the app closes or Python restarts before the React
+                                    //  handler fires)
+                                    if event_name == "NOTES_GENERATED" {
+                                        if let Some(data) = json["data"].as_object() {
+                                            let raw_transcript = data.get("raw_transcript").and_then(|v| v.as_str()).unwrap_or("");
+                                            let markdown = data.get("markdown").and_then(|v| v.as_str()).unwrap_or("");
+                                            let structured = data.get("structured").map(|v| v.to_string());
+                                            
+                                            if !raw_transcript.is_empty() {
+                                                let now = chrono::Local::now();
+                                                let date_str = now.format("%Y-%m-%d %H:%M:%S").to_string();
+                                                let title_str = format!("Meeting {}", now.format("%d/%m/%Y"));
+                                                
+                                                // Extract speakers and tags from structured summary
+                                                let speakers = data.get("structured")
+                                                    .and_then(|s| s.get("speakers"))
+                                                    .map(|v| v.to_string());
+                                                let tags = data.get("structured")
+                                                    .and_then(|s| s.get("tags"))
+                                                    .map(|v| v.to_string());
+                                                
+                                                let db_lock = db_clone.lock().unwrap();
+                                                match db_lock.execute(
+                                                    "INSERT INTO meetings (date, title, raw_transcript, markdown_summary, speakers, tags, structured_summary) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+                                                    rusqlite::params![date_str, title_str, raw_transcript, markdown, speakers, tags, structured],
+                                                ) {
+                                                    Ok(_) => {
+                                                        let meeting_id = db_lock.last_insert_rowid();
+                                                        println!("[RUST SUCCESS] Auto-saved meeting {} to DB from NOTES_GENERATED", meeting_id);
+                                                        // Inject the meeting_id into the event so frontend can skip its own save
+                                                        let mut enriched = json.clone();
+                                                        enriched["data"]["saved_meeting_id"] = serde_json::json!(meeting_id);
+                                                        let enriched_str = enriched.to_string();
+                                                        app_handle_clone.emit("python-event", enriched_str).ok();
+                                                        continue; // skip the default emit below
+                                                    }
+                                                    Err(e) => {
+                                                        eprintln!("[RUST ERROR] Failed to auto-save meeting from NOTES_GENERATED: {}", e);
+                                                    }
+                                                }
+                                            }
+                                        }
+                                    }
+                                    
+                                    if event_name == "REPROCESS_COMPLETED" {
                                         if let Some(data) = json["data"].as_object() {
                                             let meeting_id = data.get("meeting_id").and_then(|v| v.as_i64());
                                             let markdown = data.get("markdown").and_then(|v| v.as_str());
@@ -512,7 +587,7 @@ fn spawn_and_supervise_python(
                                     }
                                 }
                                 
-                                app_handle_clone.emit("python-event", content).unwrap();
+                                app_handle_clone.emit("python-event", content).ok();
                             }
                         }
                     });

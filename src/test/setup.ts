@@ -1,5 +1,5 @@
 import "@testing-library/jest-dom";
-import { vi, beforeEach, afterEach } from "vitest";
+import { vi, beforeEach } from "vitest";
 
 // Define a map of mock invoke handlers to simulate native IPC command results.
 export const mockInvokeHandlers: Record<string, Function> = {};

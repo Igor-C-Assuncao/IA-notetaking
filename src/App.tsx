@@ -30,37 +30,51 @@ function MainApp() {
   const win = getCurrentWindow();
 
   usePythonEvent("NOTES_GENERATED", async (data) => {
-    if (!transcription) return;
+    const transcriptText = data.raw_transcript || transcription;
+    if (!transcriptText) return;
     try {
-      const now = new Date();
-      const dateStr = now.toISOString().slice(0, 19).replace('T', ' ');
-      const titleStr = `Meeting on ${now.toLocaleDateString()}`;
+      // Rust's stdout reader already saves NOTES_GENERATED directly to DB.
+      // If it succeeded, `saved_meeting_id` will be present in the enriched event.
+      const rustSavedId = (data as any).saved_meeting_id as number | undefined;
       
-      const speakers = data.structured?.speakers ? JSON.stringify(data.structured.speakers) : null;
-      const tags = data.structured?.tags ? JSON.stringify(data.structured.tags) : null;
-      const structuredStr = JSON.stringify(data.structured);
+      let meetingId: number;
       
-      const meetingId = await invoke<number>("save_meeting", {
-        date: dateStr,
-        title: titleStr,
-        raw_transcript: transcription,
-        markdown_summary: data.markdown,
-        speakers,
-        tags,
-        structured_summary: structuredStr,
-      });
+      if (rustSavedId) {
+        // Rust already persisted — skip duplicate INSERT
+        meetingId = rustSavedId;
+      } else {
+        // Fallback: Rust save failed or old build — save from frontend
+        const now = new Date();
+        const dateStr = now.toISOString().slice(0, 19).replace('T', ' ');
+        const titleStr = `Meeting on ${now.toLocaleDateString()}`;
+        
+        const speakers = data.structured?.speakers ? JSON.stringify(data.structured.speakers) : null;
+        const tags = data.structured?.tags ? JSON.stringify(data.structured.tags) : null;
+        const structuredStr = JSON.stringify(data.structured);
+        
+        meetingId = await invoke<number>("save_meeting", {
+          date: dateStr,
+          title: titleStr,
+          raw_transcript: transcriptText,
+          markdown_summary: data.markdown,
+          speakers,
+          tags,
+          structured_summary: structuredStr,
+        });
+      }
       
       loadHistory();
 
       // Trigger background RAG vector indexing for the newly created meeting
       if (settings.ragEnabled) {
+        const now = new Date();
         await invoke("send_command_to_python", {
           payload: JSON.stringify({
             action: "INDEX_MEETING",
             meeting_id: meetingId,
-            title: titleStr,
-            date: dateStr,
-            raw_transcript: transcription,
+            title: `Meeting on ${now.toLocaleDateString()}`,
+            date: now.toISOString().slice(0, 19).replace('T', ' '),
+            raw_transcript: transcriptText,
             embedding_provider: settings.ragProvider,
             embedding_model: settings.ragEmbeddingModel
           })

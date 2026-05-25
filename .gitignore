@@ -50,6 +50,7 @@ notetaker.db
 __pycache__/
 *.py[cod]
 *$py.class
+*.npy
 
 # Temporary Audio Files
 *.wav
