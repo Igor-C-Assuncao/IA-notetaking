@@ -8,6 +8,37 @@ use tauri::{LogicalSize, Window};
 use tauri_plugin_global_shortcut::{Code, GlobalShortcutExt, Modifiers, Shortcut, ShortcutState};
 use keyring::Entry;
 
+#[cfg(target_os = "linux")]
+fn sanitize_snap_runtime_env() {
+    // When VS Code is installed as Snap, these vars can leak Snap GTK/GIO paths
+    // into child processes and crash Tauri with GLIBC symbol lookup errors.
+    let vars = [
+        ("GTK_PATH", "GTK_PATH_VSCODE_SNAP_ORIG"),
+        ("GTK_EXE_PREFIX", "GTK_EXE_PREFIX_VSCODE_SNAP_ORIG"),
+        ("GTK_IM_MODULE_FILE", "GTK_IM_MODULE_FILE_VSCODE_SNAP_ORIG"),
+        ("GTK_MODULES", "GTK_MODULES_VSCODE_SNAP_ORIG"),
+        ("GTK3_MODULES", "GTK3_MODULES_VSCODE_SNAP_ORIG"),
+        ("GIO_MODULE_DIR", "GIO_MODULE_DIR_VSCODE_SNAP_ORIG"),
+        ("GSETTINGS_SCHEMA_DIR", "GSETTINGS_SCHEMA_DIR_VSCODE_SNAP_ORIG"),
+        ("LOCPATH", "LOCPATH_VSCODE_SNAP_ORIG"),
+        ("XDG_DATA_DIRS", "XDG_DATA_DIRS_VSCODE_SNAP_ORIG"),
+        ("XDG_CONFIG_DIRS", "XDG_CONFIG_DIRS_VSCODE_SNAP_ORIG"),
+        ("XDG_DATA_HOME", "XDG_DATA_HOME_VSCODE_SNAP_ORIG"),
+    ];
+
+    for (var, orig_var) in vars {
+        if let Ok(orig) = std::env::var(orig_var) {
+            if orig.is_empty() {
+                std::env::remove_var(var);
+            } else {
+                std::env::set_var(var, orig);
+            }
+        } else {
+            std::env::remove_var(var);
+        }
+    }
+}
+
 // ── 1. Data structures ────────────────────────────────────────
 
 #[derive(serde::Serialize, serde::Deserialize, Clone)]
@@ -748,6 +779,9 @@ mod db_tests;
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
+    #[cfg(target_os = "linux")]
+    sanitize_snap_runtime_env();
+
     let conn = Connection::open("notetaker.db").expect("Failed to open local database");
     initialize_db_schema(&conn).expect("Failed to initialize database schema");
 

@@ -65,6 +65,14 @@ Built with a high-performance hybrid architecture: **Tauri 2 + Rust + Python**.
 - [Rust](https://www.rust-lang.org/tools/install) (stable)
 - [Python](https://www.python.org/) 3.10+
 
+#### Linux (Ubuntu/Debian) system dependencies
+
+Before running `npm run tauri dev`, install the native libraries required by Tauri:
+
+```bash
+sudo apt update && sudo apt install -y build-essential pkg-config libglib2.0-dev libgtk-3-dev libwebkit2gtk-4.1-dev libayatana-appindicator3-dev librsvg2-dev libssl-dev patchelf
+```
+
 ### Install and run
 
 ```bash
