@@ -497,21 +497,52 @@ fn spawn_and_supervise_python(
                 }).to_string()).ok();
             }
             
-            let child_res = if cfg!(target_os = "windows") {
-                Command::new(r"..\src-python\.venv\Scripts\python.exe")
-                    .arg(r"..\src-python\main.py")
+            let project_dir = app_handle.path().resource_dir().unwrap_or_default();
+            let dev_python_script = project_dir.join("../src-python/main.py");
+            let is_dev = dev_python_script.exists();
+
+            let mut sidecar_path = None;
+            let binaries_dir = project_dir.join("binaries");
+            if binaries_dir.exists() {
+                if let Ok(entries) = std::fs::read_dir(binaries_dir) {
+                    for entry in entries.flatten() {
+                        let path = entry.path();
+                        if let Some(file_name) = path.file_name().and_then(|n| n.to_str()) {
+                            if file_name.starts_with("ai-notetaking-engine") && !file_name.contains(".pdb") {
+                                sidecar_path = Some(path);
+                                break;
+                            }
+                        }
+                    }
+                }
+            }
+
+            let child_res = if is_dev {
+                if cfg!(target_os = "windows") {
+                    Command::new(r"..\src-python\.venv\Scripts\python.exe")
+                        .arg(r"..\src-python\main.py")
+                        .stdin(Stdio::piped())
+                        .stdout(Stdio::piped())
+                        .stderr(Stdio::inherit())
+                        .spawn()
+                } else {
+                    Command::new("bash")
+                        .current_dir("../")
+                        .arg("src-python/run.sh")
+                        .stdin(Stdio::piped())
+                        .stdout(Stdio::piped())
+                        .stderr(Stdio::inherit())
+                        .spawn()
+                }
+            } else if let Some(path) = sidecar_path {
+                println!("[Supervisor] Spawning production sidecar: {:?}", path);
+                Command::new(path)
                     .stdin(Stdio::piped())
                     .stdout(Stdio::piped())
                     .stderr(Stdio::inherit())
                     .spawn()
             } else {
-                Command::new("bash")
-                    .current_dir("../")
-                    .arg("src-python/run.sh")
-                    .stdin(Stdio::piped())
-                    .stdout(Stdio::piped())
-                    .stderr(Stdio::inherit())
-                    .spawn()
+                Err(std::io::Error::new(std::io::ErrorKind::NotFound, "Sidecar binary not found in production build"))
             };
             
             match child_res {

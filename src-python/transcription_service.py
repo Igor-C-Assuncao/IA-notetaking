@@ -48,9 +48,17 @@ class TranscriptionService:
             file=sys.stderr,
         )
 
+        # Determine download root for PyInstaller bundling
+        download_root = None
+        if hasattr(sys, '_MEIPASS'):
+            bundled_dir = os.path.join(sys._MEIPASS, 'models', 'whisper')
+            if os.path.exists(bundled_dir):
+                download_root = bundled_dir
+                print(f"DEBUG: [AI] Using bundled Whisper model from {download_root}", file=sys.stderr)
+
         try:
             self.model = whisperx.load_model(
-                "base", self.device, compute_type=self.compute_type
+                "base", self.device, compute_type=self.compute_type, download_root=download_root
             )
         except Exception as e:
             print(
@@ -61,7 +69,7 @@ class TranscriptionService:
                 self.device = "cpu"
                 self.compute_type = "int8"
                 self.model = whisperx.load_model(
-                    "base", self.device, compute_type=self.compute_type
+                    "base", self.device, compute_type=self.compute_type, download_root=download_root
                 )
             except Exception as fallback_error:
                 print(
