@@ -10,8 +10,10 @@ import torch
 import torchaudio.transforms as T
 if sys.platform == "win32":
     import pyaudiowpatch as pyaudio
-else:
+elif sys.platform == "darwin":
     import pyaudio
+else:
+    pyaudio = None
 from abc import ABC, abstractmethod
 from vad_service import VADService
 
@@ -41,6 +43,10 @@ def list_audio_devices() -> list:
                 })
         except Exception as e:
             print(f"DEBUG: [Linux AudioDevices] Failed to enumerate devices: {e}", file=sys.stderr)
+        return devices
+
+    if pyaudio is None:
+        print("DEBUG: [AudioDevices] PyAudio is unavailable on this platform.", file=sys.stderr)
         return devices
 
     try:
