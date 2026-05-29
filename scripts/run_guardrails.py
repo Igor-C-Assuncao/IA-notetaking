@@ -7,9 +7,37 @@ def run_local_lint() -> str:
     src_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "src-python"))
     try:
         res = subprocess.run(["ruff", "check", src_dir], capture_output=True, text=True)
-        return res.stdout if res.stdout else "No linting issues found."
+        return res.stdout if res.stdout else "No linting issues found in Python."
     except Exception as e:
         return f"Failed to execute Ruff: {str(e)}"
+
+def run_local_rust_linter() -> str:
+    rust_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "src-tauri"))
+    try:
+        res = subprocess.run(
+            ["cargo", "clippy", "--all-targets", "--", "-D", "warnings"], 
+            cwd=rust_dir, 
+            shell=True,
+            capture_output=True, 
+            text=True
+        )
+        return res.stderr if res.stderr and "error" in res.stderr.lower() else "No warnings or errors found in Rust backend."
+    except Exception as e:
+        return f"Failed to execute cargo clippy: {str(e)}"
+
+def run_local_ts_linter() -> str:
+    root_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
+    try:
+        res = subprocess.run(
+            ["npx", "tsc", "--noEmit"], 
+            cwd=root_dir, 
+            shell=True,
+            capture_output=True, 
+            text=True
+        )
+        return res.stdout if res.stdout and len(res.stdout.strip()) > 0 else "No type/linting issues found in TypeScript/React."
+    except Exception as e:
+        return f"Failed to execute TypeScript compiler: {str(e)}"
 
 def run_local_git_diff() -> str:
     repo_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
@@ -80,28 +108,114 @@ def run_local_security_audit() -> dict:
                         pass
     return audit
 
-def compile_fallback_report(lint_res, diff_res, rag_res, prompt_res, sec_res) -> dict:
+def run_local_mlops_structure_audit() -> dict:
+    project_root = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
+    python_dir = os.path.join(project_root, "src-python")
+    
+    audit_results = {
+        "transcription_service": {
+            "exists": False,
+            "hardware_fallback_implemented": False,
+            "whisper_model_size": "unknown",
+            "device_checking": False
+        },
+        "vad_service": {
+            "exists": False,
+            "silero_vad_used": False,
+            "sampling_rate_rescale_implemented": False,
+            "probability_threshold": "unknown"
+        },
+        "rag_service": {
+            "exists": False,
+            "embedding_model_configured": "unknown",
+            "reproducible_chunking": False
+        }
+    }
+    
+    # 1. Transcription Service Audit
+    tx_file = os.path.join(python_dir, "transcription_service.py")
+    if os.path.exists(tx_file):
+        audit_results["transcription_service"]["exists"] = True
+        try:
+            with open(tx_file, "r", encoding="utf-8") as f:
+                content = f.read()
+            audit_results["transcription_service"]["device_checking"] = "torch.cuda.is_available()" in content
+            audit_results["transcription_service"]["hardware_fallback_implemented"] = "fallback" in content.lower() or "except" in content
+            if '"base"' in content or "'base'" in content:
+                audit_results["transcription_service"]["whisper_model_size"] = "base"
+            elif '"tiny"' in content or "'tiny'" in content:
+                audit_results["transcription_service"]["whisper_model_size"] = "tiny"
+        except Exception:
+            pass
+            
+    # 2. VAD Service Audit
+    vad_file = os.path.join(python_dir, "vad_service.py")
+    if os.path.exists(vad_file):
+        audit_results["vad_service"]["exists"] = True
+        try:
+            with open(vad_file, "r", encoding="utf-8") as f:
+                content = f.read()
+            audit_results["vad_service"]["silero_vad_used"] = "silero-vad" in content or "silero_vad" in content
+            audit_results["vad_service"]["sampling_rate_rescale_implemented"] = "16000" in content
+            if "threshold=" in content:
+                parts = content.split("threshold=")
+                if len(parts) > 1:
+                    val = parts[1].split(",")[0].split(")")[0].strip()
+                    audit_results["vad_service"]["probability_threshold"] = val
+        except Exception:
+            pass
+            
+    # 3. RAG Service Audit
+    rag_file = os.path.join(python_dir, "rag_service.py")
+    if os.path.exists(rag_file):
+        audit_results["rag_service"]["exists"] = True
+        try:
+            with open(rag_file, "r", encoding="utf-8") as f:
+                content = f.read()
+            audit_results["rag_service"]["reproducible_chunking"] = "chunk" in content or "split" in content
+            if "nomic-embed-text" in content:
+                audit_results["rag_service"]["embedding_model_configured"] = "nomic-embed-text"
+            else:
+                audit_results["rag_service"]["embedding_model_configured"] = "default/custom"
+        except Exception:
+            pass
+            
+    return audit_results
+
+def compile_fallback_report(lint_res, rust_res, ts_res, diff_res, rag_res, prompt_res, sec_res, mlops_res) -> dict:
     blocking_issues = []
     status = "APPROVED"
     
-    # 1. Audit linting issues
-    lint_fail = "No linting issues found." not in lint_res and "Failed to execute" not in lint_res and len(lint_res.strip()) > 0
-    if lint_fail:
-        blocking_issues.append("Ruff Static Analysis detected code style violations or syntax errors.")
+    # 1. Audit Python linting issues
+    py_lint_fail = "No linting issues found" not in lint_res and "Failed to execute" not in lint_res and len(lint_res.strip()) > 0
+    if py_lint_fail:
+        blocking_issues.append("Ruff Static Analysis detected Python code style violations or syntax errors.")
         status = "APPROVED_WITH_WARNINGS"
         
-    # 2. RAG audit
+    # 2. Audit Rust clippy issues
+    rust_lint_fail = "No warnings or errors found" not in rust_res and "Failed to execute" not in rust_res
+    if rust_lint_fail:
+        blocking_issues.append("Cargo Clippy static analysis detected Rust warnings or compilation errors.")
+        status = "REJECTED"
+        
+    # 3. Audit TypeScript typechecks
+    ts_lint_fail = "No type/linting issues found" not in ts_res and "Failed to execute" not in ts_res
+    if ts_lint_fail:
+        blocking_issues.append("TypeScript compiler detected React frontend static typing or code errors.")
+        status = "REJECTED"
+        
+    # 4. RAG audit
     if not rag_res.get("vector_index.json") or not rag_res.get("vector_index.npy"):
         blocking_issues.append("Vector index files (vector_index.json/vector_index.npy) are missing from src-python/.")
         status = "REJECTED"
         
-    # 3. Prompt schema audit
+    # 5. Prompt schema audit
     missing_fields = [k for k, v in prompt_res.items() if not v and k != "error"]
     if missing_fields:
         blocking_issues.append(f"llm_service.py is missing premium schema fields: {', '.join(missing_fields)}")
         status = "REJECTED"
         
-    # 4. Security audit
+    # 6. Security audit
     if not sec_res.get("env_file_exists"):
         blocking_issues.append(".env environment file is missing from the project root.")
         status = "REJECTED"
@@ -109,12 +223,26 @@ def compile_fallback_report(lint_res, diff_res, rag_res, prompt_res, sec_res) ->
         blocking_issues.append("Hardcoded API key starting with 'sk-proj-' detected in Python source code files!")
         status = "REJECTED"
 
+    # 7. MLOps structural checks
+    if not mlops_res["transcription_service"]["exists"]:
+        blocking_issues.append("Transcription service (transcription_service.py) is missing from src-python/.")
+        status = "REJECTED"
+    if not mlops_res["vad_service"]["exists"]:
+        blocking_issues.append("VAD service (vad_service.py) is missing from src-python/.")
+        status = "REJECTED"
+    if not mlops_res["transcription_service"]["device_checking"] or not mlops_res["transcription_service"]["hardware_fallback_implemented"]:
+        blocking_issues.append("MLOps pipeline architecture issue: Transcription service is missing device checking or hardware fallback logic.")
+        status = "APPROVED_WITH_WARNINGS"
+
     summary = (
         "Automated Production Deployment Guardrail Report (Mock/Fallback Mode).\n"
-        f"Ruff Linter: {'PASSED' if not lint_fail else 'WARNINGS/ERRORS DETECTED'}.\n"
+        f"Python Linter: {'PASSED' if not py_lint_fail else 'WARNINGS DETECTED'}.\n"
+        f"Rust Clippy: {'PASSED' if not rust_lint_fail else 'FAILED'}.\n"
+        f"TypeScript Type-safety: {'PASSED' if not ts_lint_fail else 'FAILED'}.\n"
         f"RAG Index Audit: {'PASSED' if status != 'REJECTED' or 'Vector index' not in str(blocking_issues) else 'FAILED'}.\n"
         f"Prompt Structure: {'PASSED' if not missing_fields else 'FAILED'}.\n"
-        f"Compliance & Env Keys: {'PASSED' if sec_res.get('hardcoded_secrets_risk') == 'CLEAN' else 'FAILED'}."
+        f"Compliance & Env Keys: {'PASSED' if sec_res.get('hardcoded_secrets_risk') == 'CLEAN' else 'FAILED'}.\n"
+        f"MLOps Pipeline Structure: {'PASSED' if status != 'REJECTED' else 'WARNINGS/FAILED'}."
     )
     
     # Generate mock innovation backlog based on audited state
@@ -145,18 +273,17 @@ def compile_fallback_report(lint_res, diff_res, rag_res, prompt_res, sec_res) ->
     }
 
 def main():
-    # Configure stdout to use UTF-8 if available, or ignore errors
     try:
         sys.stdout.reconfigure(encoding='utf-8')
     except Exception:
         pass
 
-    print("[START] Starting Production Deployment Guardrail Pipeline...")
+    print("[START] Starting Expanded Production Deployment Guardrail Pipeline...")
     
     # Attempt to run via the Antigravity SDK Orchestrator if present
     try:
         import google.antigravity
-        print("[SDK] Antigravity SDK detected! Dispatching parallel AI evaluation agents...")
+        print("[SDK] Antigravity SDK detected! Dispatching parallel full-stack AI evaluation agents...")
         
         # Import the orchestrator and run it
         import asyncio
@@ -165,11 +292,17 @@ def main():
         asyncio.run(run_orchestrator())
         return
     except ImportError:
-        print("[FALLBACK] Antigravity SDK not found in local environment. Running in Mock/Fallback Mode...")
+        print("[FALLBACK] Antigravity SDK not found in local environment. Running in Full-Stack Mock/Fallback Mode...")
         
         # Run local checks
-        print("[CHECK] Executing Ruff Static Linter...")
+        print("[CHECK] Executing Ruff Static Python Linter...")
         lint_res = run_local_lint()
+        
+        print("[CHECK] Executing Rust Cargo Clippy Backend Audits...")
+        rust_res = run_local_rust_linter()
+        
+        print("[CHECK] Executing TypeScript compiler type audits...")
+        ts_res = run_local_ts_linter()
         
         print("[CHECK] Analyzing Git Modifications...")
         diff_res = run_local_git_diff()
@@ -183,9 +316,12 @@ def main():
         print("[CHECK] Scanning Security & Env Variables...")
         sec_res = run_local_security_audit()
         
+        print("[CHECK] Verifying MLOps Pipeline Structure...")
+        mlops_res = run_local_mlops_structure_audit()
+        
         # Compile report
-        print("\n[PROCESS] Consolidating local audit results...")
-        report = compile_fallback_report(lint_res, diff_res, rag_res, prompt_res, sec_res)
+        print("\n[PROCESS] Consolidating full-stack local audit results...")
+        report = compile_fallback_report(lint_res, rust_res, ts_res, diff_res, rag_res, prompt_res, sec_res, mlops_res)
         
         # Print Consolidated Report
         print("\n=== FINAL EXECUTIVE DEPLOYMENT REPORT ===")

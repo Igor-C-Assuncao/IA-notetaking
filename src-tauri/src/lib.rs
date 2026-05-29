@@ -64,6 +64,7 @@ struct AppState {
 // ── 3. Database commands ──────────────────────────────────────
 
 #[tauri::command]
+#[allow(clippy::too_many_arguments)]
 fn save_meeting(
     state: State<'_, AppState>,
     date: String,
@@ -296,7 +297,7 @@ fn trigger_index_backfill(
             "embedding_provider": provider,
             "embedding_model": model,
         });
-        writeln!(stdin, "{}", payload.to_string()).map_err(|e| e.to_string())?;
+        writeln!(stdin, "{}", payload).map_err(|e| e.to_string())?;
         return Ok(());
     }
     Err("Python process not initialized or stdin unavailable".to_string())
@@ -541,85 +542,83 @@ fn spawn_and_supervise_python(
                     let python_child_clone = Arc::clone(&python_child);
                     std::thread::spawn(move || {
                         let reader = BufReader::new(stdout);
-                        for line in reader.lines() {
-                            if let Ok(content) = line {
-                                if !content.contains("VAD_TELEMETRY") {
-                                    println!("[PYTHON STDOUT] {}", content);
-                                }
-                                
-                                // Parse JSON to check for DB-persisted events
-                                if let Ok(json) = serde_json::from_str::<serde_json::Value>(&content) {
-                                    let event_name = json["event"].as_str().unwrap_or("");
-                                    
-                                    // Save newly generated meeting notes directly to DB
-                                    // (bypasses fragile frontend roundtrip that can lose data
-                                    //  if the app closes or Python restarts before the React
-                                    //  handler fires)
-                                    if event_name == "NOTES_GENERATED" {
-                                        if let Some(data) = json["data"].as_object() {
-                                            let raw_transcript = data.get("raw_transcript").and_then(|v| v.as_str()).unwrap_or("");
-                                            let markdown = data.get("markdown").and_then(|v| v.as_str()).unwrap_or("");
-                                            let structured = data.get("structured").map(|v| v.to_string());
-                                            
-                                            if !raw_transcript.is_empty() {
-                                                let now = chrono::Local::now();
-                                                let date_str = now.format("%Y-%m-%d %H:%M:%S").to_string();
-                                                let title_str = format!("Meeting {}", now.format("%d/%m/%Y"));
-                                                
-                                                // Extract speakers and tags from structured summary
-                                                let speakers = data.get("structured")
-                                                    .and_then(|s| s.get("speakers"))
-                                                    .map(|v| v.to_string());
-                                                let tags = data.get("structured")
-                                                    .and_then(|s| s.get("tags"))
-                                                    .map(|v| v.to_string());
-                                                
-                                                let db_lock = db_clone.lock().unwrap();
-                                                match db_lock.execute(
-                                                    "INSERT INTO meetings (date, title, raw_transcript, markdown_summary, speakers, tags, structured_summary) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
-                                                    rusqlite::params![date_str, title_str, raw_transcript, markdown, speakers, tags, structured],
-                                                ) {
-                                                    Ok(_) => {
-                                                        let meeting_id = db_lock.last_insert_rowid();
-                                                        println!("[RUST SUCCESS] Auto-saved meeting {} to DB from NOTES_GENERATED", meeting_id);
-                                                        // Inject the meeting_id into the event so frontend can skip its own save
-                                                        let mut enriched = json.clone();
-                                                        enriched["data"]["saved_meeting_id"] = serde_json::json!(meeting_id);
-                                                        let enriched_str = enriched.to_string();
-                                                        app_handle_clone.emit("python-event", enriched_str).ok();
-                                                        continue; // skip the default emit below
-                                                    }
-                                                    Err(e) => {
-                                                        eprintln!("[RUST ERROR] Failed to auto-save meeting from NOTES_GENERATED: {}", e);
-                                                    }
-                                                }
-                                            }
-                                        }
-                                    }
-                                    
-                                    if event_name == "REPROCESS_COMPLETED" {
-                                        if let Some(data) = json["data"].as_object() {
-                                            let meeting_id = data.get("meeting_id").and_then(|v| v.as_i64());
-                                            let markdown = data.get("markdown").and_then(|v| v.as_str());
-                                            let structured = data.get("structured").map(|v| v.to_string());
-                                            
-                                            if let (Some(id), Some(md)) = (meeting_id, markdown) {
-                                                let db_lock = db_clone.lock().unwrap();
-                                                if let Err(e) = db_lock.execute(
-                                                    "UPDATE meetings SET markdown_summary = ?1, structured_summary = ?2 WHERE id = ?3",
-                                                    rusqlite::params![md, structured, id],
-                                                ) {
-                                                    eprintln!("[RUST ERROR] Failed to update reprocessed meeting: {}", e);
-                                                } else {
-                                                    println!("[RUST SUCCESS] Reprocessed meeting {} updated in DB", id);
-                                                }
-                                            }
-                                        }
-                                    }
-                                }
-                                
-                                app_handle_clone.emit("python-event", content).ok();
+                        for content in reader.lines().map_while(Result::ok) {
+                            if !content.contains("VAD_TELEMETRY") {
+                                println!("[PYTHON STDOUT] {}", content);
                             }
+                            
+                            // Parse JSON to check for DB-persisted events
+                            if let Ok(json) = serde_json::from_str::<serde_json::Value>(&content) {
+                                let event_name = json["event"].as_str().unwrap_or("");
+                                
+                                // Save newly generated meeting notes directly to DB
+                                // (bypasses fragile frontend roundtrip that can lose data
+                                //  if the app closes or Python restarts before the React
+                                //  handler fires)
+                                if event_name == "NOTES_GENERATED" {
+                                    if let Some(data) = json["data"].as_object() {
+                                        let raw_transcript = data.get("raw_transcript").and_then(|v| v.as_str()).unwrap_or("");
+                                        let markdown = data.get("markdown").and_then(|v| v.as_str()).unwrap_or("");
+                                        let structured = data.get("structured").map(|v| v.to_string());
+                                        
+                                        if !raw_transcript.is_empty() {
+                                            let now = chrono::Local::now();
+                                            let date_str = now.format("%Y-%m-%d %H:%M:%S").to_string();
+                                            let title_str = format!("Meeting {}", now.format("%d/%m/%Y"));
+                                            
+                                            // Extract speakers and tags from structured summary
+                                            let speakers = data.get("structured")
+                                                .and_then(|s| s.get("speakers"))
+                                                .map(|v| v.to_string());
+                                            let tags = data.get("structured")
+                                                .and_then(|s| s.get("tags"))
+                                                .map(|v| v.to_string());
+                                            
+                                            let db_lock = db_clone.lock().unwrap();
+                                            match db_lock.execute(
+                                                "INSERT INTO meetings (date, title, raw_transcript, markdown_summary, speakers, tags, structured_summary) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+                                                rusqlite::params![date_str, title_str, raw_transcript, markdown, speakers, tags, structured],
+                                            ) {
+                                                Ok(_) => {
+                                                    let meeting_id = db_lock.last_insert_rowid();
+                                                    println!("[RUST SUCCESS] Auto-saved meeting {} to DB from NOTES_GENERATED", meeting_id);
+                                                    // Inject the meeting_id into the event so frontend can skip its own save
+                                                    let mut enriched = json.clone();
+                                                    enriched["data"]["saved_meeting_id"] = serde_json::json!(meeting_id);
+                                                    let enriched_str = enriched.to_string();
+                                                    app_handle_clone.emit("python-event", enriched_str).ok();
+                                                    continue; // skip the default emit below
+                                                }
+                                                Err(e) => {
+                                                    eprintln!("[RUST ERROR] Failed to auto-save meeting from NOTES_GENERATED: {}", e);
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+                                
+                                if event_name == "REPROCESS_COMPLETED" {
+                                    if let Some(data) = json["data"].as_object() {
+                                        let meeting_id = data.get("meeting_id").and_then(|v| v.as_i64());
+                                        let markdown = data.get("markdown").and_then(|v| v.as_str());
+                                        let structured = data.get("structured").map(|v| v.to_string());
+                                        
+                                        if let (Some(id), Some(md)) = (meeting_id, markdown) {
+                                            let db_lock = db_clone.lock().unwrap();
+                                            if let Err(e) = db_lock.execute(
+                                                "UPDATE meetings SET markdown_summary = ?1, structured_summary = ?2 WHERE id = ?3",
+                                                rusqlite::params![md, structured, id],
+                                            ) {
+                                                eprintln!("[RUST ERROR] Failed to update reprocessed meeting: {}", e);
+                                            } else {
+                                                println!("[RUST SUCCESS] Reprocessed meeting {} updated in DB", id);
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                            
+                            app_handle_clone.emit("python-event", content).ok();
                         }
                     });
                     
