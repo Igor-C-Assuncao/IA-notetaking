@@ -38,9 +38,6 @@
       "appimage": { "bundleMediaFramework": false },
       "deb": { "depends": ["libwebkit2gtk-4.1-0", "libpulse0"] }
     },
-    "externalBin": [
-      "binaries/audio-tap"
-    ],
     "icon": [
       "icons/32x32.png",
       "icons/128x128.png",
