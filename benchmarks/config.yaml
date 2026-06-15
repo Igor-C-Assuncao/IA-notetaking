@@ -1,0 +1,23 @@
+version: 1
+
+weights:
+  transcription: 0.25
+  speaker_attribution: 0.15
+  summary: 0.30
+  decisions_actions: 0.20
+  robustness_performance: 0.10
+
+thresholds:
+  evidence_quote_validity: 0.99
+  decision_precision: 0.90
+  action_item_precision: 0.90
+  explicit_assignee_accuracy: 0.90
+  critical_claim_hallucination_rate_max: 0.02
+  pipeline_completion_rate: 0.98
+  human_factuality_min: 4.3
+  human_usefulness_min: 4.0
+
+non_regression:
+  wer_absolute_increase_max: 0.01
+  action_precision_decrease_max: 0.03
+  allow_hallucination_rate_increase: false

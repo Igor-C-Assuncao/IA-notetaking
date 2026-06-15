@@ -1,0 +1,25 @@
+{
+  "version": 1,
+  "datasets": {
+    "ami": {
+      "source": "https://groups.inf.ed.ac.uk/ami/corpus/",
+      "license": "CC BY 4.0",
+      "fixture_ids": []
+    },
+    "qmsum": {
+      "source": "https://github.com/Yale-LILY/QMSum",
+      "license": "Verify repository and source corpus terms",
+      "fixture_ids": []
+    },
+    "coraa": {
+      "source": "https://github.com/nilc-nlp/CORAA",
+      "license": "CC BY-NC-ND 4.0",
+      "fixture_ids": []
+    },
+    "internal_pt_br": {
+      "source": "private",
+      "license": "Consent and permitted-use metadata required",
+      "fixture_ids": []
+    }
+  }
+}

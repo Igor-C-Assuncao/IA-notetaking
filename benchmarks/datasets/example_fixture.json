@@ -1,0 +1,47 @@
+{
+  "schema_version": 2,
+  "fixtures": [
+    {
+      "fixture_id": "example-001",
+      "reference": {
+        "transcript": "Alice will send the launch report by Friday. The team chose Postgres.",
+        "structured": {
+          "key_decisions": [
+            {
+              "decision": "The team chose Postgres."
+            }
+          ],
+          "action_items": [
+            {
+              "task": "Send the launch report",
+              "assignee": "Alice"
+            }
+          ]
+        }
+      },
+      "predicted": {
+        "transcript": "Alice will send the launch report by Friday. The team chose Postgres.",
+        "pipeline_completed": true,
+        "structured": {
+          "key_decisions": [
+            {
+              "decision": "The team chose Postgres.",
+              "evidence_quote": "The team chose Postgres."
+            }
+          ],
+          "action_items": [
+            {
+              "task": "Send the launch report",
+              "assignee": "Alice",
+              "evidence_quote": "Alice will send the launch report by Friday."
+            }
+          ]
+        }
+      },
+      "human_review": {
+        "factuality": 5.0,
+        "usefulness": 5.0
+      }
+    }
+  ]
+}
