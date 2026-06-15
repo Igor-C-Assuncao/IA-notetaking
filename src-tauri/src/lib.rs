@@ -51,6 +51,8 @@ struct Meeting {
     speakers: Option<String>,          // JSON array of speaker names
     tags: Option<String>,              // JSON array of tag strings
     structured_summary: Option<String>, // Full structured JSON from LangGraph
+    transcript_segments: Option<String>, // Versioned transcript evidence JSON
+    schema_version: i32,
 }
 
 // ── 2. Global application state ───────────────────────────────
@@ -74,15 +76,19 @@ fn save_meeting(
     speakers: Option<String>,
     tags: Option<String>,
     structured_summary: Option<String>,
+    transcript_segments: Option<String>,
+    schema_version: Option<i32>,
 ) -> Result<i64, String> {
     let db = state.db.lock().unwrap();
     db.execute(
         "INSERT INTO meetings
-         (date, title, raw_transcript, markdown_summary, speakers, tags, structured_summary)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+         (date, title, raw_transcript, markdown_summary, speakers, tags, structured_summary,
+          transcript_segments, schema_version)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
         rusqlite::params![
             &date, &title, &raw_transcript, &markdown_summary,
             &speakers, &tags, &structured_summary,
+            &transcript_segments, schema_version.unwrap_or(1),
         ],
     ).map_err(|e| e.to_string())?;
     let id = db.last_insert_rowid();
@@ -94,7 +100,7 @@ fn get_meetings(state: State<'_, AppState>) -> Result<Vec<Meeting>, String> {
     let db = state.db.lock().unwrap();
     let mut stmt = db.prepare(
         "SELECT id, date, title, raw_transcript, markdown_summary,
-                speakers, tags, structured_summary
+                speakers, tags, structured_summary, transcript_segments, schema_version
          FROM meetings ORDER BY id DESC"
     ).map_err(|e| e.to_string())?;
 
@@ -108,6 +114,8 @@ fn get_meetings(state: State<'_, AppState>) -> Result<Vec<Meeting>, String> {
             speakers: row.get(5)?,
             tags: row.get(6)?,
             structured_summary: row.get(7)?,
+            transcript_segments: row.get(8)?,
+            schema_version: row.get(9)?,
         })
     }).map_err(|e| e.to_string())?;
 
@@ -129,7 +137,8 @@ fn search_meetings(state: State<'_, AppState>, query: String) -> Result<Vec<Meet
 
     let mut stmt = db.prepare(
         "SELECT m.id, m.date, m.title, m.raw_transcript, m.markdown_summary,
-                m.speakers, m.tags, m.structured_summary
+                m.speakers, m.tags, m.structured_summary,
+                m.transcript_segments, m.schema_version
          FROM meetings m
          JOIN meetings_fts fts ON fts.rowid = m.id
          WHERE meetings_fts MATCH ?1
@@ -146,6 +155,8 @@ fn search_meetings(state: State<'_, AppState>, query: String) -> Result<Vec<Meet
             speakers: row.get(5)?,
             tags: row.get(6)?,
             structured_summary: row.get(7)?,
+            transcript_segments: row.get(8)?,
+            schema_version: row.get(9)?,
         })
     }).map_err(|e| e.to_string())?;
 
@@ -502,18 +513,34 @@ fn spawn_and_supervise_python(
             let is_dev = dev_python_script.exists();
 
             let mut sidecar_path = None;
-            let binaries_dir = project_dir.join("binaries");
-            if binaries_dir.exists() {
+            let search_dirs = [
+                project_dir.clone(),
+                project_dir.join("binaries"),
+                std::env::current_exe()
+                    .ok()
+                    .and_then(|path| path.parent().map(PathBuf::from))
+                    .unwrap_or_default(),
+            ];
+            for binaries_dir in search_dirs {
                 if let Ok(entries) = std::fs::read_dir(binaries_dir) {
                     for entry in entries.flatten() {
                         let path = entry.path();
                         if let Some(file_name) = path.file_name().and_then(|n| n.to_str()) {
-                            if file_name.starts_with("ai-notetaking-engine") && !file_name.contains(".pdb") {
+                            let is_engine = file_name.starts_with("ai-notetaking-engine")
+                                && !file_name.ends_with(".pdb");
+                            let is_nonempty = path
+                                .metadata()
+                                .map(|metadata| metadata.len() > 0)
+                                .unwrap_or(false);
+                            if is_engine && is_nonempty {
                                 sidecar_path = Some(path);
                                 break;
                             }
                         }
                     }
+                }
+                if sidecar_path.is_some() {
+                    break;
                 }
             }
 
@@ -591,6 +618,8 @@ fn spawn_and_supervise_python(
                                         let raw_transcript = data.get("raw_transcript").and_then(|v| v.as_str()).unwrap_or("");
                                         let markdown = data.get("markdown").and_then(|v| v.as_str()).unwrap_or("");
                                         let structured = data.get("structured").map(|v| v.to_string());
+                                        let transcript_segments = data.get("transcript_segments").map(|v| v.to_string());
+                                        let schema_version = data.get("schema_version").and_then(|v| v.as_i64()).unwrap_or(1);
                                         
                                         if !raw_transcript.is_empty() {
                                             let now = chrono::Local::now();
@@ -599,16 +628,25 @@ fn spawn_and_supervise_python(
                                             
                                             // Extract speakers and tags from structured summary
                                             let speakers = data.get("structured")
-                                                .and_then(|s| s.get("speakers"))
+                                                .and_then(|s| s.get("participants"))
                                                 .map(|v| v.to_string());
                                             let tags = data.get("structured")
-                                                .and_then(|s| s.get("tags"))
+                                                .and_then(|s| s.get("metadata"))
+                                                .and_then(|m| m.get("tags"))
                                                 .map(|v| v.to_string());
                                             
                                             let db_lock = db_clone.lock().unwrap();
                                             match db_lock.execute(
-                                                "INSERT INTO meetings (date, title, raw_transcript, markdown_summary, speakers, tags, structured_summary) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
-                                                rusqlite::params![date_str, title_str, raw_transcript, markdown, speakers, tags, structured],
+                                                "INSERT INTO meetings (
+                                                    date, title, raw_transcript, markdown_summary,
+                                                    speakers, tags, structured_summary,
+                                                    transcript_segments, schema_version
+                                                 ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
+                                                rusqlite::params![
+                                                    date_str, title_str, raw_transcript, markdown,
+                                                    speakers, tags, structured, transcript_segments,
+                                                    schema_version,
+                                                ],
                                             ) {
                                                 Ok(_) => {
                                                     let meeting_id = db_lock.last_insert_rowid();
@@ -753,7 +791,9 @@ pub fn initialize_db_schema(conn: &Connection) -> Result<(), rusqlite::Error> {
             markdown_summary   TEXT NOT NULL,
             speakers           TEXT,
             tags               TEXT,
-            structured_summary TEXT
+            structured_summary TEXT,
+            transcript_segments TEXT,
+            schema_version     INTEGER NOT NULL DEFAULT 1
         )",
         [],
     )?;
@@ -764,6 +804,8 @@ pub fn initialize_db_schema(conn: &Connection) -> Result<(), rusqlite::Error> {
         "ALTER TABLE meetings ADD COLUMN speakers TEXT",
         "ALTER TABLE meetings ADD COLUMN tags TEXT",
         "ALTER TABLE meetings ADD COLUMN structured_summary TEXT",
+        "ALTER TABLE meetings ADD COLUMN transcript_segments TEXT",
+        "ALTER TABLE meetings ADD COLUMN schema_version INTEGER NOT NULL DEFAULT 1",
     ] {
         if let Err(e) = conn.execute(sql, []) {
             if !e.to_string().contains("duplicate column name") {
@@ -812,12 +854,6 @@ pub fn run() {
     #[cfg(target_os = "linux")]
     sanitize_snap_runtime_env();
 
-    let conn = Connection::open("notetaker.db").expect("Failed to open local database");
-    initialize_db_schema(&conn).expect("Failed to initialize database schema");
-
-    let python_stdin = Arc::new(Mutex::new(None));
-    let python_child = Arc::new(Mutex::new(None));
-
     let builder = tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_store::Builder::new().build())
@@ -825,16 +861,29 @@ pub fn run() {
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_fs::init())
         .plugin(tauri_plugin_http::init())
-        .manage(AppState { 
-            db: Arc::new(Mutex::new(conn)), 
-            python_stdin,
-            python_child: Arc::clone(&python_child),
-        })
-        .setup(move |app| {
+        .setup(|app| {
             let app_handle = app.handle().clone();
 
-            // 1. Initialize Daily Rotating Logs
+            // 1. Initialize persistent application data.
             let app_data_dir = app.path().app_data_dir().unwrap_or_else(|_| PathBuf::from("."));
+            std::fs::create_dir_all(&app_data_dir)?;
+
+            let database_path = app_data_dir.join("notetaker.db");
+            let legacy_database_path = PathBuf::from("notetaker.db");
+            if !database_path.exists() && legacy_database_path.exists() {
+                std::fs::copy(&legacy_database_path, &database_path)?;
+            }
+
+            let conn = Connection::open(&database_path)?;
+            initialize_db_schema(&conn)?;
+
+            app.manage(AppState {
+                db: Arc::new(Mutex::new(conn)),
+                python_stdin: Arc::new(Mutex::new(None)),
+                python_child: Arc::new(Mutex::new(None)),
+            });
+
+            // 2. Initialize Daily Rotating Logs
             let logs_dir = app_data_dir.join("logs");
             let _ = std::fs::create_dir_all(&logs_dir);
             
@@ -853,10 +902,10 @@ pub fn run() {
 
             println!("[RUST INFO] Daily rotating logs initialized at: {:?}", logs_dir.join("app.log"));
 
-            // 2. Atomically Migrate settings.json secrets to OS Keychain
+            // 3. Atomically Migrate settings.json secrets to OS Keychain
             migrate_settings_to_keychain(app);
 
-            // 3. Spawn Python Engine via Supervisor Process
+            // 4. Spawn Python Engine via Supervisor Process
             let state = app.state::<AppState>();
             spawn_and_supervise_python(
                 app_handle.clone(),

@@ -51,7 +51,8 @@ fn test_save_meeting_and_get_meetings_ordering() {
 
     // Query meetings - should return in DESC order of ID (newest first)
     let mut stmt = conn.prepare(
-        "SELECT id, date, title, raw_transcript, markdown_summary, speakers, tags, structured_summary
+        "SELECT id, date, title, raw_transcript, markdown_summary, speakers, tags,
+                structured_summary, transcript_segments, schema_version
          FROM meetings ORDER BY id DESC"
     ).expect("Failed to prepare get statement");
 
@@ -65,6 +66,8 @@ fn test_save_meeting_and_get_meetings_ordering() {
             speakers: row.get(5)?,
             tags: row.get(6)?,
             structured_summary: row.get(7)?,
+            transcript_segments: row.get(8)?,
+            schema_version: row.get(9)?,
         })
     }).expect("Failed to query map");
 
@@ -74,6 +77,8 @@ fn test_save_meeting_and_get_meetings_ordering() {
     // Check descending order (ID 2 should be first, ID 1 second)
     assert_eq!(meetings[0].title, "Second Meeting");
     assert_eq!(meetings[1].title, "First Meeting");
+    assert_eq!(meetings[0].schema_version, 1);
+    assert!(meetings[0].transcript_segments.is_none());
 }
 
 #[test]

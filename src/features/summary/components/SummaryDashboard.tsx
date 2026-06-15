@@ -1,11 +1,72 @@
 import { StructuredSummary } from "../types";
-import { CheckCircleIcon, FlagIcon, UsersIcon, WarningIcon, CalendarIcon, HashIcon } from "@phosphor-icons/react";
+import { CheckCircleIcon, FlagIcon, UsersIcon, WarningIcon, CalendarIcon, HashIcon, QuotesIcon } from "@phosphor-icons/react";
 
 interface SummaryDashboardProps {
   summary: StructuredSummary;
+  onViewEvidence?: (segmentId: string) => void;
 }
 
-export function SummaryDashboard({ summary }: SummaryDashboardProps) {
+function confidenceLabel(confidence?: number) {
+  if (confidence === undefined) return null;
+  if (confidence >= 0.85) return "High confidence";
+  if (confidence >= 0.6) return "Medium confidence";
+  return "Low confidence";
+}
+
+function EvidenceDetails({
+  evidenceQuote,
+  evidenceSegmentIds,
+  confidence,
+  inference,
+  onViewEvidence,
+}: {
+  evidenceQuote?: string | null;
+  evidenceSegmentIds?: string[];
+  confidence?: number;
+  inference?: boolean;
+  onViewEvidence?: (segmentId: string) => void;
+}) {
+  const label = confidenceLabel(confidence);
+  const firstSegmentId = evidenceSegmentIds?.[0];
+
+  if (!evidenceQuote && !label && !inference) return null;
+
+  return (
+    <div className="mt-3 flex flex-col gap-2">
+      <div className="flex flex-wrap gap-2 text-[11px] font-semibold">
+        {label && (
+          <span className="rounded-full bg-slate-500/10 px-2 py-1 text-slate-600 dark:text-slate-300">
+            {label}{confidence !== undefined ? ` · ${Math.round(confidence * 100)}%` : ""}
+          </span>
+        )}
+        {inference && (
+          <span className="rounded-full bg-amber-500/10 px-2 py-1 text-amber-700 dark:text-amber-300">
+            Inferred
+          </span>
+        )}
+      </div>
+      {evidenceQuote && (
+        <div className="rounded-lg border border-slate-200/70 bg-slate-50/70 p-3 text-xs text-slate-600 dark:border-slate-700 dark:bg-slate-900/40 dark:text-slate-300">
+          <div className="mb-1 flex items-center gap-1 font-semibold uppercase tracking-wide text-slate-500">
+            <QuotesIcon /> Transcript evidence
+          </div>
+          <p className="leading-relaxed">“{evidenceQuote}”</p>
+          {firstSegmentId && onViewEvidence && (
+            <button
+              type="button"
+              className="mt-2 font-semibold text-primary hover:underline"
+              onClick={() => onViewEvidence(firstSegmentId)}
+            >
+              View in transcript
+            </button>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
+export function SummaryDashboard({ summary, onViewEvidence }: SummaryDashboardProps) {
   return (
     <div className="flex flex-col gap-8 p-4 animate-fade-in text-gray-800 dark:text-gray-100">
       
@@ -70,6 +131,13 @@ export function SummaryDashboard({ summary }: SummaryDashboardProps) {
                   <p className="font-medium text-gray-900 dark:text-white">{dec.decision}</p>
                   {dec.rationale && <p className="text-sm text-gray-500 dark:text-gray-400 mt-1">{dec.rationale}</p>}
                   {dec.owner && <span className="text-xs font-medium text-primary mt-2 inline-block">Owned by: {dec.owner}</span>}
+                  <EvidenceDetails
+                    evidenceQuote={dec.evidence_quote}
+                    evidenceSegmentIds={dec.evidence_segment_ids}
+                    confidence={dec.confidence}
+                    inference={dec.inference}
+                    onViewEvidence={onViewEvidence}
+                  />
                 </div>
               ))}
             </div>
@@ -109,6 +177,13 @@ export function SummaryDashboard({ summary }: SummaryDashboardProps) {
                         </span>
                       )}
                     </div>
+                    <EvidenceDetails
+                      evidenceQuote={item.evidence_quote}
+                      evidenceSegmentIds={item.evidence_segment_ids}
+                      confidence={item.confidence}
+                      inference={item.inference}
+                      onViewEvidence={onViewEvidence}
+                    />
                   </div>
                 </div>
               ))}

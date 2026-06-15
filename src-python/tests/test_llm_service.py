@@ -88,7 +88,7 @@ def test_extract_action_items_node_success(mock_llm):
     mock_response = MagicMock()
     mock_response.content = json.dumps({
         "decisions": [{"text": "Adopt Postgres", "source_quote": "we will go with postgres"}],
-        "actions": [{"who": "Bob", "what": "finalize schema", "due": "tomorrow", "source_quote": "finalize schema by tomorrow"}]
+        "actions": [{"who": "Bob", "what": "finalize schema", "due": "tomorrow", "source_quote": "finalize the schema by tomorrow"}]
     })
     mock_llm.invoke.return_value = mock_response
     
@@ -101,6 +101,36 @@ def test_extract_action_items_node_success(mock_llm):
     assert len(res["actions"]) == 1
     assert res["decisions"][0]["text"] == "Adopt Postgres"
     assert res["actions"][0]["who"] == "Bob"
+    assert res["actions"][0]["evidence_segment_ids"] == ["seg_000000"]
+    assert res["actions"][0]["confidence"] == 0.9
+
+def test_extract_action_items_rejects_unsupported_quote(mock_llm):
+    engine = MeetingWorkflowEngine(provider_name="ollama", model_name="llama3")
+    engine.llm = mock_llm
+
+    mock_response = MagicMock()
+    mock_response.content = json.dumps({
+        "decisions": [],
+        "actions": [{
+            "task": "Delete production",
+            "evidence_quote": "we agreed to delete production",
+            "evidence_segment_ids": ["seg_000000"],
+            "confidence": 0.99,
+            "inference": False,
+        }],
+    })
+    mock_llm.invoke.return_value = mock_response
+
+    state = {
+        "raw_transcript": "Alice: We agreed to keep production online.",
+        "transcript_segments": [{
+            "segment_id": "seg_000000",
+            "text": "We agreed to keep production online.",
+        }],
+    }
+
+    res = engine.extract_action_items_node(state)
+    assert res["actions"] == []
 
 def test_extract_action_items_node_fallback(mock_llm):
     engine = MeetingWorkflowEngine(provider_name="ollama", model_name="llama3")
@@ -202,3 +232,35 @@ def test_meeting_workflow_engine_long_map_reduce(mock_llm, monkeypatch):
     res = engine.run(long_transcript)
     assert "markdown" in res
     assert "structured" in res
+
+
+def test_chunk_transcript_segments_preserves_boundaries_and_overlap():
+    segments = [
+        {"segment_id": "seg_1", "text": "First complete thought."},
+        {"segment_id": "seg_2", "text": "Second complete thought."},
+        {"segment_id": "seg_3", "text": "Third complete thought."},
+    ]
+
+    chunks = MeetingWorkflowEngine._chunk_transcript_segments(
+        segments,
+        max_chars=45,
+        overlap_segments=1,
+    )
+
+    assert [[segment["segment_id"] for segment in chunk] for chunk in chunks] == [
+        ["seg_1"],
+        ["seg_1", "seg_2"],
+        ["seg_2", "seg_3"],
+    ]
+
+
+def test_deduplicate_claims_uses_text_and_evidence():
+    claims = [
+        {"task": "Send the report", "evidence_segment_ids": ["seg_1"]},
+        {"task": " send   the report ", "evidence_segment_ids": ["seg_1"]},
+        {"task": "Send the report", "evidence_segment_ids": ["seg_2"]},
+    ]
+
+    deduplicated = MeetingWorkflowEngine._deduplicate_claims(claims, "task")
+
+    assert len(deduplicated) == 2

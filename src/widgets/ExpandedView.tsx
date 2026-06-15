@@ -1,4 +1,4 @@
-import { useState, useMemo } from "react";
+import { useState, useMemo, useEffect, useRef } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { writeText } from "@tauri-apps/plugin-clipboard-manager";
 import { save } from "@tauri-apps/plugin-dialog";
@@ -22,6 +22,14 @@ import { ReprocessModal } from "@features/meetings/components/ReprocessModal";
 import { CopilotSidebar } from "@features/rag/components/CopilotSidebar";
 import { parseActionItems, parseTldr } from "@features/summary/lib/parsers";
 import { SummaryDashboard } from "@features/summary/components/SummaryDashboard";
+import type { TranscriptSegment } from "@features/summary/types";
+
+function formatSegmentTime(milliseconds: number) {
+  const totalSeconds = Math.max(0, Math.floor(milliseconds / 1000));
+  const minutes = Math.floor(totalSeconds / 60);
+  const seconds = totalSeconds % 60;
+  return `${minutes}:${seconds.toString().padStart(2, "0")}`;
+}
 
 export function ExpandedView({
   isTransitioning, toggleWindowMode
@@ -31,13 +39,15 @@ export function ExpandedView({
   const { settings } = useSettings();
   const { isLG, waveColor } = useTheme();
   const { isRecording, recordingSeconds, status, toggleRecording } = useRecording();
-  const { setTranscriptionText, search, setSearch, filteredTranscript } = useTranscription();
+  const { setTranscriptionText, segments, search, setSearch, filteredTranscript } = useTranscription();
   const { notes, setNotesText, tldr, actionItems, structuredSummary } = useSummary();
   const { meetingsHistory, selectedMeetingId, setSelectedMeetingId, sidebarSearch, setSidebarSearch, loadHistory } = useMeetings();
   
   const [activeTab, setActiveTab] = useState<"transcript" | "summary" | "actions">("transcript");
   const [copiedNotes, setCopiedNotes] = useState(false);
   const [copiedWebAI, setCopiedWebAI] = useState(false);
+  const [highlightedSegmentId, setHighlightedSegmentId] = useState<string | null>(null);
+  const segmentRefs = useRef<Record<string, HTMLDivElement | null>>({});
 
   const currentMeeting = meetingsHistory.find(m => m.id === selectedMeetingId);
 
@@ -78,6 +88,41 @@ export function ExpandedView({
     }
     return structuredSummary;
   }, [selectedMeetingId, currentMeeting, structuredSummary]);
+
+  const displayedSegments = useMemo<TranscriptSegment[]>(() => {
+    if (selectedMeetingId !== null && currentMeeting) {
+      if (!currentMeeting.transcript_segments) return [];
+      try {
+        const parsed = JSON.parse(currentMeeting.transcript_segments);
+        return Array.isArray(parsed) ? parsed : [];
+      } catch {
+        return [];
+      }
+    }
+    return segments;
+  }, [selectedMeetingId, currentMeeting, segments]);
+
+  const filteredSegments = useMemo(() => {
+    const query = search.trim().toLowerCase();
+    if (!query) return displayedSegments;
+    return displayedSegments.filter((segment) => segment.text.toLowerCase().includes(query));
+  }, [displayedSegments, search]);
+
+  useEffect(() => {
+    if (!highlightedSegmentId || activeTab !== "transcript") return;
+    const target = segmentRefs.current[highlightedSegmentId];
+    if (!target) return;
+
+    target.scrollIntoView({ behavior: "smooth", block: "center" });
+    const timeout = window.setTimeout(() => setHighlightedSegmentId(null), 5000);
+    return () => window.clearTimeout(timeout);
+  }, [activeTab, highlightedSegmentId]);
+
+  const viewEvidence = (segmentId: string) => {
+    setSearch("");
+    setHighlightedSegmentId(segmentId);
+    setActiveTab("transcript");
+  };
 
   const [showReprocessModal, setShowReprocessModal] = useState(false);
   const [showExportDropdown, setShowExportDropdown] = useState(false);
@@ -497,7 +542,24 @@ export function ExpandedView({
           <div className="tab-content">
             {activeTab === "transcript" && (
               <div className="tab-panel">
-                {displayedTranscript
+                {filteredSegments.length > 0
+                  ? <div className="transcript-segments">
+                    {filteredSegments.map((segment) => (
+                      <div
+                        key={segment.segment_id}
+                        ref={(element) => { segmentRefs.current[segment.segment_id] = element; }}
+                        className={`transcript-segment ${highlightedSegmentId === segment.segment_id ? "highlighted" : ""}`}
+                        data-segment-id={segment.segment_id}
+                      >
+                        <div className="transcript-segment-meta">
+                          <span>{segment.speaker_name || segment.speaker_id || "Speaker"}</span>
+                          <span>{formatSegmentTime(segment.start_ms)}</span>
+                        </div>
+                        <p>{segment.text}</p>
+                      </div>
+                    ))}
+                  </div>
+                  : displayedTranscript
                   ? <pre className="transcript-text">{displayedTranscript}</pre>
                   : <div className="empty-state">
                     {isRecording
@@ -509,7 +571,7 @@ export function ExpandedView({
             {activeTab === "summary" && (
               <div className="tab-panel">
                 {displayedStructured ? (
-                  <SummaryDashboard summary={displayedStructured} />
+                  <SummaryDashboard summary={displayedStructured} onViewEvidence={viewEvidence} />
                 ) : displayedNotes ? (
                   <>
                     {displayedTldr && <div className="tldr-card"><div className="tldr-label">TL;DR</div><p className="tldr-body">{displayedTldr}</p></div>}

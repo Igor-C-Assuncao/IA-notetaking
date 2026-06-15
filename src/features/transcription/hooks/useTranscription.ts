@@ -1,9 +1,10 @@
 import { useState, useMemo } from "react";
 import { usePythonEvent } from "@app/providers/IpcProvider";
+import type { TranscriptSegment } from "@features/summary/types";
 
 export function useTranscription() {
   const [transcription, setTranscription] = useState("");
-  const [segments, setSegments] = useState<any[] | null>(null);
+  const [segments, setSegments] = useState<TranscriptSegment[]>([]);
   const [diarized, setDiarized] = useState(false);
   const [search, setSearch] = useState("");
 

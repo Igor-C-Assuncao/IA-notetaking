@@ -74,7 +74,11 @@ describe("useMeetings Hook", () => {
 
   test("updates selected meeting ID correctly", async () => {
     const { result } = renderHook(() => useMeetings());
-    
+
+    await act(async () => {
+      await vi.runAllTimersAsync();
+    });
+
     act(() => {
       result.current.setSelectedMeetingId(42);
     });
