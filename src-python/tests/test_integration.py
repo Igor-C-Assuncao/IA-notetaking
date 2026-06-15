@@ -1,7 +1,6 @@
 import pytest
 import subprocess
 import json
-import time
 import sys
 import os
 from transcription_service import TranscriptionService

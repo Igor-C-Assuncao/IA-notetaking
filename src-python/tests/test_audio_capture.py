@@ -1,8 +1,5 @@
 # src-python/tests/test_audio_capture.py
-import pytest
 import numpy as np
-import os
-import wave
 import audio_capture
 from unittest.mock import MagicMock, patch
 from audio_capture import WindowsAudioCapture

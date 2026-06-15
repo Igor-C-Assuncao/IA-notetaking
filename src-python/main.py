@@ -286,7 +286,6 @@ def main():
                 provider_name = command.get("provider", "ollama")
                 model_name = command.get("model", "llama3")
                 api_key = command.get("api_key", "")
-                structured_summary = command.get("structured_summary")
                 
                 try:
                     llm = LLMFactory.get_provider(provider_name, model_name)
@@ -326,7 +325,7 @@ def main():
                     # Validate Database ID
                     req_db = urllib.request.Request(f"https://api.notion.com/v1/databases/{db_id}", headers=headers)
                     with urllib.request.urlopen(req_db) as response_db:
-                        db_data = json.loads(response_db.read().decode())
+                        response_db.read()
                         
                     send_event("NOTION_VALIDATED", {"success": True, "workspace_name": user_data.get("workspace_name", "Notion Workspace")})
                 except urllib.error.HTTPError as he:

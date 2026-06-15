@@ -1,7 +1,5 @@
 # src-python/llm_service.py
 import sys
-import os
-import time
 from typing import TypedDict
 from langgraph.graph import StateGraph, START, END
 from langchain_core.messages import SystemMessage, HumanMessage
@@ -87,17 +85,20 @@ class MeetingWorkflowEngine:
             return ChatOllama(model=self.model_name, temperature=temp)
             
         elif self.provider_name == "openai":
-            if not self.api_key: raise ValueError("OpenAI API key is missing.")
+            if not self.api_key:
+                raise ValueError("OpenAI API key is missing.")
             from langchain_openai import ChatOpenAI
             return ChatOpenAI(model=self.model_name, api_key=self.api_key, temperature=temp)
             
         elif self.provider_name == "gemini":
-            if not self.api_key: raise ValueError("Gemini API key is missing.")
+            if not self.api_key:
+                raise ValueError("Gemini API key is missing.")
             from langchain_google_genai import ChatGoogleGenerativeAI
             return ChatGoogleGenerativeAI(model=self.model_name, google_api_key=self.api_key, temperature=temp)
             
         elif self.provider_name == "anthropic":
-            if not self.api_key: raise ValueError("Anthropic API key is missing.")
+            if not self.api_key:
+                raise ValueError("Anthropic API key is missing.")
             from langchain_anthropic import ChatAnthropic
             return ChatAnthropic(model=self.model_name, api_key=self.api_key, temperature=temp)
             
@@ -141,7 +142,8 @@ class MeetingWorkflowEngine:
             entities = json_lib.loads(cleaned_raw)
             # Ensure safe fallback keys
             for k in ["speakers", "numbers", "dates", "projects", "acronyms"]:
-                if k not in entities: entities[k] = []
+                if k not in entities:
+                    entities[k] = []
         except Exception:
             print("DEBUG: [LangGraph] Node 1 JSON parse failed.", file=sys.stderr)
             entities = {"speakers": [], "numbers": [], "dates": [], "projects": [], "acronyms": []}

@@ -3,7 +3,6 @@ import time
 import os
 import sys
 import wave
-import numpy as np
 
 # Ensure root import works
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))

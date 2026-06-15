@@ -1,5 +1,3 @@
-import pytest
-import os
 from unittest.mock import MagicMock, patch
 from transcription_service import TranscriptionService
 
@@ -150,7 +148,7 @@ def test_transcribe_diarization_success():
              patch("whisperx.load_audio"), \
              patch("whisperx.load_align_model", return_value=(MagicMock(), {})), \
              patch("whisperx.align", return_value={"segments": [{"start": 0.0, "end": 1.0, "text": "Hello"}]}), \
-             patch("whisperx.DiarizationPipeline", create=True) as mock_pipeline, \
+             patch("whisperx.DiarizationPipeline", create=True), \
              patch("whisperx.assign_word_speakers") as mock_assign:
              
             mock_assign.return_value = {"segments": [{"speaker": "SPEAKER_00", "start": 0.0, "end": 1.0, "text": "Hello"}]}

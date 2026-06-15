@@ -277,8 +277,10 @@ class WindowsAudioCapture(AudioCaptureStrategy):
 
         self.is_recording = False
         
-        if self.loopback_thread: self.loopback_thread.join(timeout=2.0)
-        if self.mic_thread: self.mic_thread.join(timeout=2.0)
+        if self.loopback_thread:
+            self.loopback_thread.join(timeout=2.0)
+        if self.mic_thread:
+            self.mic_thread.join(timeout=2.0)
 
         # Clean up streams and PyAudio instance to prevent leaks and PortAudio thread collisions
         if self.loopback_stream:
@@ -458,7 +460,6 @@ class MacosAudioCapture(AudioCaptureStrategy):
             self.is_recording = False
 
     def _record(self):
-        chunk_count = 0
         try:
             while self.is_recording and self.mic_stream:
                 data = self.mic_stream.read(1024, exception_on_overflow=False)
@@ -623,7 +624,6 @@ class LinuxAudioCapture(AudioCaptureStrategy):
                 sys.stdout.flush()
 
     def _record_mic(self):
-        chunk_count = 0
         try:
             with self.mic.recorder(samplerate=self.sample_rate, channels=self.channels) as recorder:
                 while self.is_recording:
