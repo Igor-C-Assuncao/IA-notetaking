@@ -81,8 +81,18 @@ class AudioCaptureStrategy(ABC):
     Abstract base class defining the contract for all audio capture strategies.
     """
     @abstractmethod
-    def start_recording(self, telemetry_callback=None, system_audio: bool = False):
+    def start_recording(self, telemetry_callback=None, system_audio: bool = False, device_id=None):
         """Starts capturing audio. Optional callback(level: float) for RMS telemetry. Accepts system_audio toggle."""
+        pass
+
+    @abstractmethod
+    def pause_recording(self):
+        """Temporarily stops appending captured frames."""
+        pass
+
+    @abstractmethod
+    def resume_recording(self):
+        """Resumes appending captured frames."""
         pass
 
     @abstractmethod
@@ -102,6 +112,7 @@ class WindowsAudioCapture(AudioCaptureStrategy):
     
     def __init__(self):
         self.is_recording = False
+        self.is_paused = False
         self.telemetry_callback = None
 
         # Audio Engine references
@@ -129,11 +140,20 @@ class WindowsAudioCapture(AudioCaptureStrategy):
         current_dir = os.path.dirname(os.path.abspath(__file__))
         self.output_file = os.path.join(current_dir, "temp_meeting_audio.wav")
 
-    def start_recording(self, telemetry_callback=None, system_audio: bool = False):
+    def pause_recording(self):
+        self.is_paused = True
+        print("DEBUG: [Windows] Recording paused.", file=sys.stderr)
+
+    def resume_recording(self):
+        self.is_paused = False
+        print("DEBUG: [Windows] Recording resumed.", file=sys.stderr)
+
+    def start_recording(self, telemetry_callback=None, system_audio: bool = False, device_id=None):
         if self.is_recording:
             return
 
         self.is_recording = True
+        self.is_paused = False
         self.telemetry_callback = telemetry_callback
         self.loopback_frames = []
         self.mic_frames = []
@@ -173,7 +193,13 @@ class WindowsAudioCapture(AudioCaptureStrategy):
 
         # 3. Safely open the Microphone stream
         try:
-            mic_device = self.p.get_default_input_device_info()
+            mic_device = (
+                self.p.get_device_info_by_index(int(device_id))
+                if device_id is not None
+                else self.p.get_default_input_device_info()
+            )
+            if mic_device.get("maxInputChannels", 0) < 1:
+                raise ValueError("Selected device is not an input device")
             self.mic_channels = mic_device["maxInputChannels"]
             
             self.mic_stream = self.p.open(
@@ -204,6 +230,8 @@ class WindowsAudioCapture(AudioCaptureStrategy):
         try:
             while self.is_recording and self.loopback_stream:
                 data = self.loopback_stream.read(1024, exception_on_overflow=False)
+                if self.is_paused:
+                    continue
                 if self.loopback_start_time is None:
                     self.loopback_start_time = time.perf_counter()
                 audio_data = np.frombuffer(data, dtype=np.int16)
@@ -222,6 +250,8 @@ class WindowsAudioCapture(AudioCaptureStrategy):
         try:
             while self.is_recording and self.mic_stream:
                 data = self.mic_stream.read(1024, exception_on_overflow=False)
+                if self.is_paused:
+                    continue
                 if self.mic_start_time is None:
                     self.mic_start_time = time.perf_counter()
                 audio_data = np.frombuffer(data, dtype=np.int16)
@@ -384,7 +414,7 @@ class MacosAudioCapture(AudioCaptureStrategy):
         self.is_paused = False
         print("DEBUG: [macOS] Recording resumed.", file=sys.stderr)
 
-    def start_recording(self, telemetry_callback=None, system_audio: bool = False):
+    def start_recording(self, telemetry_callback=None, system_audio: bool = False, device_id=None):
         if self.is_recording:
             return
         self.is_recording = True
@@ -417,6 +447,7 @@ class MacosAudioCapture(AudioCaptureStrategy):
                 channels=self.channels,
                 rate=self.sample_rate,
                 input=True,
+                input_device_index=int(device_id) if device_id is not None else None,
                 frames_per_buffer=1024,
             )
             self.mic_thread = threading.Thread(target=self._record, daemon=True)
@@ -528,7 +559,7 @@ class LinuxAudioCapture(AudioCaptureStrategy):
         self.is_paused = False
         print("DEBUG: [Linux] Recording resumed.", file=sys.stderr)
 
-    def start_recording(self, telemetry_callback=None, system_audio: bool = False):
+    def start_recording(self, telemetry_callback=None, system_audio: bool = False, device_id=None):
         if self.is_recording:
             return
 
@@ -550,7 +581,15 @@ class LinuxAudioCapture(AudioCaptureStrategy):
 
         # 1. Open default Microphone
         try:
-            self.mic = sc.default_microphone()
+            if device_id is None:
+                self.mic = sc.default_microphone()
+            else:
+                devices = sc.all_microphones(include_loopback=True, exclude_monitors=False)
+                selected = devices[int(device_id)]
+                name = selected.name.lower()
+                if "monitor" in name or "loopback" in name:
+                    raise ValueError("Selected device is not a microphone")
+                self.mic = selected
             self.mic_thread = threading.Thread(target=self._record_mic, daemon=True)
             self.mic_thread.start()
             print("DEBUG: [Linux] Microphone capture thread started.", file=sys.stderr)

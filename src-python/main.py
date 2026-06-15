@@ -16,6 +16,8 @@ from langchain_core.messages import SystemMessage, HumanMessage
 from rag_service import RAGService
 from config import DEFAULTS
 
+preflight_lock = threading.Lock()
+
 def get_app_data_dir():
     system = platform.system()
     if system == "Windows":
@@ -73,47 +75,53 @@ def send_event(event_type: str, payload: dict):
         logging.error(f"[send_event] Broken pipe — event lost: {event_type}")
 
 def run_preflight_check(transcriber, provider=None, model=None):
-    results = {
-        "audio_devices": False,
-        "transcription_model_loaded": False,
-        "llm_provider_reachable": True,
-        "errors": [],
-        "warnings": []
-    }
-    
+    if not preflight_lock.acquire(blocking=False):
+        return
+
     try:
-        devices = list_audio_devices()
-        if len(devices) > 0:
-            results["audio_devices"] = True
-        else:
-            results["errors"].append("No audio input devices detected. Please plug in a microphone.")
-    except Exception as e:
-        results["errors"].append(f"Audio device check failed: {str(e)}")
-        
-    if transcriber and transcriber.model is not None:
-        results["transcription_model_loaded"] = True
-    else:
-        results["errors"].append("WhisperX transcription model failed to load. Please verify your system has sufficient RAM/VRAM.")
-        
-    if provider == "ollama":
+        results = {
+            "audio_devices": False,
+            "transcription_model_loaded": False,
+            "llm_provider_reachable": True,
+            "errors": [],
+            "warnings": []
+        }
+
         try:
-            import urllib.request
-            req = urllib.request.Request("http://localhost:11434/api/tags", method="GET")
-            with urllib.request.urlopen(req, timeout=2.0) as response:
-                if response.status == 200:
-                    tags_data = json.loads(response.read().decode())
-                    models = [m.get("name") for m in tags_data.get("models", [])]
-                    if model and model not in models and f"{model}:latest" not in models:
-                        results["warnings"].append(f"Ollama model '{model}' is not currently downloaded. Please run 'ollama pull {model}'.")
+            devices = list_audio_devices()
+            if len(devices) > 0:
+                results["audio_devices"] = True
+            else:
+                results["errors"].append("No audio input devices detected. Please plug in a microphone.")
+        except Exception as e:
+            results["errors"].append(f"Audio device check failed: {str(e)}")
+
+        if transcriber and transcriber.model is not None:
+            results["transcription_model_loaded"] = True
+        else:
+            results["errors"].append("WhisperX transcription model failed to load. Please verify your system has sufficient RAM/VRAM.")
+
+        if provider == "ollama":
+            try:
+                import urllib.request
+                req = urllib.request.Request("http://localhost:11434/api/tags", method="GET")
+                with urllib.request.urlopen(req, timeout=2.0) as response:
+                    if response.status == 200:
+                        tags_data = json.loads(response.read().decode())
+                        models = [m.get("name") for m in tags_data.get("models", [])]
+                        if model and model not in models and f"{model}:latest" not in models:
+                            results["warnings"].append(f"Ollama model '{model}' is not currently downloaded. Please run 'ollama pull {model}'.")
+                            results["llm_provider_reachable"] = False
+                    else:
+                        results["errors"].append("Ollama service responded with error status.")
                         results["llm_provider_reachable"] = False
-                else:
-                    results["errors"].append("Ollama service responded with error status.")
-                    results["llm_provider_reachable"] = False
-        except Exception:
-            results["errors"].append("Ollama service is not running. Please start Ollama on your machine.")
-            results["llm_provider_reachable"] = False
-            
-    send_event("PREFLIGHT_RESULT", results)
+            except Exception:
+                results["errors"].append("Ollama service is not running. Please start Ollama on your machine.")
+                results["llm_provider_reachable"] = False
+
+        send_event("PREFLIGHT_RESULT", results)
+    finally:
+        preflight_lock.release()
 
 def main():
     setup_logging()
@@ -487,6 +495,7 @@ def main():
                     "api_key": command.get("api_key", ""),
                     "hf_token": command.get("hf_token", ""),
                     "is_test": command.get("is_test", False),
+                    "device_id": command.get("device_id"),
                 }
 
                 def on_telemetry(level: float):
@@ -495,7 +504,16 @@ def main():
                 audio_capturer.start_recording(
                     telemetry_callback=on_telemetry,
                     system_audio=current_config.get("system_audio", False),
+                    device_id=current_config.get("device_id"),
                 )
+
+            elif action == "PAUSE_RECORDING":
+                audio_capturer.pause_recording()
+                send_event("PIPELINE_STATUS", {"step": "Recording paused"})
+
+            elif action == "RESUME_RECORDING":
+                audio_capturer.resume_recording()
+                send_event("PIPELINE_STATUS", {"step": "Recording"})
 
             elif action == "STOP_RECORDING":
                 send_event("RECORDING_STATUS", {"is_recording": False})
@@ -527,10 +545,28 @@ def main():
                         speaker_diarization=diarize,
                         hf_token=hf_tok if diarize else None
                     )
+
+                    if not transcription_result.get("ok", False):
+                        error = transcription_result.get("error") or {}
+                        error_code = error.get("code", "TRANSCRIPTION_FAILED")
+                        error_message = error.get("message", "Transcription failed.")
+                        send_event("TRANSCRIPTION_FAILED", {
+                            "code": error_code,
+                            "message": error_message,
+                        })
+                        send_event("ERROR", {
+                            "message": f"Transcription failed: {error_message}",
+                            "code": error_code,
+                        })
+                        send_event("PIPELINE_STATUS", {"step": "Transcription failed."})
+                        continue
+
                     send_event("TRANSCRIPTION_COMPLETED", {
                         "text": transcription_result["text"],
                         "segments": transcription_result.get("segments"),
                         "diarized": transcription_result.get("diarized", False),
+                        "warnings": transcription_result.get("warnings", []),
+                        "schema_version": transcription_result.get("schema_version", 1),
                     })
 
                     # STEP C: Generate Notes — only if auto_summarize is enabled
@@ -551,12 +587,15 @@ def main():
                             api_key=api_key,
                             system_prompt=current_config.get("system_prompt", "") or None,
                             diarized_segments=transcription_result.get("segments") if transcription_result.get("diarized") else None,
-                            meeting_date=time.strftime("%Y-%m-%d %H:%M:%S")
+                            meeting_date=time.strftime("%Y-%m-%d %H:%M:%S"),
+                            transcript_segments=transcription_result.get("segments", []),
                         )
                         send_event("NOTES_GENERATED", {
                             "markdown": result.get("markdown", ""),
                             "structured": result.get("structured", {}),
                             "raw_transcript": transcription_result["text"],
+                            "transcript_segments": transcription_result.get("segments", []),
+                            "schema_version": transcription_result.get("schema_version", 1),
                         })
                         send_event("PIPELINE_STATUS", {"step": "Done."})
                     except Exception as e:

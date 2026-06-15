@@ -91,6 +91,11 @@ export function useRecording() {
     emitRecordingChange();
   });
 
+  usePythonEvent("TRANSCRIPTION_FAILED", (data) => {
+    globalStatus = `Transcription failed: ${data.message}`;
+    emitRecordingChange();
+  });
+
   const toggleRecording = async () => {
     try {
       if (globalIsRecording) {
@@ -102,6 +107,7 @@ export function useRecording() {
           payload: JSON.stringify({
             action: "START_RECORDING",
             system_audio: settings.systemAudio,
+            device_id: settings.selectedDeviceId,
             auto_summarize: settings.autoSummarize,
             speaker_diarization: settings.speakerDiarization,
             language: settings.language || "auto",

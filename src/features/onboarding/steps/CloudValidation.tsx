@@ -21,7 +21,8 @@ export function CloudValidation({ state, setState, onNext, onPrev }: Props) {
   };
 
   const validateKey = async () => {
-    if (!state.apiKey.trim()) {
+    const apiKey = state.apiKey.trim();
+    if (!apiKey) {
       setErrorMsg("Please enter an API key.");
       return;
     }
@@ -34,37 +35,35 @@ export function CloudValidation({ state, setState, onNext, onPrev }: Props) {
       let res;
       if (state.providerName === "openai") {
         res = await tauriFetch("https://api.openai.com/v1/models", {
-          headers: { Authorization: `Bearer ${state.apiKey}` },
+          headers: { Authorization: `Bearer ${apiKey}` },
         });
       } else if (state.providerName === "anthropic") {
-        res = await tauriFetch("https://api.anthropic.com/v1/messages", {
-          method: "POST",
+        res = await tauriFetch("https://api.anthropic.com/v1/models", {
           headers: {
-            "x-api-key": state.apiKey,
+            "x-api-key": apiKey,
             "anthropic-version": "2023-06-01",
-            "content-type": "application/json",
           },
-          body: JSON.stringify({
-            model: "claude-3-haiku-20240307",
-            max_tokens: 1,
-            messages: [{ role: "user", content: "hi" }],
-          }),
         });
       } else if (state.providerName === "gemini") {
-        res = await tauriFetch(`https://generativelanguage.googleapis.com/v1beta/models?key=${state.apiKey}`);
+        res = await tauriFetch(`https://generativelanguage.googleapis.com/v1beta/models?key=${encodeURIComponent(apiKey)}`);
       } else {
         throw new Error("Unknown provider");
       }
 
       if (res.ok) {
         setIsValid(true);
+        setState(s => ({ ...s, apiKey }));
+      } else if (res.status === 401 || res.status === 403) {
+        setErrorMsg("The credential was rejected. Check the key and its provider permissions.");
+      } else if (res.status === 429) {
+        setErrorMsg("The provider rate limit was reached. Wait briefly and try again.");
       } else {
         const txt = await res.text();
         console.error("API Error:", txt);
-        setErrorMsg(`Validation failed (${res.status}): ${res.statusText}`);
+        setErrorMsg(`Provider validation failed (HTTP ${res.status}). Please try again.`);
       }
     } catch (e: any) {
-      setErrorMsg(e.message || "Network error. Please try again.");
+      setErrorMsg(e?.message ? `Could not reach the provider: ${e.message}` : "Could not reach the provider.");
     } finally {
       setIsValidating(false);
     }
@@ -92,13 +91,13 @@ export function CloudValidation({ state, setState, onNext, onPrev }: Props) {
           />
           {!isValid && (
             <button className="btn-validate" onClick={validateKey} disabled={isValidating}>
-              {isValidating ? <span className="spinner-sm"></span> : "Validate"}
+              {isValidating ? <span className="spinner-sm"></span> : `Connect ${providerLabels[state.providerName] || "Provider"}`}
             </button>
           )}
         </div>
         
-        {errorMsg && <p className="error-msg">❌ {errorMsg}</p>}
-        {isValid && <p className="success-msg">✅ Key is valid!</p>}
+        {errorMsg && <p className="error-msg" role="alert">❌ {errorMsg}</p>}
+        {isValid && <p className="success-msg" role="status">✅ Connection verified.</p>}
 
         {isValid && (
           <button className="btn-text" onClick={() => setIsValid(false)}>

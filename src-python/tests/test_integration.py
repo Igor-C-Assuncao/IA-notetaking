@@ -75,8 +75,9 @@ def test_full_audio_to_summary_pipeline():
         speaker_diarization=False
     )
     
+    assert transcription_res["ok"] is True
+    assert transcription_res["error"] is None
     assert "text" in transcription_res
-    assert "[Transcription Error" not in transcription_res["text"]
     
     # Fallback to dummy transcript if Pyannote VAD correctly identified the synthetic 440Hz tone as silence
     transcript_to_summarize = transcription_res["text"].strip()
