@@ -146,6 +146,19 @@ src-python\.venv\Scripts\python.exe benchmarks\run_benchmark.py \
   --input benchmarks\datasets\example_fixture.json
 ```
 
+To exercise the report pipeline with generated prediction artifacts:
+
+```bash
+src-python\.venv\Scripts\python.exe benchmarks\run_benchmark.py \
+  --input benchmarks\datasets\example_fixture.json \
+  --generate-predictions \
+  --prediction-mode mock
+```
+
+For local full-pipeline baselines, use `--prediction-mode llm` with a configured
+provider/model and fixtures under `benchmarks/private/`. Transcript fixtures
+benchmark the meeting-intelligence stage; audio fixtures run transcription first.
+
 Generated reports are written to `benchmarks/reports/<timestamp>_<git-sha>/`.
 See [benchmarks/README.md](benchmarks/README.md) for the fixture contract and
 [docs/IMPLEMENTATION_PLAN_QUALITY_AND_CONFIGURATION.md](docs/IMPLEMENTATION_PLAN_QUALITY_AND_CONFIGURATION.md)
@@ -168,6 +181,13 @@ The deterministic `example-001` fixture validates the scorer and report pipeline
 | Pipeline completion rate | 1.000 |
 | Human factuality | 5.0 / 5 |
 | Human usefulness | 5.0 / 5 |
+
+Latest smoke runs:
+
+| Mode | Run | Commit | Result |
+|---|---|---|---|
+| Generated prediction artifacts (`--prediction-mode mock`) | `2026-06-16_135711_69308fe` | `69308fe` | PASS, weighted score `1.000` |
+| Precomputed prediction scoring | `2026-06-16_135712_69308fe` | `69308fe` | PASS, weighted score `1.000` |
 
 All configured release gates pass for this fixture. Speaker attribution was not
 measured. These smoke-test values verify benchmark correctness and must not be

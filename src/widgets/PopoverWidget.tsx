@@ -197,22 +197,6 @@ export function PopoverWidget() {
   usePythonEvent("DEVICE_LIST", (data) => setDevices(data.devices || []));
   usePythonEvent("VAD_TELEMETRY", (data) => setAudioLevel(data.level || 0));
 
-  useEffect(() => {
-    let handler: (() => void) | null = null;
-    const timer = setTimeout(() => {
-      handler = () => {
-        if (!isDirty && !isSaving) {
-          win.close();
-        }
-      };
-      window.addEventListener("blur", handler);
-    }, 300);
-    return () => {
-      clearTimeout(timer);
-      if (handler) window.removeEventListener("blur", handler);
-    };
-  }, [win, isDirty, isSaving]);
-
   const handleSave = async () => {
     if (isSaving) return;
     setIsSaving(true);

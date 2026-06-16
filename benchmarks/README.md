@@ -20,12 +20,40 @@ Large audio files, private meetings, cached model responses, and generated repor
 
 ## Run
 
-Prepare a JSON file using `datasets/example_fixture.json` as the contract, then run:
+Prepare a JSON file using `datasets/example_fixture.json` as the contract, then run the scorer-only path:
 
 ```powershell
 src-python\.venv\Scripts\python.exe benchmarks\run_benchmark.py `
   --input benchmarks\datasets\example_fixture.json
 ```
+
+To generate prediction artifacts before scoring, use:
+
+```powershell
+src-python\.venv\Scripts\python.exe benchmarks\run_benchmark.py `
+  --input benchmarks\datasets\example_fixture.json `
+  --generate-predictions `
+  --prediction-mode mock
+```
+
+`--prediction-mode mock` is deterministic and CI-safe. It copies `mock_predicted`,
+`predicted`, or reference fields into a prediction artifact so the report pipeline
+can be tested end to end without model downloads or network calls.
+
+For local full-pipeline baselines against a configured provider:
+
+```powershell
+src-python\.venv\Scripts\python.exe benchmarks\run_benchmark.py `
+  --input benchmarks\private\local_baseline.json `
+  --generate-predictions `
+  --prediction-mode llm `
+  --provider ollama `
+  --model llama3
+```
+
+Fixtures can provide either `input.transcript` or `input.audio_path`. Audio
+fixtures run transcription before summarization; transcript fixtures skip
+transcription and benchmark the meeting-intelligence stage.
 
 The command exits with `0` when every configured release gate passes and `2` when a gate fails.
 The printed path is the generated result folder.

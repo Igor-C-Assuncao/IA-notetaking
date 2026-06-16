@@ -4,6 +4,7 @@ import json
 import platform
 import subprocess
 import sys
+import time
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -18,6 +19,9 @@ from scorers import (
 
 
 ROOT = Path(__file__).resolve().parent
+SRC_PYTHON = ROOT.parent / "src-python"
+if str(SRC_PYTHON) not in sys.path:
+    sys.path.insert(0, str(SRC_PYTHON))
 
 
 def load_simple_yaml(path: Path) -> dict:
@@ -66,6 +70,113 @@ def git_sha() -> str:
 
 def mean(values: list[float], default: float = 0.0) -> float:
     return sum(values) / len(values) if values else default
+
+
+def load_fixtures(path: Path) -> tuple[dict, list[dict]]:
+    payload = json.loads(path.read_text(encoding="utf-8"))
+    fixtures = payload["fixtures"] if isinstance(payload, dict) else payload
+    return payload if isinstance(payload, dict) else {"schema_version": 2}, fixtures
+
+
+def fixture_transcript(fixture: dict) -> str:
+    inputs = fixture.get("input", {})
+    if inputs.get("transcript"):
+        return inputs["transcript"]
+    return fixture.get("reference", {}).get("transcript", "")
+
+
+def build_mock_prediction(fixture: dict) -> dict:
+    if fixture.get("mock_predicted"):
+        return fixture["mock_predicted"]
+    if fixture.get("predicted"):
+        return fixture["predicted"]
+    reference = fixture.get("reference", {})
+    return {
+        "transcript": fixture_transcript(fixture),
+        "pipeline_completed": True,
+        "structured": reference.get("structured", {}),
+        "mode": "mock_reference_copy",
+    }
+
+
+def generate_prediction(fixture: dict, mode: str, provider: str, model: str, api_key: str) -> dict:
+    if mode == "mock":
+        return build_mock_prediction(fixture)
+
+    started = time.perf_counter()
+    transcript = fixture_transcript(fixture)
+    segments = fixture.get("input", {}).get("transcript_segments")
+
+    if fixture.get("input", {}).get("audio_path"):
+        from transcription_service import TranscriptionService
+
+        audio_path = Path(fixture["input"]["audio_path"])
+        if not audio_path.is_absolute():
+            audio_path = (ROOT.parent / audio_path).resolve()
+        transcriber = TranscriptionService()
+        transcription = transcriber.transcribe(
+            str(audio_path),
+            language=fixture.get("input", {}).get("language"),
+            speaker_diarization=fixture.get("input", {}).get("speaker_diarization", False),
+            hf_token=fixture.get("input", {}).get("hf_token"),
+        )
+        if not transcription.get("ok"):
+            return {
+                "transcript": "",
+                "pipeline_completed": False,
+                "structured": {},
+                "error": transcription.get("error"),
+                "mode": mode,
+            }
+        transcript = transcription.get("text", "")
+        segments = transcription.get("segments")
+
+    from llm_service import MeetingWorkflowEngine
+
+    engine = MeetingWorkflowEngine(
+        provider_name=fixture.get("input", {}).get("provider", provider),
+        model_name=fixture.get("input", {}).get("model", model),
+        api_key=fixture.get("input", {}).get("api_key", api_key),
+        system_prompt=fixture.get("input", {}).get("system_prompt"),
+    )
+    result = engine.run(
+        transcript=transcript,
+        diarized_segments=segments if fixture.get("input", {}).get("speaker_diarization") else None,
+        meeting_date=fixture.get("input", {}).get("meeting_date"),
+        transcript_segments=segments,
+    )
+    return {
+        "transcript": transcript,
+        "pipeline_completed": True,
+        "structured": result.get("structured", {}),
+        "markdown": result.get("markdown", ""),
+        "mode": mode,
+        "latency_seconds": round(time.perf_counter() - started, 3),
+    }
+
+
+def materialize_predictions(
+    fixtures: list[dict],
+    run_dir: Path,
+    mode: str,
+    provider: str,
+    model: str,
+    api_key: str,
+) -> list[dict]:
+    predictions_dir = run_dir / "predictions"
+    predictions_dir.mkdir(parents=True, exist_ok=True)
+    materialized = []
+    for fixture in fixtures:
+        updated = dict(fixture)
+        prediction = generate_prediction(fixture, mode, provider, model, api_key)
+        updated["predicted"] = prediction
+        prediction_path = predictions_dir / f"{fixture['fixture_id']}.json"
+        prediction_path.write_text(
+            json.dumps(prediction, indent=2, ensure_ascii=False) + "\n",
+            encoding="utf-8",
+        )
+        materialized.append(updated)
+    return materialized
 
 
 def score_fixture(fixture: dict) -> dict:
@@ -119,6 +230,7 @@ def score_fixture(fixture: dict) -> dict:
         ),
         "human_factuality": fixture.get("human_review", {}).get("factuality"),
         "human_usefulness": fixture.get("human_review", {}).get("usefulness"),
+        "latency_seconds": predicted.get("latency_seconds"),
     }
 
 
@@ -177,6 +289,7 @@ def aggregate(fixtures: list[dict], weights: dict) -> dict:
                 "speaker_attribution_accuracy",
                 "human_factuality",
                 "human_usefulness",
+                "latency_seconds",
             )
         },
         "category_scores": categories,
@@ -230,7 +343,7 @@ def write_summary(path: Path, report: dict) -> None:
 
 
 def main() -> int:
-    parser = argparse.ArgumentParser(description="Score prepared meeting benchmark fixtures.")
+    parser = argparse.ArgumentParser(description="Run and score prepared meeting benchmark fixtures.")
     parser.add_argument(
         "--input",
         type=Path,
@@ -238,19 +351,42 @@ def main() -> int:
         help="JSON file containing a fixtures array with reference and predicted output.",
     )
     parser.add_argument("--output-dir", type=Path, default=ROOT / "reports")
+    parser.add_argument(
+        "--generate-predictions",
+        action="store_true",
+        help="Generate predicted outputs from fixture input before scoring.",
+    )
+    parser.add_argument(
+        "--prediction-mode",
+        choices=["mock", "llm"],
+        default="mock",
+        help="Prediction backend. Use mock for deterministic CI; llm for local full-pipeline baselines.",
+    )
+    parser.add_argument("--provider", default="ollama")
+    parser.add_argument("--model", default="llama3")
+    parser.add_argument("--api-key", default="")
     args = parser.parse_args()
 
     config = load_simple_yaml(ROOT / "config.yaml")
-    payload = json.loads(args.input.read_text(encoding="utf-8"))
-    fixtures = payload["fixtures"] if isinstance(payload, dict) else payload
-    scored = [score_fixture(fixture) for fixture in fixtures]
-    aggregate_result = aggregate(scored, config["weights"])
-    gates = evaluate_thresholds(aggregate_result["metrics"], config["thresholds"])
-
     started_at = datetime.now(timezone.utc)
     run_id = f"{started_at.strftime('%Y-%m-%d_%H%M%S')}_{git_sha()}"
     run_dir = args.output_dir / run_id
     run_dir.mkdir(parents=True, exist_ok=False)
+    payload, fixtures = load_fixtures(args.input)
+
+    if args.generate_predictions:
+        fixtures = materialize_predictions(
+            fixtures,
+            run_dir,
+            args.prediction_mode,
+            args.provider,
+            args.model,
+            args.api_key,
+        )
+
+    scored = [score_fixture(fixture) for fixture in fixtures]
+    aggregate_result = aggregate(scored, config["weights"])
+    gates = evaluate_thresholds(aggregate_result["metrics"], config["thresholds"])
     report = {
         "run_id": run_id,
         "started_at": started_at.isoformat(),
@@ -259,6 +395,13 @@ def main() -> int:
         "python": sys.version,
         "platform": platform.platform(),
         "schema_version": payload.get("schema_version", 2) if isinstance(payload, dict) else 2,
+        "input_file": str(args.input),
+        "prediction_generation": {
+            "enabled": args.generate_predictions,
+            "mode": args.prediction_mode if args.generate_predictions else "precomputed",
+            "provider": args.provider if args.generate_predictions else None,
+            "model": args.model if args.generate_predictions else None,
+        },
         "fixture_count": len(scored),
         "fixtures": scored,
         "aggregate": aggregate_result,

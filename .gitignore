@@ -51,6 +51,7 @@ src-python/build/
 !src-tauri/.vscode/extensions.json
 !benchmarks/manifest.json
 !benchmarks/datasets/example_fixture.json
+!src-python/model_manifest.json
 settings.json
 
 # Local Database
