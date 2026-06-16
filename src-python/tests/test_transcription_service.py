@@ -1,9 +1,14 @@
+import os
 from unittest.mock import MagicMock, patch
+
 from transcription_service import TranscriptionService
+
+REAL_INIT_ENV = {"IS_TESTING": "0"}
 
 def test_transcription_service_hardware_detection_cuda():
     # Mocking cuda to be available
-    with patch("torch.cuda.is_available", return_value=True), \
+    with patch.dict(os.environ, REAL_INIT_ENV), \
+         patch("torch.cuda.is_available", return_value=True), \
          patch("whisperx.load_model") as mock_load_model:
         
         service = TranscriptionService()
@@ -15,7 +20,8 @@ def test_transcription_service_hardware_detection_cuda():
 
 def test_transcription_service_hardware_detection_mps():
     # Mocking cuda unavailable, mps available
-    with patch("torch.cuda.is_available", return_value=False), \
+    with patch.dict(os.environ, REAL_INIT_ENV), \
+         patch("torch.cuda.is_available", return_value=False), \
          patch("torch.backends.mps.is_available", return_value=True), \
          patch("whisperx.load_model") as mock_load_model:
         
@@ -28,7 +34,8 @@ def test_transcription_service_hardware_detection_mps():
 
 def test_transcription_service_hardware_detection_cpu_fallback():
     # Mocking cuda/mps unavailable, testing standard cpu path
-    with patch("torch.cuda.is_available", return_value=False), \
+    with patch.dict(os.environ, REAL_INIT_ENV), \
+         patch("torch.cuda.is_available", return_value=False), \
          patch("torch.backends.mps.is_available", return_value=False), \
          patch("whisperx.load_model") as mock_load_model:
         
@@ -41,11 +48,12 @@ def test_transcription_service_hardware_detection_cpu_fallback():
 
 def test_transcription_service_gpu_failure_cpu_fallback():
     # GPU is available but loading model fails, causing CPU fallback
-    with patch("torch.cuda.is_available", return_value=True), \
+    with patch.dict(os.environ, REAL_INIT_ENV), \
+         patch("torch.cuda.is_available", return_value=True), \
          patch("whisperx.load_model") as mock_load_model:
         
         # Raise error on cuda loading, succeed on cpu
-        def side_effect(model_name, device, compute_type):
+        def side_effect(model_name, device, compute_type, download_root=None):
             if device == "cuda":
                 raise RuntimeError("CUDA out of memory")
             return MagicMock()
@@ -57,7 +65,8 @@ def test_transcription_service_gpu_failure_cpu_fallback():
         assert service.compute_type == "int8"
 
 def test_transcribe_missing_or_empty_file():
-    with patch("torch.cuda.is_available", return_value=False), \
+    with patch.dict(os.environ, REAL_INIT_ENV), \
+         patch("torch.cuda.is_available", return_value=False), \
          patch("whisperx.load_model"):
         
         service = TranscriptionService()
@@ -79,7 +88,8 @@ def test_transcribe_missing_or_empty_file():
             assert "empty" in res["error"]["message"]
 
 def test_transcribe_plain_success():
-    with patch("torch.cuda.is_available", return_value=False), \
+    with patch.dict(os.environ, REAL_INIT_ENV), \
+         patch("torch.cuda.is_available", return_value=False), \
          patch("whisperx.load_model") as mock_load_model:
         
         mock_model = MagicMock()
@@ -111,7 +121,8 @@ def test_transcribe_plain_success():
             assert res["error"] is None
 
 def test_transcribe_diarization_without_token():
-    with patch("torch.cuda.is_available", return_value=False), \
+    with patch.dict(os.environ, REAL_INIT_ENV), \
+         patch("torch.cuda.is_available", return_value=False), \
          patch("whisperx.load_model") as mock_load_model:
         
         mock_model = MagicMock()
@@ -134,7 +145,8 @@ def test_transcribe_diarization_without_token():
             assert res["diarized"] is False
 
 def test_transcribe_diarization_success():
-    with patch("torch.cuda.is_available", return_value=False), \
+    with patch.dict(os.environ, REAL_INIT_ENV), \
+         patch("torch.cuda.is_available", return_value=False), \
          patch("whisperx.load_model") as mock_load_model:
         
         mock_model = MagicMock()
@@ -169,7 +181,8 @@ def test_transcribe_diarization_success():
             assert res["diarized"] is True
 
 def test_transcribe_runtime_failure_returns_structured_error():
-    with patch("torch.cuda.is_available", return_value=False), \
+    with patch.dict(os.environ, REAL_INIT_ENV), \
+         patch("torch.cuda.is_available", return_value=False), \
          patch("whisperx.load_model") as mock_load_model:
 
         mock_model = MagicMock()

@@ -1,8 +1,17 @@
-# src-python/tests/test_audio_capture.py
-import numpy as np
-import audio_capture
+import sys
 from unittest.mock import MagicMock, patch
-from audio_capture import WindowsAudioCapture
+
+import numpy as np
+import pytest
+
+pytestmark = pytest.mark.skipif(
+    sys.platform != "win32",
+    reason="Windows audio capture tests require WASAPI/PyAudio",
+)
+
+if sys.platform == "win32":
+    import audio_capture
+    from audio_capture import WindowsAudioCapture
 
 def test_stream_alignment_mic_starts_later():
     """Verifies that if the microphone starts recording later, padding is prepended to it."""
