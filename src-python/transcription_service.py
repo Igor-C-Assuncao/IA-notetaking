@@ -4,6 +4,7 @@ import os
 import traceback
 import torch
 import whisperx
+from config import DEFAULTS
 from schemas import SCHEMA_VERSION, TranscriptSegment, TranscriptWord
 
 # Suppress excessive TensorFlow/oneDNN warnings
@@ -44,8 +45,9 @@ class TranscriptionService:
             self.compute_type = "int8"
             print("DEBUG: [AI Warning] Nenhuma GPU compatível encontrada. Rodando via CPU.", file=sys.stderr)
 
+        self.model_name = os.environ.get("AI_NOTETAKING_WHISPER_MODEL") or DEFAULTS["whisper_model"]
         print(
-            f"DEBUG: [AI] Carregando modelo WhisperX 'base' via "
+            f"DEBUG: [AI] Carregando modelo WhisperX '{self.model_name}' via "
             f"{self.device.upper()} usando {self.compute_type}...",
             file=sys.stderr,
         )
@@ -60,7 +62,10 @@ class TranscriptionService:
 
         try:
             self.model = whisperx.load_model(
-                "base", self.device, compute_type=self.compute_type, download_root=download_root
+                self.model_name,
+                self.device,
+                compute_type=self.compute_type,
+                download_root=download_root,
             )
         except Exception as e:
             print(
@@ -72,7 +77,10 @@ class TranscriptionService:
                 self.device = "cpu"
                 self.compute_type = "int8"
                 self.model = whisperx.load_model(
-                    "base", self.device, compute_type=self.compute_type, download_root=download_root
+                    self.model_name,
+                    self.device,
+                    compute_type=self.compute_type,
+                    download_root=download_root,
                 )
             except Exception as fallback_error:
                 print(

@@ -147,4 +147,12 @@ describe("PopoverWidget Toggle Components", () => {
     expect(screen.getByRole("switch")).toHaveAttribute("aria-checked", "true");
     expect(mockClose).not.toHaveBeenCalled();
   });
+
+  test("does not close the settings window when focus moves away", () => {
+    render(<PopoverWidget />);
+
+    fireEvent.blur(window);
+
+    expect(mockClose).not.toHaveBeenCalled();
+  });
 });

@@ -4,7 +4,7 @@ from typing import TypedDict
 from langgraph.graph import StateGraph, START, END
 from langchain_core.messages import SystemMessage, HumanMessage
 import json as json_lib
-from config import DEFAULTS
+from config import DEFAULTS, load_model_manifest
 from schemas import ActionItem, Decision, SCHEMA_VERSION
 
 def extract_json_payload(text: str) -> str:
@@ -636,15 +636,16 @@ class LLMFactory:
         Returns the LangGraph Strategy configured for the chosen provider.
         """
         provider_name = provider_name.lower()
+        manifest_defaults = load_model_manifest().get("llm_defaults", {})
         
         # Set default models if none provided by the frontend
         if provider_name == "ollama" and not model_config:
-            model_config = DEFAULTS["model"]
+            model_config = manifest_defaults.get("ollama", DEFAULTS["model"])
         elif provider_name == "openai" and not model_config:
-            model_config = "gpt-4o"
+            model_config = manifest_defaults.get("openai", "gpt-4o")
         elif provider_name == "gemini" and not model_config:
-            model_config = "gemini-2.5-flash"
+            model_config = manifest_defaults.get("gemini", "gemini-2.5-flash")
         elif provider_name == "anthropic" and not model_config:
-            model_config = "claude-3-haiku-20240307"
+            model_config = manifest_defaults.get("anthropic", "claude-3-haiku-20240307")
             
         return LangGraphStrategy(provider_name, model_config)

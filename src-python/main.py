@@ -3,7 +3,6 @@ import sys
 import json
 import time
 import os
-import platform
 import logging
 from logging.handlers import TimedRotatingFileHandler
 import threading
@@ -14,25 +13,12 @@ from transcription_service import TranscriptionService
 from llm_service import LLMFactory, MeetingWorkflowEngine
 from langchain_core.messages import SystemMessage, HumanMessage
 from rag_service import RAGService
-from config import DEFAULTS
+from config import DEFAULTS, get_app_data_dir
 
 preflight_lock = threading.Lock()
 
-def get_app_data_dir():
-    system = platform.system()
-    if system == "Windows":
-        base = os.environ.get("APPDATA", os.path.expanduser("~\\AppData\\Roaming"))
-    elif system == "Darwin":
-        base = os.path.expanduser("~/Library/Application Support")
-    else:
-        base = os.environ.get("XDG_DATA_HOME", os.path.expanduser("~/.local/share"))
-    
-    app_dir = os.path.join(base, "com.opensource.ainotetaker")
-    os.makedirs(app_dir, exist_ok=True)
-    return app_dir
-
 def setup_logging():
-    app_data_dir = get_app_data_dir()
+    app_data_dir = str(get_app_data_dir())
     logs_dir = os.path.join(app_data_dir, "logs")
     os.makedirs(logs_dir, exist_ok=True)
     

@@ -3,6 +3,12 @@
   "fixtures": [
     {
       "fixture_id": "example-001",
+      "input": {
+        "modality": "transcript",
+        "transcript": "Alice will send the launch report by Friday. The team chose Postgres.",
+        "language": "en",
+        "meeting_date": "2026-06-15"
+      },
       "reference": {
         "transcript": "Alice will send the launch report by Friday. The team chose Postgres.",
         "structured": {
