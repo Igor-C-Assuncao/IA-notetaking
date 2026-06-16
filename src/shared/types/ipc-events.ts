@@ -10,8 +10,9 @@ export type PythonEvent =
   | { event: "VAD_TELEMETRY"; data: { level: number } }
   | { event: "RECORDING_STATUS"; data: { is_recording: boolean } }
   | { event: "PIPELINE_STATUS"; data: { step: string } }
-  | { event: "TRANSCRIPTION_COMPLETED"; data: { text: string; segments: any[] | null; diarized: boolean } }
-  | { event: "NOTES_GENERATED"; data: { markdown: string; structured: any; raw_transcript?: string } }
+  | { event: "TRANSCRIPTION_COMPLETED"; data: { text: string; segments: TranscriptSegment[]; diarized: boolean; warnings?: string[]; schema_version: number } }
+  | { event: "TRANSCRIPTION_FAILED"; data: { code: string; message: string } }
+  | { event: "NOTES_GENERATED"; data: { markdown: string; structured: StructuredSummary; raw_transcript?: string; transcript_segments?: TranscriptSegment[]; schema_version?: number } }
   | { event: "ERROR"; data: { message: string } }
   | { event: "PREFLIGHT_RESULT"; data: any }
   | { event: "SIDECAR_DOWN"; data: null }
@@ -25,3 +26,4 @@ export type PythonEvent =
   | { event: "BACKFILL_COMPLETED"; data: { success: boolean; count?: number; error?: string } }
   | { event: "COPILOT_STREAM"; data: { chunk: string } }
   | { event: "COPILOT_COMPLETED"; data: { success: boolean; answer?: string; error?: string } };
+import type { StructuredSummary, TranscriptSegment } from "@features/summary/types";

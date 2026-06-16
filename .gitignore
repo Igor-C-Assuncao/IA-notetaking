@@ -8,6 +8,12 @@ pnpm-debug.log*
 lerna-debug.log*
 
 node_modules
+benchmarks/reports/*
+!benchmarks/reports/.gitkeep
+benchmarks/datasets/*
+!benchmarks/datasets/.gitkeep
+benchmarks/private/*
+!benchmarks/private/.gitkeep
 dist
 dist-ssr
 *.local
@@ -31,6 +37,8 @@ src-python/__pycache__
 
 src-python/.venv
 src-python/venv
+src-python/.venv-sidecar-*
+src-python/build/
 
 # Tauri Secure Store
 *.json
@@ -41,6 +49,8 @@ src-python/venv
 !src-tauri/tauri.conf.json
 !src-tauri/capabilities/default.json
 !src-tauri/.vscode/extensions.json
+!benchmarks/manifest.json
+!benchmarks/datasets/example_fixture.json
 settings.json
 
 # Local Database

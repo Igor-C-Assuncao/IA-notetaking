@@ -1,10 +1,17 @@
-# src-python/tests/test_audio_capture.py
-import pytest
-import numpy as np
-import os
-import wave
+import sys
 from unittest.mock import MagicMock, patch
-from audio_capture import WindowsAudioCapture
+
+import numpy as np
+import pytest
+
+pytestmark = pytest.mark.skipif(
+    sys.platform != "win32",
+    reason="Windows audio capture tests require WASAPI/PyAudio",
+)
+
+if sys.platform == "win32":
+    import audio_capture
+    from audio_capture import WindowsAudioCapture
 
 def test_stream_alignment_mic_starts_later():
     """Verifies that if the microphone starts recording later, padding is prepended to it."""
@@ -124,3 +131,36 @@ def test_torchaudio_resample_fallback_on_exception():
         mock_wf = mock_wave.return_value.__enter__.return_value
         mock_wf.setnchannels.assert_called_with(1)
         mock_wf.setframerate.assert_called_with(16000)
+
+def test_windows_pause_and_resume_toggle_capture_state():
+    capture = WindowsAudioCapture()
+
+    capture.pause_recording()
+    assert capture.is_paused is True
+
+    capture.resume_recording()
+    assert capture.is_paused is False
+
+def test_windows_uses_selected_microphone_device():
+    capture = WindowsAudioCapture()
+    selected_device = {"index": 7, "maxInputChannels": 1}
+
+    with patch("audio_capture.pyaudio.PyAudio") as mock_pyaudio, \
+         patch("audio_capture.threading.Thread") as mock_thread:
+        instance = mock_pyaudio.return_value
+        instance.get_device_info_by_index.return_value = selected_device
+
+        capture.start_recording(device_id=7)
+
+        instance.get_device_info_by_index.assert_called_once_with(7)
+        instance.open.assert_called_once_with(
+            format=audio_capture.pyaudio.paInt16,
+            channels=1,
+            rate=48000,
+            input=True,
+            input_device_index=7,
+            frames_per_buffer=1024,
+        )
+        mock_thread.assert_called_once()
+
+        capture.stop_recording()

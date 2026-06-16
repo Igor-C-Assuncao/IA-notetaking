@@ -119,11 +119,15 @@ class RAGService:
         self.chunks = []
         self.vectors = None
         if os.path.exists(self.index_path):
-            try: os.remove(self.index_path)
-            except Exception: pass
+            try:
+                os.remove(self.index_path)
+            except Exception:
+                pass
         if os.path.exists(self.vectors_path):
-            try: os.remove(self.vectors_path)
-            except Exception: pass
+            try:
+                os.remove(self.vectors_path)
+            except Exception:
+                pass
         print("DEBUG: [RAG] Vector index cleared.", flush=True)
 
     def chunk_text(self, text: str, word_limit: int = 150, overlap: int = 50) -> list:

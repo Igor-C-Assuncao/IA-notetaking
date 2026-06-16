@@ -1,0 +1,7 @@
+--extra-index-url https://download.pytorch.org/whl/cpu
+-r requirements-runtime.txt
+
+torch==2.8.0+cpu
+torchaudio==2.8.0+cpu
+torchvision==0.23.0+cpu
+pyinstaller==6.16.0

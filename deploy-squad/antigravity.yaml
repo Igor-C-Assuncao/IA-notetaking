@@ -1,0 +1,22 @@
+version: "2.0"
+
+router_agent:
+  model: "gemini-3.5-flash"
+  skill: "agents/central_router.md"
+  description: "Analyzes incoming deployment payloads and routes tasks to specialized subagents."
+
+subagents:
+  - name: "code_reviewer"
+    skill: "agents/code_reviewer/prompt.md"
+    tools: "agents/code_reviewer/tools.py"
+    description: "Reviews source code for design patterns, SOLID principles, and clean code architecture."
+
+  - name: "ml_guardian"
+    skill: "agents/ml_guardian/prompt.md"
+    tools: "agents/ml_guardian/tools.py"
+    description: "Audits MLOps lifecycles, training data drift, feature stores, and LLM agent pipelines."
+
+  - name: "iso_compliance"
+    skill: "agents/iso_compliance/prompt.md"
+    tools: "agents/iso_compliance/tools.py"
+    description: "Audits codebases and data structures against international standards like ISO 25010 and ISO 42001."

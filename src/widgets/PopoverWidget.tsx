@@ -9,7 +9,7 @@ import { usePythonEvent } from "@app/providers/IpcProvider";
 import { AudioDevice } from "@shared/types/ipc-events";
 
 export function PopoverWidget() {
-  const { settings, updateSettings, loading } = useSettings();
+  const { settings, updateSettings, getProviderApiKey, loading } = useSettings();
   const { isLG } = useTheme();
   
   const [localSettings, setLocalSettings] = useState(settings);
@@ -22,7 +22,12 @@ export function PopoverWidget() {
   const [copiedPrompt, setCopiedPrompt] = useState(false);
   const [isTestingMic, setIsTestingMic] = useState(false);
   const [testCountdown, setTestCountdown] = useState(0);
+  const [savedSettings, setSavedSettings] = useState(settings);
+  const [isSaving, setIsSaving] = useState(false);
+  const [saveError, setSaveError] = useState("");
+  const [isLoadingProviderKey, setIsLoadingProviderKey] = useState(false);
   const win = getCurrentWindow();
+  const isDirty = JSON.stringify(localSettings) !== JSON.stringify(savedSettings);
 
   // Sprint 15: Sidecar Supervisor & Preflight Diagnostic States
   const [sidecarState, setSidecarState] = useState<"up" | "down" | "restarting" | "failed">("up");
@@ -181,6 +186,7 @@ export function PopoverWidget() {
   useEffect(() => {
     if (!loading) {
       setLocalSettings(settings);
+      setSavedSettings(settings);
     }
   }, [settings, loading]);
 
@@ -194,18 +200,57 @@ export function PopoverWidget() {
   useEffect(() => {
     let handler: (() => void) | null = null;
     const timer = setTimeout(() => {
-      handler = () => win.close();
+      handler = () => {
+        if (!isDirty && !isSaving) {
+          win.close();
+        }
+      };
       window.addEventListener("blur", handler);
     }, 300);
     return () => {
       clearTimeout(timer);
       if (handler) window.removeEventListener("blur", handler);
     };
-  }, [win]);
+  }, [win, isDirty, isSaving]);
 
   const handleSave = async () => {
-    await updateSettings(localSettings);
+    if (isSaving) return;
+    setIsSaving(true);
+    setSaveError("");
+    try {
+      await updateSettings(localSettings);
+      setSavedSettings(localSettings);
+      await win.close();
+    } catch (error) {
+      console.error("Failed to save settings:", error);
+      setSaveError("Could not save changes. Your edits are still here. Please try again.");
+    } finally {
+      setIsSaving(false);
+    }
+  };
+
+  const handleClose = async () => {
+    if (isSaving) return;
+    if (isDirty && !confirm("Discard your unsaved changes?")) {
+      return;
+    }
     await win.close();
+  };
+
+  const handleProviderChange = async (provider: string) => {
+    if (provider === localSettings.provider) return;
+
+    setIsLoadingProviderKey(true);
+    setSaveError("");
+    try {
+      const apiKey = await getProviderApiKey(provider);
+      setLocalSettings((current) => ({ ...current, provider, apiKey }));
+    } catch (error) {
+      console.error("Failed to load provider API key:", error);
+      setSaveError("Could not load the saved credential for this provider.");
+    } finally {
+      setIsLoadingProviderKey(false);
+    }
   };
 
   const handleResetSetup = async () => {
@@ -248,7 +293,7 @@ Your task is to analyze this transcript and generate a premium-grade executive s
       <div className="popover-drag-handle" data-tauri-drag-region />
       <div className="popover-header" data-tauri-drag-region>
         <span className="popover-title">Configuration</span>
-        <button className="popover-close" onClick={() => win.close()}>✕</button>
+        <button className="popover-close" aria-label="Close settings" onClick={handleClose}>✕</button>
       </div>
 
       <style>{`
@@ -429,7 +474,12 @@ Your task is to analyze this transcript and generate a premium-grade executive s
           <div className="popover-tab-content">
             <div className="popover-section">
               <label className="popover-label">AI Provider</label>
-              <select className="popover-select" value={localSettings.provider} onChange={(e) => setLocalSettings({ ...localSettings, provider: e.target.value })}>
+              <select
+                className="popover-select"
+                value={localSettings.provider}
+                onChange={(e) => handleProviderChange(e.target.value)}
+                disabled={isLoadingProviderKey || isSaving}
+              >
                 <option value="ollama">Ollama (Local)</option>
                 <option value="openai">OpenAI</option>
                 <option value="gemini">Google Gemini</option>
@@ -456,7 +506,11 @@ Your task is to analyze this transcript and generate a premium-grade executive s
                   value={localSettings.apiKey || ""}
                   onChange={(e) => setLocalSettings({ ...localSettings, apiKey: e.target.value })}
                   placeholder="sk-..."
+                  disabled={isLoadingProviderKey || isSaving}
                 />
+                {isLoadingProviderKey && (
+                  <span className="popover-toggle-hint" role="status">Loading saved credential...</span>
+                )}
               </div>
             )}
 
@@ -714,10 +768,17 @@ Your task is to analyze this transcript and generate a premium-grade executive s
       <div className="popover-footer-bar">
         <button className="popover-btn secondary" onClick={() => setShowShortcuts(true)}>Shortcuts</button>
         <div style={{ marginLeft: "auto", display: "flex", gap: "8px" }}>
-          <button className="popover-btn secondary" onClick={() => win.close()}>Cancel</button>
-          <button className="popover-btn primary" onClick={handleSave}>Save Changes</button>
+          <button className="popover-btn secondary" onClick={handleClose} disabled={isSaving}>Cancel</button>
+          <button className="popover-btn primary" onClick={handleSave} disabled={isSaving || isLoadingProviderKey || !isDirty}>
+            {isSaving ? "Saving..." : "Save Changes"}
+          </button>
         </div>
       </div>
+      {saveError && (
+        <div className="popover-save-error" role="alert">
+          {saveError}
+        </div>
+      )}
 
       {showShortcuts && <ShortcutsModal onClose={() => setShowShortcuts(false)} isLG={isLG} />}
     </div>

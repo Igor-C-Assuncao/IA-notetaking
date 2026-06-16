@@ -16,6 +16,7 @@ export interface WizardState {
   hfToken: string;
   diarization: boolean;
   theme: string;
+  selectedDeviceId: number | null;
 }
 
 export function OnboardingWizard() {
@@ -30,7 +31,10 @@ export function OnboardingWizard() {
     hfToken: "",
     diarization: false,
     theme: settings.theme || "liquid-glass",
+    selectedDeviceId: settings.selectedDeviceId,
   });
+  const [finishError, setFinishError] = useState("");
+  const [isFinishing, setIsFinishing] = useState(false);
 
   useEffect(() => {
     invoke("set_wizard_mode").catch(console.error);
@@ -40,18 +44,27 @@ export function OnboardingWizard() {
   const handlePrev = () => setStep((s) => s - 1);
 
   const handleFinish = async () => {
-    await updateSettings({
-      provider: wizardState.providerName,
-      modelName: wizardState.model,
-      apiKey: wizardState.apiKey,
-      theme: wizardState.theme,
-      speakerDiarization: wizardState.diarization,
-      onboarding_completed: true,
-    });
-    
-    // Resume to compact mode
-    await invoke("set_compact_mode").catch(console.error);
-    // The component will unmount because App.tsx checks settings.onboarding_completed
+    setIsFinishing(true);
+    setFinishError("");
+    try {
+      await updateSettings({
+        provider: wizardState.providerName,
+        modelName: wizardState.model,
+        apiKey: wizardState.apiKey,
+        hf_token: wizardState.hfToken,
+        theme: wizardState.theme,
+        speakerDiarization: wizardState.diarization,
+        selectedDeviceId: wizardState.selectedDeviceId,
+        onboarding_completed: true,
+      });
+
+      await invoke("set_compact_mode").catch(console.error);
+    } catch (error) {
+      console.error("Failed to finish onboarding:", error);
+      setFinishError("Could not save your setup. Please try again.");
+    } finally {
+      setIsFinishing(false);
+    }
   };
 
   const skipSetup = async () => {
@@ -74,7 +87,7 @@ export function OnboardingWizard() {
       case 3:
         return <HuggingFaceSetup state={wizardState} setState={setWizardState} onNext={handleNext} onPrev={handlePrev} />;
       case 4:
-        return <ThemeAndDevice state={wizardState} setState={setWizardState} onFinish={handleFinish} onPrev={handlePrev} />;
+        return <ThemeAndDevice state={wizardState} setState={setWizardState} onFinish={handleFinish} onPrev={handlePrev} isFinishing={isFinishing} />;
       default:
         return null;
     }
@@ -89,6 +102,7 @@ export function OnboardingWizard() {
       
       <div className="wizard-body">
         {renderStep()}
+        {finishError && <p className="wizard-error" role="alert">{finishError}</p>}
       </div>
 
       <style>{`
@@ -123,6 +137,11 @@ export function OnboardingWizard() {
           display: flex;
           flex-direction: column;
           overflow-y: auto;
+        }
+        .wizard-error {
+          color: #ff5f57;
+          font-size: 12px;
+          margin-top: 12px;
         }
       `}</style>
     </div>

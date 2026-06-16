@@ -10,6 +10,8 @@ export interface Meeting {
   speakers: string | null;
   tags: string | null;
   structured_summary: string | null;
+  transcript_segments?: string | null;
+  schema_version?: number;
 }
 
 // Global/Module-level state variables

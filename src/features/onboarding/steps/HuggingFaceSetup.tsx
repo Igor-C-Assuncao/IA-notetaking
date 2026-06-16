@@ -14,9 +14,11 @@ export function HuggingFaceSetup({ state, setState, onNext, onPrev }: Props) {
   const [errorMsg, setErrorMsg] = useState("");
   const [isValid, setIsValid] = useState(false);
   const [username, setUsername] = useState("");
+  const [needsModelAccess, setNeedsModelAccess] = useState(false);
 
   const validateToken = async () => {
-    if (!state.hfToken.trim()) {
+    const token = state.hfToken.trim();
+    if (!token) {
       setErrorMsg("Please enter a HuggingFace token.");
       return;
     }
@@ -24,22 +26,57 @@ export function HuggingFaceSetup({ state, setState, onNext, onPrev }: Props) {
     setIsValidating(true);
     setErrorMsg("");
     setIsValid(false);
+    setNeedsModelAccess(false);
 
     try {
-      const res = await tauriFetch("https://huggingface.co/api/whoami", {
-        headers: { Authorization: `Bearer ${state.hfToken}` },
+      const identityResponse = await tauriFetch("https://huggingface.co/api/whoami-v2", {
+        method: "GET",
+        headers: {
+          Accept: "application/json",
+          Authorization: `Bearer ${token}`,
+        },
       });
 
-      if (res.ok) {
-        const data = await res.json();
-        setUsername(data.name || "User");
-        setIsValid(true);
-        setState(s => ({ ...s, diarization: true }));
-      } else {
-        setErrorMsg("Invalid token. Please check and try again.");
+      if (identityResponse.status === 401 || identityResponse.status === 403) {
+        setErrorMsg("Invalid token or insufficient read access. Check the token permissions.");
+        return;
       }
+      if (identityResponse.status === 429) {
+        setErrorMsg("HuggingFace rate limit reached. Please wait and try again.");
+        return;
+      }
+      if (!identityResponse.ok) {
+        setErrorMsg(`HuggingFace validation failed (HTTP ${identityResponse.status}). Please try again.`);
+        return;
+      }
+
+      const identity = await identityResponse.json() as { name?: string };
+      setUsername(identity.name || "User");
+
+      const modelResponse = await tauriFetch(
+        "https://huggingface.co/pyannote/speaker-diarization-3.1/resolve/main/config.yaml",
+        {
+          method: "GET",
+          headers: {
+            Authorization: `Bearer ${token}`,
+          },
+        },
+      );
+
+      if (modelResponse.status === 401 || modelResponse.status === 403) {
+        setNeedsModelAccess(true);
+        setErrorMsg("Token verified, but Pyannote model access is not enabled. Accept the model terms, then re-check.");
+        return;
+      }
+      if (!modelResponse.ok) {
+        setErrorMsg(`Pyannote access check failed (HTTP ${modelResponse.status}). Please try again.`);
+        return;
+      }
+
+      setIsValid(true);
+      setState(s => ({ ...s, hfToken: token, diarization: true }));
     } catch (e: any) {
-      setErrorMsg(e.message || "Network error.");
+      setErrorMsg(e?.message ? `Could not reach HuggingFace: ${e.message}` : "Could not reach HuggingFace.");
     } finally {
       setIsValidating(false);
     }
@@ -75,6 +112,7 @@ export function HuggingFaceSetup({ state, setState, onNext, onPrev }: Props) {
             onChange={(e) => {
               setState(s => ({ ...s, hfToken: e.target.value }));
               setIsValid(false);
+              setNeedsModelAccess(false);
               setErrorMsg("");
             }}
             placeholder="hf_..."
@@ -88,8 +126,25 @@ export function HuggingFaceSetup({ state, setState, onNext, onPrev }: Props) {
           )}
         </div>
         
-        {errorMsg && <p className="error-msg">❌ {errorMsg}</p>}
-        {isValid && <p className="success-msg">✅ Connected as <strong>{username}</strong>. Diarization enabled!</p>}
+        {errorMsg && <p className="error-msg" role="alert">❌ {errorMsg}</p>}
+        {needsModelAccess && (
+          <div className="model-access-actions">
+            <a
+              className="btn-text"
+              href="https://huggingface.co/pyannote/speaker-diarization-3.1"
+              target="_blank"
+              rel="noreferrer"
+            >
+              Open model terms
+            </a>
+            <button className="btn-text" onClick={validateToken}>Re-check access</button>
+          </div>
+        )}
+        {isValid && (
+          <p className="success-msg" role="status">
+            ✅ Token and Pyannote access confirmed for <strong>{username}</strong>.
+          </p>
+        )}
       </div>
 
       <div className="wizard-footer">
@@ -149,6 +204,7 @@ export function HuggingFaceSetup({ state, setState, onNext, onPrev }: Props) {
 
         .error-msg { color: #ff5f57; font-size: 12px; margin-top: 8px; }
         .success-msg { color: var(--green); font-size: 12px; margin-top: 8px; }
+        .model-access-actions { display: flex; gap: 16px; align-items: center; margin-top: 10px; }
 
         .btn-text {
           background: none; border: none; color: var(--text-faint); font-size: 12px;

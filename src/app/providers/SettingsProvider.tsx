@@ -56,6 +56,7 @@ const DEFAULT_SETTINGS: Settings = {
 interface SettingsContextType {
   settings: Settings;
   updateSettings: (partial: Partial<Settings>) => Promise<void>;
+  getProviderApiKey: (provider: string) => Promise<string>;
   loading: boolean;
 }
 
@@ -130,25 +131,37 @@ export function SettingsProvider({ children }: { children: ReactNode }) {
     };
   }, []);
 
+  const getProviderApiKey = async (provider: string) => {
+    const normalizedProvider = provider.trim().toLowerCase();
+    if (!normalizedProvider || normalizedProvider === "ollama") {
+      return "";
+    }
+    return await invoke<string | null>("get_secret", {
+      key: `${normalizedProvider}_api_key`,
+    }) || "";
+  };
+
   const updateSettings = async (partial: Partial<Settings>) => {
+    const nextSettings = { ...partial };
+
     // If provider changed, fetch and synchronize the corresponding apiKey in memory
-    if (partial.provider) {
+    if (nextSettings.provider && nextSettings.apiKey === undefined) {
       try {
-        const nextProvider = partial.provider.toLowerCase();
-        const activeKey = await invoke<string | null>("get_secret", { key: `${nextProvider}_api_key` }) || "";
-        partial.apiKey = activeKey;
+        nextSettings.apiKey = await getProviderApiKey(nextSettings.provider);
       } catch (e) {
         console.error("Failed to fetch LLM key for provider change:", e);
+        throw e;
       }
     }
 
-    setSettings((prev) => ({ ...prev, ...partial }));
+    const previousSettings = settings;
+    setSettings((prev) => ({ ...prev, ...nextSettings }));
 
     try {
       const store = await load("settings.json", { autoSave: false, defaults: {} });
-      for (const [key, value] of Object.entries(partial)) {
+      for (const [key, value] of Object.entries(nextSettings)) {
         if (key === "apiKey") {
-          const activeProvider = partial.provider || settings.provider;
+          const activeProvider = nextSettings.provider || settings.provider;
           await invoke("set_secret", { key: `${activeProvider.toLowerCase()}_api_key`, value: value as string });
         } else if (key === "notionToken") {
           await invoke("set_secret", { key: "notion_token", value: value as string });
@@ -160,14 +173,16 @@ export function SettingsProvider({ children }: { children: ReactNode }) {
       }
       await store.save();
       // Emit settings changed to synchronize all open Tauri webviews
-      await emit("settings-changed", partial);
+      await emit("settings-changed", nextSettings);
     } catch (e) {
       console.error("Failed to save settings:", e);
+      setSettings(previousSettings);
+      throw e;
     }
   };
 
   return (
-    <SettingsContext.Provider value={{ settings, updateSettings, loading }}>
+    <SettingsContext.Provider value={{ settings, updateSettings, getProviderApiKey, loading }}>
       {children}
     </SettingsContext.Provider>
   );
