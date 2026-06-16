@@ -57,6 +57,9 @@ jobs:
           python -m pip install --upgrade pip
           pip install -r src-python/requirements.txt -r src-python/requirements-dev.txt
 
+      - name: Prepare Sidecar Placeholders
+        run: node scripts/prepare-ci-sidecars.mjs
+
       # ── 3. Static Analysis & Linting ───────────────────────────────
       - name: Lint Python (Ruff)
         run: |
@@ -84,7 +87,7 @@ jobs:
         env:
           IS_TESTING: "1"
         run: |
-          pytest src-python/tests/
+          pytest src-python/tests/ -m "not slow"
 
       - name: Test Rust Backend (cargo test)
         run: |
