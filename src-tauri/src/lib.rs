@@ -1,12 +1,12 @@
+use keyring::Entry;
 use rusqlite::Connection;
 use std::io::{BufRead, BufReader, Write};
 use std::path::PathBuf;
 use std::process::{Child, ChildStdin, Command, Stdio};
 use std::sync::{Arc, Mutex};
-use tauri::{AppHandle, Emitter, Manager, State, WebviewWindowBuilder, WebviewUrl};
+use tauri::{AppHandle, Emitter, Manager, State, WebviewUrl, WebviewWindowBuilder};
 use tauri::{LogicalSize, Window};
 use tauri_plugin_global_shortcut::{Code, GlobalShortcutExt, Modifiers, Shortcut, ShortcutState};
-use keyring::Entry;
 
 #[cfg(target_os = "linux")]
 fn sanitize_snap_runtime_env() {
@@ -19,7 +19,10 @@ fn sanitize_snap_runtime_env() {
         ("GTK_MODULES", "GTK_MODULES_VSCODE_SNAP_ORIG"),
         ("GTK3_MODULES", "GTK3_MODULES_VSCODE_SNAP_ORIG"),
         ("GIO_MODULE_DIR", "GIO_MODULE_DIR_VSCODE_SNAP_ORIG"),
-        ("GSETTINGS_SCHEMA_DIR", "GSETTINGS_SCHEMA_DIR_VSCODE_SNAP_ORIG"),
+        (
+            "GSETTINGS_SCHEMA_DIR",
+            "GSETTINGS_SCHEMA_DIR_VSCODE_SNAP_ORIG",
+        ),
         ("LOCPATH", "LOCPATH_VSCODE_SNAP_ORIG"),
         ("XDG_DATA_DIRS", "XDG_DATA_DIRS_VSCODE_SNAP_ORIG"),
         ("XDG_CONFIG_DIRS", "XDG_CONFIG_DIRS_VSCODE_SNAP_ORIG"),
@@ -48,9 +51,9 @@ struct Meeting {
     title: String,
     raw_transcript: String,
     markdown_summary: String,
-    speakers: Option<String>,          // JSON array of speaker names
-    tags: Option<String>,              // JSON array of tag strings
-    structured_summary: Option<String>, // Full structured JSON from LangGraph
+    speakers: Option<String>,            // JSON array of speaker names
+    tags: Option<String>,                // JSON array of tag strings
+    structured_summary: Option<String>,  // Full structured JSON from LangGraph
     transcript_segments: Option<String>, // Versioned transcript evidence JSON
     schema_version: i32,
 }
@@ -86,11 +89,18 @@ fn save_meeting(
           transcript_segments, schema_version)
          VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
         rusqlite::params![
-            &date, &title, &raw_transcript, &markdown_summary,
-            &speakers, &tags, &structured_summary,
-            &transcript_segments, schema_version.unwrap_or(1),
+            &date,
+            &title,
+            &raw_transcript,
+            &markdown_summary,
+            &speakers,
+            &tags,
+            &structured_summary,
+            &transcript_segments,
+            schema_version.unwrap_or(1),
         ],
-    ).map_err(|e| e.to_string())?;
+    )
+    .map_err(|e| e.to_string())?;
     let id = db.last_insert_rowid();
     Ok(id)
 }
@@ -98,29 +108,35 @@ fn save_meeting(
 #[tauri::command]
 fn get_meetings(state: State<'_, AppState>) -> Result<Vec<Meeting>, String> {
     let db = state.db.lock().unwrap();
-    let mut stmt = db.prepare(
-        "SELECT id, date, title, raw_transcript, markdown_summary,
+    let mut stmt = db
+        .prepare(
+            "SELECT id, date, title, raw_transcript, markdown_summary,
                 speakers, tags, structured_summary, transcript_segments, schema_version
-         FROM meetings ORDER BY id DESC"
-    ).map_err(|e| e.to_string())?;
+         FROM meetings ORDER BY id DESC",
+        )
+        .map_err(|e| e.to_string())?;
 
-    let iter = stmt.query_map([], |row| {
-        Ok(Meeting {
-            id: Some(row.get(0)?),
-            date: row.get(1)?,
-            title: row.get(2)?,
-            raw_transcript: row.get(3)?,
-            markdown_summary: row.get(4)?,
-            speakers: row.get(5)?,
-            tags: row.get(6)?,
-            structured_summary: row.get(7)?,
-            transcript_segments: row.get(8)?,
-            schema_version: row.get(9)?,
+    let iter = stmt
+        .query_map([], |row| {
+            Ok(Meeting {
+                id: Some(row.get(0)?),
+                date: row.get(1)?,
+                title: row.get(2)?,
+                raw_transcript: row.get(3)?,
+                markdown_summary: row.get(4)?,
+                speakers: row.get(5)?,
+                tags: row.get(6)?,
+                structured_summary: row.get(7)?,
+                transcript_segments: row.get(8)?,
+                schema_version: row.get(9)?,
+            })
         })
-    }).map_err(|e| e.to_string())?;
+        .map_err(|e| e.to_string())?;
 
     let mut meetings = Vec::new();
-    for m in iter { meetings.push(m.map_err(|e| e.to_string())?) }
+    for m in iter {
+        meetings.push(m.map_err(|e| e.to_string())?)
+    }
     Ok(meetings)
 }
 
@@ -135,33 +151,39 @@ fn search_meetings(state: State<'_, AppState>, query: String) -> Result<Vec<Meet
     let db = state.db.lock().unwrap();
     let fts_query = format!("{}*", query.trim().replace('"', ""));
 
-    let mut stmt = db.prepare(
-        "SELECT m.id, m.date, m.title, m.raw_transcript, m.markdown_summary,
+    let mut stmt = db
+        .prepare(
+            "SELECT m.id, m.date, m.title, m.raw_transcript, m.markdown_summary,
                 m.speakers, m.tags, m.structured_summary,
                 m.transcript_segments, m.schema_version
          FROM meetings m
          JOIN meetings_fts fts ON fts.rowid = m.id
          WHERE meetings_fts MATCH ?1
-         ORDER BY m.id DESC"
-    ).map_err(|e| e.to_string())?;
+         ORDER BY m.id DESC",
+        )
+        .map_err(|e| e.to_string())?;
 
-    let iter = stmt.query_map(rusqlite::params![fts_query], |row| {
-        Ok(Meeting {
-            id: Some(row.get(0)?),
-            date: row.get(1)?,
-            title: row.get(2)?,
-            raw_transcript: row.get(3)?,
-            markdown_summary: row.get(4)?,
-            speakers: row.get(5)?,
-            tags: row.get(6)?,
-            structured_summary: row.get(7)?,
-            transcript_segments: row.get(8)?,
-            schema_version: row.get(9)?,
+    let iter = stmt
+        .query_map(rusqlite::params![fts_query], |row| {
+            Ok(Meeting {
+                id: Some(row.get(0)?),
+                date: row.get(1)?,
+                title: row.get(2)?,
+                raw_transcript: row.get(3)?,
+                markdown_summary: row.get(4)?,
+                speakers: row.get(5)?,
+                tags: row.get(6)?,
+                structured_summary: row.get(7)?,
+                transcript_segments: row.get(8)?,
+                schema_version: row.get(9)?,
+            })
         })
-    }).map_err(|e| e.to_string())?;
+        .map_err(|e| e.to_string())?;
 
     let mut meetings = Vec::new();
-    for m in iter { meetings.push(m.map_err(|e| e.to_string())?) }
+    for m in iter {
+        meetings.push(m.map_err(|e| e.to_string())?)
+    }
     Ok(meetings)
 }
 
@@ -182,7 +204,9 @@ fn send_command_to_python(state: State<'_, AppState>, payload: String) -> Result
 
 #[tauri::command]
 async fn set_compact_mode(window: Window) -> Result<(), String> {
-    window.set_size(LogicalSize::new(400.0, 120.0)).map_err(|e| e.to_string())?;
+    window
+        .set_size(LogicalSize::new(400.0, 120.0))
+        .map_err(|e| e.to_string())?;
     window.set_decorations(false).map_err(|e| e.to_string())?;
     window.set_always_on_top(true).map_err(|e| e.to_string())?;
     window.set_resizable(false).map_err(|e| e.to_string())?;
@@ -191,7 +215,9 @@ async fn set_compact_mode(window: Window) -> Result<(), String> {
 
 #[tauri::command]
 async fn set_expanded_mode(window: Window) -> Result<(), String> {
-    window.set_size(LogicalSize::new(1024.0, 720.0)).map_err(|e| e.to_string())?;
+    window
+        .set_size(LogicalSize::new(1024.0, 720.0))
+        .map_err(|e| e.to_string())?;
     window.set_decorations(false).map_err(|e| e.to_string())?;
     window.set_always_on_top(false).map_err(|e| e.to_string())?;
     window.set_resizable(true).map_err(|e| e.to_string())?;
@@ -201,7 +227,9 @@ async fn set_expanded_mode(window: Window) -> Result<(), String> {
 
 #[tauri::command]
 async fn set_wizard_mode(window: Window) -> Result<(), String> {
-    window.set_size(LogicalSize::new(720.0, 540.0)).map_err(|e| e.to_string())?;
+    window
+        .set_size(LogicalSize::new(720.0, 540.0))
+        .map_err(|e| e.to_string())?;
     window.set_decorations(false).map_err(|e| e.to_string())?;
     window.set_always_on_top(false).map_err(|e| e.to_string())?;
     window.set_resizable(false).map_err(|e| e.to_string())?;
@@ -233,19 +261,23 @@ fn reprocess_meeting(
     model: String,
     api_key: String,
 ) -> Result<(), String> {
-    println!("[RUST DEBUG] Reprocess requested for meeting {}", meeting_id);
-    
+    println!(
+        "[RUST DEBUG] Reprocess requested for meeting {}",
+        meeting_id
+    );
+
     // Fetch raw_transcript and structured_summary from the DB
     let db = state.db.lock().unwrap();
-    let mut stmt = db.prepare(
-        "SELECT raw_transcript, structured_summary FROM meetings WHERE id = ?1"
-    ).map_err(|e| e.to_string())?;
-    
-    let (raw_transcript, structured_summary): (String, Option<String>) = stmt.query_row(
-        rusqlite::params![meeting_id],
-        |row| Ok((row.get(0)?, row.get(1)?))
-    ).map_err(|e| e.to_string())?;
-    
+    let mut stmt = db
+        .prepare("SELECT raw_transcript, structured_summary FROM meetings WHERE id = ?1")
+        .map_err(|e| e.to_string())?;
+
+    let (raw_transcript, structured_summary): (String, Option<String>) = stmt
+        .query_row(rusqlite::params![meeting_id], |row| {
+            Ok((row.get(0)?, row.get(1)?))
+        })
+        .map_err(|e| e.to_string())?;
+
     // Dispatch to Python stdin
     let lock = state.python_stdin.lock().unwrap();
     if let Some(mut stdin) = lock.as_ref() {
@@ -279,27 +311,32 @@ fn trigger_index_backfill(
     provider: String,
     model: String,
 ) -> Result<(), String> {
-    println!("[RUST DEBUG] Index backfill requested for RAG using {} ({})", provider, model);
-    
+    println!(
+        "[RUST DEBUG] Index backfill requested for RAG using {} ({})",
+        provider, model
+    );
+
     let db = state.db.lock().unwrap();
-    let mut stmt = db.prepare(
-        "SELECT id, title, date, raw_transcript FROM meetings"
-    ).map_err(|e| e.to_string())?;
-    
-    let iter = stmt.query_map([], |row| {
-        Ok(BackfillMeeting {
-            id: row.get(0)?,
-            title: row.get(1)?,
-            date: row.get(2)?,
-            raw_transcript: row.get(3)?,
+    let mut stmt = db
+        .prepare("SELECT id, title, date, raw_transcript FROM meetings")
+        .map_err(|e| e.to_string())?;
+
+    let iter = stmt
+        .query_map([], |row| {
+            Ok(BackfillMeeting {
+                id: row.get(0)?,
+                title: row.get(1)?,
+                date: row.get(2)?,
+                raw_transcript: row.get(3)?,
+            })
         })
-    }).map_err(|e| e.to_string())?;
-    
+        .map_err(|e| e.to_string())?;
+
     let mut meetings = Vec::new();
     for m in iter {
         meetings.push(m.map_err(|e| e.to_string())?);
     }
-    
+
     let lock = state.python_stdin.lock().unwrap();
     if let Some(mut stdin) = lock.as_ref() {
         let payload = serde_json::json!({
@@ -342,21 +379,33 @@ fn delete_secret(key: String) -> Result<(), String> {
 
 #[tauri::command]
 fn open_logs_folder(app: AppHandle) -> Result<(), String> {
-    let app_data_dir = app.path().app_data_dir().unwrap_or_else(|_| PathBuf::from("."));
+    let app_data_dir = app
+        .path()
+        .app_data_dir()
+        .unwrap_or_else(|_| PathBuf::from("."));
     let logs_dir = app_data_dir.join("logs");
     let _ = std::fs::create_dir_all(&logs_dir);
-    
+
     #[cfg(target_os = "windows")]
     {
-        Command::new("explorer").arg(logs_dir).spawn().map_err(|e| e.to_string())?;
+        Command::new("explorer")
+            .arg(logs_dir)
+            .spawn()
+            .map_err(|e| e.to_string())?;
     }
     #[cfg(target_os = "macos")]
     {
-        Command::new("open").arg(logs_dir).spawn().map_err(|e| e.to_string())?;
+        Command::new("open")
+            .arg(logs_dir)
+            .spawn()
+            .map_err(|e| e.to_string())?;
     }
     #[cfg(target_os = "linux")]
     {
-        Command::new("xdg-open").arg(logs_dir).spawn().map_err(|e| e.to_string())?;
+        Command::new("xdg-open")
+            .arg(logs_dir)
+            .spawn()
+            .map_err(|e| e.to_string())?;
     }
     Ok(())
 }
@@ -399,32 +448,36 @@ async fn open_popover_window(app: AppHandle, window: Window) -> Result<(), Strin
     if let Some(monitor) = window.current_monitor().map_err(|e| e.to_string())? {
         let m_pos = monitor.position();
         let m_size = monitor.size();
-        
+
         let m_pos_x_logical = m_pos.x as f64 / scale_factor;
         let m_pos_y_logical = m_pos.y as f64 / scale_factor;
         let m_size_w_logical = m_size.width as f64 / scale_factor;
         let m_size_h_logical = m_size.height as f64 / scale_factor;
-        
+
         let min_x = m_pos_x_logical;
         let max_x = m_pos_x_logical + m_size_w_logical - popover_w;
         let min_y = m_pos_y_logical;
         let max_y = m_pos_y_logical + m_size_h_logical - popover_h;
-        
+
         x_logical = x_logical.clamp(min_x, max_x);
         y_logical = y_logical.clamp(min_y, max_y);
     }
 
-    WebviewWindowBuilder::new(&app, "popover", WebviewUrl::App(PathBuf::from("index.html")))
-        .title("")
-        .decorations(false)
-        .always_on_top(true)
-        .resizable(false)
-        .inner_size(popover_w, popover_h)
-        .position(x_logical, y_logical)
-        .skip_taskbar(true)
-        .shadow(true)
-        .build()
-        .map_err(|e| e.to_string())?;
+    WebviewWindowBuilder::new(
+        &app,
+        "popover",
+        WebviewUrl::App(PathBuf::from("index.html")),
+    )
+    .title("")
+    .decorations(false)
+    .always_on_top(true)
+    .resizable(false)
+    .inner_size(popover_w, popover_h)
+    .position(x_logical, y_logical)
+    .skip_taskbar(true)
+    .shadow(true)
+    .build()
+    .map_err(|e| e.to_string())?;
 
     Ok(())
 }
@@ -444,22 +497,27 @@ fn migrate_settings_to_keychain(app: &tauri::App) {
             if let Ok(content) = std::fs::read_to_string(&settings_path) {
                 if let Ok(mut json) = serde_json::from_str::<serde_json::Value>(&content) {
                     let mut modified = false;
-                    
-                    let provider = json.get("provider").and_then(|v| v.as_str()).unwrap_or("openai");
+
+                    let provider = json
+                        .get("provider")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("openai");
                     let provider_key = format!("{}_api_key", provider.to_lowercase());
-                    
+
                     // Keys to migrate: (json_key, keychain_key)
                     let keys_to_migrate = [
                         ("apiKey", provider_key.clone()),
                         ("notionToken", "notion_token".to_string()),
                         ("hf_token", "hf_token".to_string()),
                     ];
-                    
+
                     for (json_key, keychain_key) in keys_to_migrate.iter() {
                         if let Some(val_str) = json.get(*json_key).and_then(|v| v.as_str()) {
                             if !val_str.is_empty() {
                                 // Save to keychain
-                                if let Ok(entry) = Entry::new("com.opensource.ainotetaker", keychain_key) {
+                                if let Ok(entry) =
+                                    Entry::new("com.opensource.ainotetaker", keychain_key)
+                                {
                                     if let Err(e) = entry.set_password(val_str) {
                                         eprintln!("[Keychain Migration Error] Failed to set password for {}: {}", keychain_key, e);
                                     } else {
@@ -472,11 +530,14 @@ fn migrate_settings_to_keychain(app: &tauri::App) {
                             }
                         }
                     }
-                    
+
                     if modified {
                         if let Ok(updated_content) = serde_json::to_string_pretty(&json) {
                             if let Err(e) = std::fs::write(&settings_path, updated_content) {
-                                eprintln!("[Keychain Migration Error] Failed to write settings.json: {}", e);
+                                eprintln!(
+                                    "[Keychain Migration Error] Failed to write settings.json: {}",
+                                    e
+                                );
                             } else {
                                 println!("[Keychain Migration] Atomically updated settings.json and cleared plaintext keys.");
                             }
@@ -488,7 +549,6 @@ fn migrate_settings_to_keychain(app: &tauri::App) {
     }
 }
 
-
 fn spawn_and_supervise_python(
     app_handle: AppHandle,
     db: Arc<Mutex<Connection>>,
@@ -498,16 +558,25 @@ fn spawn_and_supervise_python(
     std::thread::spawn(move || {
         let mut restart_attempts = 0;
         let max_attempts = 3;
-        
+
         loop {
-            println!("[Supervisor] Spawning Python sidecar (Attempt {})...", restart_attempts + 1);
+            println!(
+                "[Supervisor] Spawning Python sidecar (Attempt {})...",
+                restart_attempts + 1
+            );
             if restart_attempts > 0 {
-                app_handle.emit("python-event", serde_json::json!({
-                    "event": "SIDECAR_RESTARTING",
-                    "data": { "attempt": restart_attempts }
-                }).to_string()).ok();
+                app_handle
+                    .emit(
+                        "python-event",
+                        serde_json::json!({
+                            "event": "SIDECAR_RESTARTING",
+                            "data": { "attempt": restart_attempts }
+                        })
+                        .to_string(),
+                    )
+                    .ok();
             }
-            
+
             let project_dir = app_handle.path().resource_dir().unwrap_or_default();
             let dev_python_script = project_dir.join("../src-python/main.py");
             let is_dev = dev_python_script.exists();
@@ -569,14 +638,17 @@ fn spawn_and_supervise_python(
                     .stderr(Stdio::inherit())
                     .spawn()
             } else {
-                Err(std::io::Error::new(std::io::ErrorKind::NotFound, "Sidecar binary not found in production build"))
+                Err(std::io::Error::new(
+                    std::io::ErrorKind::NotFound,
+                    "Sidecar binary not found in production build",
+                ))
             };
-            
+
             match child_res {
                 Ok(mut child) => {
                     let stdin = child.stdin.take().expect("Failed to open Python stdin");
                     let stdout = child.stdout.take().expect("Failed to open Python stdout");
-                    
+
                     // Update global AppState
                     {
                         let mut stdin_lock = python_stdin.lock().unwrap();
@@ -586,14 +658,20 @@ fn spawn_and_supervise_python(
                         let mut child_lock = python_child.lock().unwrap();
                         *child_lock = Some(child);
                     }
-                    
+
                     // Reset restart attempts on successful startup
                     restart_attempts = 0;
-                    app_handle.emit("python-event", serde_json::json!({
-                        "event": "SIDECAR_UP",
-                        "data": {}
-                    }).to_string()).ok();
-                    
+                    app_handle
+                        .emit(
+                            "python-event",
+                            serde_json::json!({
+                                "event": "SIDECAR_UP",
+                                "data": {}
+                            })
+                            .to_string(),
+                        )
+                        .ok();
+
                     // Start the stdout reader thread for this child
                     let app_handle_clone = app_handle.clone();
                     let db_clone = Arc::clone(&db);
@@ -604,37 +682,52 @@ fn spawn_and_supervise_python(
                             if !content.contains("VAD_TELEMETRY") {
                                 println!("[PYTHON STDOUT] {}", content);
                             }
-                            
+
                             // Parse JSON to check for DB-persisted events
                             if let Ok(json) = serde_json::from_str::<serde_json::Value>(&content) {
                                 let event_name = json["event"].as_str().unwrap_or("");
-                                
+
                                 // Save newly generated meeting notes directly to DB
                                 // (bypasses fragile frontend roundtrip that can lose data
                                 //  if the app closes or Python restarts before the React
                                 //  handler fires)
                                 if event_name == "NOTES_GENERATED" {
                                     if let Some(data) = json["data"].as_object() {
-                                        let raw_transcript = data.get("raw_transcript").and_then(|v| v.as_str()).unwrap_or("");
-                                        let markdown = data.get("markdown").and_then(|v| v.as_str()).unwrap_or("");
-                                        let structured = data.get("structured").map(|v| v.to_string());
-                                        let transcript_segments = data.get("transcript_segments").map(|v| v.to_string());
-                                        let schema_version = data.get("schema_version").and_then(|v| v.as_i64()).unwrap_or(1);
-                                        
+                                        let raw_transcript = data
+                                            .get("raw_transcript")
+                                            .and_then(|v| v.as_str())
+                                            .unwrap_or("");
+                                        let markdown = data
+                                            .get("markdown")
+                                            .and_then(|v| v.as_str())
+                                            .unwrap_or("");
+                                        let structured =
+                                            data.get("structured").map(|v| v.to_string());
+                                        let transcript_segments =
+                                            data.get("transcript_segments").map(|v| v.to_string());
+                                        let schema_version = data
+                                            .get("schema_version")
+                                            .and_then(|v| v.as_i64())
+                                            .unwrap_or(1);
+
                                         if !raw_transcript.is_empty() {
                                             let now = chrono::Local::now();
-                                            let date_str = now.format("%Y-%m-%d %H:%M:%S").to_string();
-                                            let title_str = format!("Meeting {}", now.format("%d/%m/%Y"));
-                                            
+                                            let date_str =
+                                                now.format("%Y-%m-%d %H:%M:%S").to_string();
+                                            let title_str =
+                                                format!("Meeting {}", now.format("%d/%m/%Y"));
+
                                             // Extract speakers and tags from structured summary
-                                            let speakers = data.get("structured")
+                                            let speakers = data
+                                                .get("structured")
                                                 .and_then(|s| s.get("participants"))
                                                 .map(|v| v.to_string());
-                                            let tags = data.get("structured")
+                                            let tags = data
+                                                .get("structured")
                                                 .and_then(|s| s.get("metadata"))
                                                 .and_then(|m| m.get("tags"))
                                                 .map(|v| v.to_string());
-                                            
+
                                             let db_lock = db_clone.lock().unwrap();
                                             match db_lock.execute(
                                                 "INSERT INTO meetings (
@@ -643,8 +736,14 @@ fn spawn_and_supervise_python(
                                                     transcript_segments, schema_version
                                                  ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
                                                 rusqlite::params![
-                                                    date_str, title_str, raw_transcript, markdown,
-                                                    speakers, tags, structured, transcript_segments,
+                                                    date_str,
+                                                    title_str,
+                                                    raw_transcript,
+                                                    markdown,
+                                                    speakers,
+                                                    tags,
+                                                    structured,
+                                                    transcript_segments,
                                                     schema_version,
                                                 ],
                                             ) {
@@ -653,9 +752,12 @@ fn spawn_and_supervise_python(
                                                     println!("[RUST SUCCESS] Auto-saved meeting {} to DB from NOTES_GENERATED", meeting_id);
                                                     // Inject the meeting_id into the event so frontend can skip its own save
                                                     let mut enriched = json.clone();
-                                                    enriched["data"]["saved_meeting_id"] = serde_json::json!(meeting_id);
+                                                    enriched["data"]["saved_meeting_id"] =
+                                                        serde_json::json!(meeting_id);
                                                     let enriched_str = enriched.to_string();
-                                                    app_handle_clone.emit("python-event", enriched_str).ok();
+                                                    app_handle_clone
+                                                        .emit("python-event", enriched_str)
+                                                        .ok();
                                                     continue; // skip the default emit below
                                                 }
                                                 Err(e) => {
@@ -665,13 +767,16 @@ fn spawn_and_supervise_python(
                                         }
                                     }
                                 }
-                                
+
                                 if event_name == "REPROCESS_COMPLETED" {
                                     if let Some(data) = json["data"].as_object() {
-                                        let meeting_id = data.get("meeting_id").and_then(|v| v.as_i64());
-                                        let markdown = data.get("markdown").and_then(|v| v.as_str());
-                                        let structured = data.get("structured").map(|v| v.to_string());
-                                        
+                                        let meeting_id =
+                                            data.get("meeting_id").and_then(|v| v.as_i64());
+                                        let markdown =
+                                            data.get("markdown").and_then(|v| v.as_str());
+                                        let structured =
+                                            data.get("structured").map(|v| v.to_string());
+
                                         if let (Some(id), Some(md)) = (meeting_id, markdown) {
                                             let db_lock = db_clone.lock().unwrap();
                                             if let Err(e) = db_lock.execute(
@@ -686,11 +791,11 @@ fn spawn_and_supervise_python(
                                     }
                                 }
                             }
-                            
+
                             app_handle_clone.emit("python-event", content).ok();
                         }
                     });
-                    
+
                     // Wait for the child to exit
                     let mut child_to_wait = None;
                     {
@@ -703,52 +808,81 @@ fn spawn_and_supervise_python(
                     if let Some(mut c) = child_to_wait {
                         match c.wait() {
                             Ok(status) => {
-                                println!("[Supervisor] Python process exited with status: {}", status);
+                                println!(
+                                    "[Supervisor] Python process exited with status: {}",
+                                    status
+                                );
                             }
                             Err(e) => {
-                                eprintln!("[Supervisor Error] Failed to wait on child process: {}", e);
+                                eprintln!(
+                                    "[Supervisor Error] Failed to wait on child process: {}",
+                                    e
+                                );
                             }
                         }
                     }
-                    
+
                     // Ensure the stdin handle is cleared
                     {
                         let mut stdin_lock = python_stdin.lock().unwrap();
                         *stdin_lock = None;
                     }
-                    
+
                     // Sidecar went down
-                    app_handle.emit("python-event", serde_json::json!({
-                        "event": "SIDECAR_DOWN",
-                        "data": {}
-                    }).to_string()).ok();
+                    app_handle
+                        .emit(
+                            "python-event",
+                            serde_json::json!({
+                                "event": "SIDECAR_DOWN",
+                                "data": {}
+                            })
+                            .to_string(),
+                        )
+                        .ok();
                 }
                 Err(e) => {
                     eprintln!("[Supervisor Error] Failed to spawn Python sidecar: {}", e);
-                    app_handle.emit("python-event", serde_json::json!({
-                        "event": "SIDECAR_DOWN",
-                        "data": { "error": e.to_string() }
-                    }).to_string()).ok();
+                    app_handle
+                        .emit(
+                            "python-event",
+                            serde_json::json!({
+                                "event": "SIDECAR_DOWN",
+                                "data": { "error": e.to_string() }
+                            })
+                            .to_string(),
+                        )
+                        .ok();
                 }
             }
-            
+
             // Increment restart attempts and wait with exponential backoff
             restart_attempts += 1;
             if restart_attempts > max_attempts {
-                eprintln!("[Supervisor] Maximum restart attempts reached. Process marked as FAILED.");
-                app_handle.emit("python-event", serde_json::json!({
-                    "event": "SIDECAR_FAILED",
-                    "data": {}
-                }).to_string()).ok();
+                eprintln!(
+                    "[Supervisor] Maximum restart attempts reached. Process marked as FAILED."
+                );
+                app_handle
+                    .emit(
+                        "python-event",
+                        serde_json::json!({
+                            "event": "SIDECAR_FAILED",
+                            "data": {}
+                        })
+                        .to_string(),
+                    )
+                    .ok();
                 break;
             }
-            
+
             let backoff_secs = match restart_attempts {
                 1 => 1,
                 2 => 2,
                 _ => 4,
             };
-            println!("[Supervisor] Waiting {}s before auto-restarting...", backoff_secs);
+            println!(
+                "[Supervisor] Waiting {}s before auto-restarting...",
+                backoff_secs
+            );
             std::thread::sleep(std::time::Duration::from_secs(backoff_secs));
         }
     });
@@ -768,7 +902,7 @@ fn reconnect_sidecar(app: AppHandle, state: State<'_, AppState>) -> Result<(), S
         let mut stdin_lock = state.python_stdin.lock().unwrap();
         *stdin_lock = None;
     }
-    
+
     // Spawn supervisor thread
     spawn_and_supervise_python(
         app,
@@ -780,7 +914,6 @@ fn reconnect_sidecar(app: AppHandle, state: State<'_, AppState>) -> Result<(), S
 }
 
 pub fn initialize_db_schema(conn: &Connection) -> Result<(), rusqlite::Error> {
-
     // Create the meetings table with the full schema (new installs)
     conn.execute(
         "CREATE TABLE IF NOT EXISTS meetings (
@@ -865,7 +998,10 @@ pub fn run() {
             let app_handle = app.handle().clone();
 
             // 1. Initialize persistent application data.
-            let app_data_dir = app.path().app_data_dir().unwrap_or_else(|_| PathBuf::from("."));
+            let app_data_dir = app
+                .path()
+                .app_data_dir()
+                .unwrap_or_else(|_| PathBuf::from("."));
             std::fs::create_dir_all(&app_data_dir)?;
 
             let database_path = app_data_dir.join("notetaker.db");
@@ -886,21 +1022,24 @@ pub fn run() {
             // 2. Initialize Daily Rotating Logs
             let logs_dir = app_data_dir.join("logs");
             let _ = std::fs::create_dir_all(&logs_dir);
-            
+
             let file_appender = tracing_appender::rolling::daily(&logs_dir, "app.log");
             let (non_blocking, _guard) = tracing_appender::non_blocking(file_appender);
             std::mem::forget(_guard); // Leak guard so logging remains active
-            
+
             use tracing_subscriber::{fmt, prelude::*, Registry};
             let filter = tracing_subscriber::EnvFilter::try_from_default_env()
                 .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("info"));
-            
+
             let _ = Registry::default()
                 .with(filter)
                 .with(fmt::layer().with_writer(non_blocking))
                 .try_init();
 
-            println!("[RUST INFO] Daily rotating logs initialized at: {:?}", logs_dir.join("app.log"));
+            println!(
+                "[RUST INFO] Daily rotating logs initialized at: {:?}",
+                logs_dir.join("app.log")
+            );
 
             // 3. Atomically Migrate settings.json secrets to OS Keychain
             migrate_settings_to_keychain(app);

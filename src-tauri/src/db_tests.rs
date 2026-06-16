@@ -4,14 +4,22 @@ use rusqlite::Connection;
 #[test]
 fn test_database_migrations_are_idempotent() {
     let conn = Connection::open_in_memory().expect("Failed to open in-memory database");
-    
+
     // First initialization
     let res1 = initialize_db_schema(&conn);
-    assert!(res1.is_ok(), "First DB schema initialization failed: {:?}", res1.err());
-    
+    assert!(
+        res1.is_ok(),
+        "First DB schema initialization failed: {:?}",
+        res1.err()
+    );
+
     // Second initialization (should handle migrations and table creations gracefully without error)
     let res2 = initialize_db_schema(&conn);
-    assert!(res2.is_ok(), "Second (idempotent) DB schema initialization failed: {:?}", res2.err());
+    assert!(
+        res2.is_ok(),
+        "Second (idempotent) DB schema initialization failed: {:?}",
+        res2.err()
+    );
 }
 
 #[test]
@@ -50,26 +58,30 @@ fn test_save_meeting_and_get_meetings_ordering() {
     ).expect("Failed to insert second meeting");
 
     // Query meetings - should return in DESC order of ID (newest first)
-    let mut stmt = conn.prepare(
-        "SELECT id, date, title, raw_transcript, markdown_summary, speakers, tags,
+    let mut stmt = conn
+        .prepare(
+            "SELECT id, date, title, raw_transcript, markdown_summary, speakers, tags,
                 structured_summary, transcript_segments, schema_version
-         FROM meetings ORDER BY id DESC"
-    ).expect("Failed to prepare get statement");
+         FROM meetings ORDER BY id DESC",
+        )
+        .expect("Failed to prepare get statement");
 
-    let iter = stmt.query_map([], |row| {
-        Ok(Meeting {
-            id: Some(row.get(0)?),
-            date: row.get(1)?,
-            title: row.get(2)?,
-            raw_transcript: row.get(3)?,
-            markdown_summary: row.get(4)?,
-            speakers: row.get(5)?,
-            tags: row.get(6)?,
-            structured_summary: row.get(7)?,
-            transcript_segments: row.get(8)?,
-            schema_version: row.get(9)?,
+    let iter = stmt
+        .query_map([], |row| {
+            Ok(Meeting {
+                id: Some(row.get(0)?),
+                date: row.get(1)?,
+                title: row.get(2)?,
+                raw_transcript: row.get(3)?,
+                markdown_summary: row.get(4)?,
+                speakers: row.get(5)?,
+                tags: row.get(6)?,
+                structured_summary: row.get(7)?,
+                transcript_segments: row.get(8)?,
+                schema_version: row.get(9)?,
+            })
         })
-    }).expect("Failed to query map");
+        .expect("Failed to query map");
 
     let meetings: Vec<Meeting> = iter.map(|m| m.unwrap()).collect();
 
@@ -117,17 +129,21 @@ fn test_fts5_full_text_search_matching() {
 
     // Query FTS5 for "postgres"
     let fts_query = "postgres*";
-    let mut stmt = conn.prepare(
-        "SELECT m.id, m.date, m.title, m.raw_transcript, m.markdown_summary
+    let mut stmt = conn
+        .prepare(
+            "SELECT m.id, m.date, m.title, m.raw_transcript, m.markdown_summary
          FROM meetings m
          JOIN meetings_fts fts ON fts.rowid = m.id
          WHERE meetings_fts MATCH ?1
-         ORDER BY m.id DESC"
-    ).expect("Failed to prepare search statement");
+         ORDER BY m.id DESC",
+        )
+        .expect("Failed to prepare search statement");
 
-    let iter = stmt.query_map(rusqlite::params![fts_query], |row| {
-        Ok((row.get::<_, i32>(0)?, row.get::<_, String>(2)?))
-    }).expect("Failed to query map FTS5");
+    let iter = stmt
+        .query_map(rusqlite::params![fts_query], |row| {
+            Ok((row.get::<_, i32>(0)?, row.get::<_, String>(2)?))
+        })
+        .expect("Failed to query map FTS5");
 
     let results: Vec<(i32, String)> = iter.map(|r| r.unwrap()).collect();
 
@@ -137,16 +153,20 @@ fn test_fts5_full_text_search_matching() {
 
     // Query FTS5 for "Sync" in title
     let fts_query_sync = "Sync*";
-    let mut stmt_sync = conn.prepare(
-        "SELECT m.id, m.date, m.title, m.raw_transcript, m.markdown_summary
+    let mut stmt_sync = conn
+        .prepare(
+            "SELECT m.id, m.date, m.title, m.raw_transcript, m.markdown_summary
          FROM meetings m
          JOIN meetings_fts fts ON fts.rowid = m.id
-         WHERE meetings_fts MATCH ?1"
-    ).expect("Failed to prepare search statement sync");
+         WHERE meetings_fts MATCH ?1",
+        )
+        .expect("Failed to prepare search statement sync");
 
-    let iter_sync = stmt_sync.query_map(rusqlite::params![fts_query_sync], |row| {
-        Ok((row.get::<_, i32>(0)?, row.get::<_, String>(2)?))
-    }).expect("Failed to query map sync");
+    let iter_sync = stmt_sync
+        .query_map(rusqlite::params![fts_query_sync], |row| {
+            Ok((row.get::<_, i32>(0)?, row.get::<_, String>(2)?))
+        })
+        .expect("Failed to query map sync");
 
     let results_sync: Vec<(i32, String)> = iter_sync.map(|r| r.unwrap()).collect();
     assert_eq!(results_sync.len(), 1);
