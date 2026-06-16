@@ -93,4 +93,6 @@ jobs:
 
       # ── 5. Smoke Build (Tauri Debug Build) ──────────────────────────
       - name: Build Smoke Test
+        env:
+          SIDECAR_CHECK_ALLOW_MISSING: "1"
         run: npm run tauri build -- --debug

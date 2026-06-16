@@ -19,6 +19,7 @@ const sidecarPath = path.resolve(
   `ai-notetaking-engine-${targetTriple}`,
 );
 const maxSizeMiB = Number(process.env.SIDECAR_MAX_MIB || 1536);
+const allowMissing = process.env.SIDECAR_CHECK_ALLOW_MISSING === "1";
 
 let size = 0;
 try {
@@ -28,6 +29,13 @@ try {
 }
 
 if (size === 0) {
+  if (allowMissing) {
+    console.warn(
+      `[sidecar-check] Skipping missing sidecar in smoke build: ${sidecarPath}`,
+    );
+    process.exit(0);
+  }
+
   console.error(
     `[sidecar-check] Missing or empty Python sidecar: ${sidecarPath}\n` +
     "Build it with PyInstaller and copy the artifact before running a Tauri package build.",
