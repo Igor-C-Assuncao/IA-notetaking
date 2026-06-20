@@ -164,7 +164,13 @@ See [benchmarks/README.md](benchmarks/README.md) for the fixture contract and
 [docs/IMPLEMENTATION_PLAN_QUALITY_AND_CONFIGURATION.md](docs/IMPLEMENTATION_PLAN_QUALITY_AND_CONFIGURATION.md)
 for the quality roadmap.
 
-### Current benchmark smoke-test scores
+### Quality validation snapshot
+
+These runs validate benchmark infrastructure, report generation, release gates,
+and selected early baselines. Mock and smoke rows are not production-quality
+claims.
+
+#### Validation and smoke checks
 
 The deterministic `example-001` fixture validates the scorer and report pipeline:
 
@@ -182,7 +188,7 @@ The deterministic `example-001` fixture validates the scorer and report pipeline
 | Human factuality | 5.0 / 5 |
 | Human usefulness | 5.0 / 5 |
 
-Latest smoke runs:
+Latest validation runs:
 
 | Mode | Run | Commit | Result |
 |---|---|---|---|
@@ -190,9 +196,18 @@ Latest smoke runs:
 | Precomputed prediction scoring | `2026-06-16_135712_69308fe` | `69308fe` | PASS, weighted score `1.000` |
 
 All configured release gates pass for this fixture. Speaker attribution was not
-measured. These smoke-test values verify benchmark correctness and must not be
-treated as a production-quality baseline; representative AMI, QMSum, CORAA, and
-consented internal meeting fixtures are still required.
+measured. These values verify benchmark correctness and must not be treated as a
+production-quality baseline.
+
+#### Early real baseline
+
+| Dataset | Mode | Run | Commit | Result |
+|---|---|---|---|---|
+| AMI `IB4001` | ASR, Ollama `llama3`, `--gate-profile asr` | `2026-06-16_211950_14bc2e7` | `14bc2e7` | PASS, weighted score `0.924`, WER `0.258`, CER `0.200`, latency `68.428s` |
+
+The AMI row is a single-fixture transcription baseline and should be treated as
+an early signal only. Representative AMI, QMSum, CORAA, consented internal
+meeting fixtures, and larger LLM-generated QMSum runs are still required.
 
 ## Roadmap
 
