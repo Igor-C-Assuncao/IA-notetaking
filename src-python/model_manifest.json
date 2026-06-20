@@ -1,0 +1,41 @@
+{
+  "version": 1,
+  "transcription": {
+    "default": {
+      "name": "base",
+      "engine": "whisperx",
+      "purpose": "default local speech-to-text model",
+      "artifact_policy": "download_or_bundle",
+      "checksum": null
+    }
+  },
+  "diarization": {
+    "default": {
+      "name": "pyannote/speaker-diarization-3.1",
+      "engine": "whisperx.DiarizationPipeline",
+      "purpose": "optional speaker diarization",
+      "artifact_policy": "requires_huggingface_read_token",
+      "checksum": null
+    }
+  },
+  "embeddings": {
+    "ollama": {
+      "name": "nomic-embed-text",
+      "engine": "ollama",
+      "artifact_policy": "external_local_runtime",
+      "checksum": null
+    },
+    "local": {
+      "name": "all-MiniLM-L6-v2",
+      "engine": "sentence-transformers",
+      "artifact_policy": "download_or_cache",
+      "checksum": null
+    }
+  },
+  "llm_defaults": {
+    "ollama": "gemma4:e2b",
+    "openai": "gpt-4o",
+    "gemini": "gemini-2.5-flash",
+    "anthropic": "claude-3-haiku-20240307"
+  }
+}

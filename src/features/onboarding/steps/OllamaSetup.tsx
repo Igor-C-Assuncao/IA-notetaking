@@ -12,6 +12,7 @@ export function OllamaSetup({ state, setState, onNext, onPrev }: Props) {
   const [status, setStatus] = useState<"checking" | "not-found" | "ready" | "missing-model" | "pulling">("checking");
   const [installedModels, setInstalledModels] = useState<string[]>([]);
   const [pullProgress, setPullProgress] = useState<{ total: number, completed: number, status: string }>({ total: 0, completed: 0, status: "" });
+  const [pullError, setPullError] = useState("");
   
   const checkOllama = async () => {
     setStatus("checking");
@@ -22,7 +23,12 @@ export function OllamaSetup({ state, setState, onNext, onPrev }: Props) {
       const models = data.models?.map((m: any) => m.name) || [];
       setInstalledModels(models);
       
-      if (models.includes(state.model)) {
+      const modelInstalled = models.some((model: string) => {
+        const installedName = model.replace(/:latest$/, "");
+        const selectedName = state.model.replace(/:latest$/, "");
+        return installedName === selectedName;
+      });
+      if (modelInstalled) {
         setStatus("ready");
       } else {
         setStatus("missing-model");
@@ -39,6 +45,7 @@ export function OllamaSetup({ state, setState, onNext, onPrev }: Props) {
 
   const pullModel = async () => {
     setStatus("pulling");
+    setPullError("");
     try {
       const res = await fetch("http://localhost:11434/api/pull", {
         method: "POST",
@@ -50,12 +57,14 @@ export function OllamaSetup({ state, setState, onNext, onPrev }: Props) {
       
       const reader = res.body.getReader();
       const decoder = new TextDecoder();
+      let buffer = "";
       
       while (true) {
         const { done, value } = await reader.read();
-        if (done) break;
+        buffer += decoder.decode(value || new Uint8Array(), { stream: !done });
         
-        const lines = decoder.decode(value).split("\n").filter(l => l.trim());
+        const lines = buffer.split("\n");
+        buffer = done ? "" : lines.pop() || "";
         for (const line of lines) {
           try {
             const parsed = JSON.parse(line);
@@ -66,14 +75,15 @@ export function OllamaSetup({ state, setState, onNext, onPrev }: Props) {
                 completed: parsed.completed || 0
               });
             }
-          } catch (e) { /* ignore partial json */ }
+          } catch (e) { /* ignore malformed progress messages */ }
         }
+        if (done) break;
       }
       setStatus("ready");
     } catch (e) {
       console.error("Failed to pull model", e);
       setStatus("missing-model");
-      alert("Failed to download model. Ensure Ollama is running and you have internet access.");
+      setPullError("The model download failed. Check that Ollama is running, verify internet and disk space, then retry.");
     }
   };
 
@@ -106,8 +116,9 @@ export function OllamaSetup({ state, setState, onNext, onPrev }: Props) {
           <div className="state-missing">
             <h4>✅ Ollama is running</h4>
             <p>But the recommended model ({state.model}) is not installed. (~1.5GB)</p>
+            {pullError && <p className="state-error-message" role="alert">{pullError}</p>}
             <button className="btn-primary" onClick={pullModel} style={{ marginTop: 12 }}>
-              Download Model
+              {pullError ? "Retry Download" : "Download Model"}
             </button>
           </div>
         )}
@@ -115,12 +126,12 @@ export function OllamaSetup({ state, setState, onNext, onPrev }: Props) {
         {status === "pulling" && (
           <div className="state-pulling">
             <h4>Downloading {state.model}...</h4>
-            <div className="progress-bar-bg">
-              <div 
-                className="progress-bar-fill" 
-                style={{ width: pullProgress.total > 0 ? `${(pullProgress.completed / pullProgress.total) * 100}%` : "0%" }}
-              />
-            </div>
+            <progress
+              className="progress-bar-bg"
+              max={pullProgress.total || 1}
+              value={pullProgress.completed}
+              aria-label={`Downloading ${state.model}`}
+            />
             <p className="progress-text">
               {pullProgress.status} 
               {pullProgress.total > 0 && ` - ${(pullProgress.completed / 1024 / 1024).toFixed(1)} MB / ${(pullProgress.total / 1024 / 1024).toFixed(1)} MB`}
@@ -197,12 +208,12 @@ export function OllamaSetup({ state, setState, onNext, onPrev }: Props) {
 
         .progress-bar-bg {
           width: 100%; height: 8px; background: var(--bg-input);
-          border-radius: 4px; overflow: hidden; margin-bottom: 8px;
+          border: none; border-radius: 4px; overflow: hidden; margin-bottom: 8px;
         }
-        .progress-bar-fill {
-          height: 100%; background: var(--accent); transition: width 0.2s;
-        }
+        .progress-bar-bg::-webkit-progress-bar { background: var(--bg-input); }
+        .progress-bar-bg::-webkit-progress-value { background: var(--accent); transition: width 0.2s; }
         .progress-text { font-size: 11px; font-variant-numeric: tabular-nums; }
+        .state-error-message { color: #ff5f57; }
 
         .advanced-options {
           margin-top: 16px; display: flex; flex-direction: column; gap: 6px;

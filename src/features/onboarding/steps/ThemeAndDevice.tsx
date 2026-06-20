@@ -1,19 +1,25 @@
-import { Dispatch, SetStateAction, useEffect, useState } from "react";
+import { Dispatch, SetStateAction, useEffect, useRef, useState } from "react";
 import { WizardState } from "../OnboardingWizard";
 import { invoke } from "@tauri-apps/api/core";
 import { usePythonEvent } from "@app/providers/IpcProvider";
+import { AudioDevice } from "@shared/types/ipc-events";
 
 interface Props {
   state: WizardState;
   setState: Dispatch<SetStateAction<WizardState>>;
   onFinish: () => void;
   onPrev: () => void;
+  isFinishing: boolean;
 }
 
-export function ThemeAndDevice({ state, setState, onFinish, onPrev }: Props) {
+export function ThemeAndDevice({ state, setState, onFinish, onPrev, isFinishing }: Props) {
   const [level, setLevel] = useState(0);
   const [isTestingMic, setIsTestingMic] = useState(false);
   const [testCountdown, setTestCountdown] = useState(0);
+  const [devices, setDevices] = useState<AudioDevice[]>([]);
+  const testIntervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const testTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const testingRef = useRef(false);
 
   useEffect(() => {
     // Apply theme preview immediately
@@ -25,35 +31,66 @@ export function ThemeAndDevice({ state, setState, onFinish, onPrev }: Props) {
     setLevel(data.level || 0);
   });
 
+  usePythonEvent("DEVICE_LIST", (data) => {
+    const microphones = (data.devices || []).filter((device) => device.type === "mic");
+    setDevices(microphones);
+    if (state.selectedDeviceId === null && microphones.length > 0) {
+      setState((current) => ({ ...current, selectedDeviceId: microphones[0].id }));
+    }
+  });
+
+  useEffect(() => {
+    invoke("request_audio_devices").catch(console.error);
+    return () => {
+      if (testIntervalRef.current) clearInterval(testIntervalRef.current);
+      if (testTimeoutRef.current) clearTimeout(testTimeoutRef.current);
+      if (testingRef.current) {
+        invoke("send_command_to_python", {
+          payload: JSON.stringify({ action: "STOP_RECORDING" }),
+        }).catch(console.error);
+      }
+    };
+  }, []);
+
   const startTest = async () => {
     if (isTestingMic) return;
     setIsTestingMic(true);
+    testingRef.current = true;
     setTestCountdown(5);
     
     try {
       await invoke("send_command_to_python", {
-        payload: JSON.stringify({ action: "START_RECORDING", system_audio: false, is_test: true })
+        payload: JSON.stringify({
+          action: "START_RECORDING",
+          system_audio: false,
+          device_id: state.selectedDeviceId,
+          is_test: true,
+        })
       });
 
-      const interval = setInterval(() => {
+      testIntervalRef.current = setInterval(() => {
         setTestCountdown((prev) => {
           if (prev <= 1) {
-            clearInterval(interval);
+            if (testIntervalRef.current) clearInterval(testIntervalRef.current);
+            testIntervalRef.current = null;
             return 0;
           }
           return prev - 1;
         });
       }, 1000);
 
-      setTimeout(async () => {
+      testTimeoutRef.current = setTimeout(async () => {
+        testingRef.current = false;
         await invoke("send_command_to_python", {
           payload: JSON.stringify({ action: "STOP_RECORDING" })
         });
         setLevel(0);
         setIsTestingMic(false);
+        testTimeoutRef.current = null;
       }, 5000);
     } catch (e) {
       console.error(e);
+      testingRef.current = false;
       setIsTestingMic(false);
     }
   };
@@ -95,6 +132,23 @@ export function ThemeAndDevice({ state, setState, onFinish, onPrev }: Props) {
       <div className="mic-test-box">
         <h4>Microphone Test</h4>
         <p className="mic-desc">Click test and speak. If the bar moves, you're good to go.</p>
+
+        <label className="device-label" htmlFor="onboarding-microphone">Microphone</label>
+        <select
+          id="onboarding-microphone"
+          className="device-select"
+          value={state.selectedDeviceId ?? ""}
+          onChange={(event) => setState((current) => ({
+            ...current,
+            selectedDeviceId: event.target.value ? Number(event.target.value) : null,
+          }))}
+          disabled={isTestingMic}
+        >
+          {devices.length === 0 && <option value="">Default microphone</option>}
+          {devices.map((device) => (
+            <option key={device.id} value={device.id}>{device.name}</option>
+          ))}
+        </select>
         
         <div className="meter-container">
           <div className="meter-bg">
@@ -109,7 +163,9 @@ export function ThemeAndDevice({ state, setState, onFinish, onPrev }: Props) {
 
       <div className="wizard-footer">
         <button className="btn-secondary" onClick={onPrev}>Back</button>
-        <button className="btn-primary" onClick={onFinish}>Finish Setup</button>
+        <button className="btn-primary" onClick={onFinish} disabled={isFinishing || isTestingMic}>
+          {isFinishing ? "Saving..." : "Finish Setup"}
+        </button>
       </div>
 
       <style>{`
@@ -150,6 +206,11 @@ export function ThemeAndDevice({ state, setState, onFinish, onPrev }: Props) {
         }
         .mic-test-box h4 { font-size: 13px; margin-bottom: 4px; }
         .mic-desc { font-size: 12px; color: var(--text-dim); margin-bottom: 16px; }
+        .device-label { display: block; font-size: 11px; color: var(--text-faint); margin-bottom: 6px; }
+        .device-select {
+          width: 100%; padding: 8px; margin-bottom: 16px; background: var(--bg-input);
+          border: 1px solid var(--border); border-radius: var(--radius-sm); color: var(--text);
+        }
 
         .meter-container { margin-bottom: 16px; }
         .meter-bg { height: 8px; background: var(--bg-input); border-radius: 4px; overflow: hidden; }
@@ -169,6 +230,7 @@ export function ThemeAndDevice({ state, setState, onFinish, onPrev }: Props) {
           background: var(--accent); color: #fff; border: none; padding: 8px 24px;
           border-radius: var(--radius-sm); font-size: 13px; font-weight: 600; cursor: pointer;
         }
+        .btn-primary:disabled { opacity: 0.5; cursor: not-allowed; }
       `}</style>
     </div>
   );

@@ -48,8 +48,12 @@ function MainApp() {
         const dateStr = now.toISOString().slice(0, 19).replace('T', ' ');
         const titleStr = `Meeting on ${now.toLocaleDateString()}`;
         
-        const speakers = data.structured?.speakers ? JSON.stringify(data.structured.speakers) : null;
-        const tags = data.structured?.tags ? JSON.stringify(data.structured.tags) : null;
+        const speakers = data.structured?.participants
+          ? JSON.stringify(data.structured.participants.map((participant) => participant.name))
+          : null;
+        const tags = data.structured?.metadata?.tags
+          ? JSON.stringify(data.structured.metadata.tags)
+          : null;
         const structuredStr = JSON.stringify(data.structured);
         
         meetingId = await invoke<number>("save_meeting", {
@@ -60,6 +64,10 @@ function MainApp() {
           speakers,
           tags,
           structured_summary: structuredStr,
+          transcript_segments: data.transcript_segments
+            ? JSON.stringify(data.transcript_segments)
+            : null,
+          schema_version: data.schema_version || 1,
         });
       }
       

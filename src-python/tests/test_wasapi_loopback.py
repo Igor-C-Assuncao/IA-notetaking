@@ -1,13 +1,20 @@
-# src-python/tests/test_wasapi_loopback.py
 import time
 import os
 import sys
 import wave
-import numpy as np
+
+import pytest
+
+pytestmark = pytest.mark.skipif(
+    sys.platform != "win32",
+    reason="Manual WASAPI loopback test requires Windows/PyAudio",
+)
 
 # Ensure root import works
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
-from audio_capture import WindowsAudioCapture
+
+if sys.platform == "win32":
+    from audio_capture import WindowsAudioCapture
 
 def run_manual_wasapi_test():
     print("=====================================================================")

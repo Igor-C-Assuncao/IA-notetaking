@@ -14,6 +14,7 @@ const mockSettings = {
   modelName: "llama3",
   apiKey: "sec_key",
   hf_token: "hf_tok",
+  selectedDeviceId: 7,
 };
 
 vi.mock("@app/providers/SettingsProvider", () => ({
@@ -84,6 +85,21 @@ describe("useRecording Hook", () => {
     expect(result.current.status).toBe("Transcribing with WhisperX...");
   });
 
+  test("surfaces structured transcription failures", () => {
+    const { result } = renderHook(() => useRecording());
+
+    expect(eventHandlers["TRANSCRIPTION_FAILED"]).toBeDefined();
+
+    act(() => {
+      eventHandlers["TRANSCRIPTION_FAILED"]({
+        code: "AUDIO_FILE_EMPTY",
+        message: "Recording was too short.",
+      });
+    });
+
+    expect(result.current.status).toBe("Transcription failed: Recording was too short.");
+  });
+
   test("dispatches START_RECORDING command on toggle when idle", async () => {
     const { result } = renderHook(() => useRecording());
     
@@ -95,6 +111,7 @@ describe("useRecording Hook", () => {
       payload: JSON.stringify({
         action: "START_RECORDING",
         system_audio: true,
+        device_id: 7,
         auto_summarize: true,
         speaker_diarization: false,
         language: "pt",

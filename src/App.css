@@ -1372,6 +1372,48 @@ input, select { font-family: inherit; }
   word-break: break-word;
 }
 
+.transcript-segments {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 4px;
+}
+
+.transcript-segment {
+  border: 1px solid transparent;
+  border-radius: 10px;
+  padding: 10px 12px;
+  transition: background-color 180ms ease, border-color 180ms ease, box-shadow 180ms ease;
+}
+
+.transcript-segment:hover {
+  background: color-mix(in srgb, var(--accent) 5%, transparent);
+}
+
+.transcript-segment.highlighted {
+  background: color-mix(in srgb, var(--accent) 12%, transparent);
+  border-color: color-mix(in srgb, var(--accent) 55%, transparent);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 10%, transparent);
+}
+
+.transcript-segment-meta {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 4px;
+  color: var(--text-faint);
+  font-size: 11px;
+  font-weight: 650;
+  letter-spacing: 0.02em;
+}
+
+.transcript-segment p {
+  margin: 0;
+  color: var(--text-dim);
+  font-size: 13px;
+  line-height: 1.65;
+}
+
 [data-theme="minimalist-notebook"] .transcript-text {
   font-family: "Source Serif 4", "Source Serif Pro", Georgia, serif;
   line-height: 28px;

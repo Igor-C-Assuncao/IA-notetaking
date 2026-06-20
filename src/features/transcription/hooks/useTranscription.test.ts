@@ -20,7 +20,7 @@ describe("useTranscription Hook", () => {
     const { result } = renderHook(() => useTranscription());
     
     expect(result.current.transcription).toBe("");
-    expect(result.current.segments).toBeNull();
+    expect(result.current.segments).toEqual([]);
     expect(result.current.diarized).toBe(false);
     expect(result.current.search).toBe("");
     expect(result.current.filteredTranscript).toBe("");
@@ -32,8 +32,30 @@ describe("useTranscription Hook", () => {
     act(() => {
       eventHandlers["TRANSCRIPTION_COMPLETED"]({
         text: "[Speaker 1]: Hello there\n[Speaker 2]: Hi",
-        segments: [{ speaker: "Speaker 1", text: "Hello there" }, { speaker: "Speaker 2", text: "Hi" }],
+        segments: [
+          {
+            segment_id: "seg_000000",
+            speaker_id: "Speaker 1",
+            speaker_name: null,
+            start_ms: 0,
+            end_ms: 1000,
+            text: "Hello there",
+            confidence: null,
+            words: [],
+          },
+          {
+            segment_id: "seg_000001",
+            speaker_id: "Speaker 2",
+            speaker_name: null,
+            start_ms: 1000,
+            end_ms: 1500,
+            text: "Hi",
+            confidence: null,
+            words: [],
+          },
+        ],
         diarized: true,
+        schema_version: 2,
       });
     });
     

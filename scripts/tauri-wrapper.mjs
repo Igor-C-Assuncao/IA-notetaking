@@ -29,11 +29,9 @@ if (process.platform === 'linux') {
   }
 }
 
-const tauriBin = process.platform === 'win32'
-  ? path.join('node_modules', '.bin', 'tauri.cmd')
-  : path.join('node_modules', '.bin', 'tauri');
+const tauriCli = path.resolve('node_modules', '@tauri-apps', 'cli', 'tauri.js');
 
-const child = spawn(tauriBin, args, {
+const child = spawn(process.execPath, [tauriCli, ...args], {
   stdio: 'inherit',
   env,
   shell: false

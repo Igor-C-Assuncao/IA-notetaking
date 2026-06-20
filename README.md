@@ -24,8 +24,10 @@ Built with a high-performance hybrid architecture: **Tauri 2 + Rust + Python**.
 - **Privacy-first, local-first** — full support for running LLMs 100% locally via [Ollama](https://ollama.com/), so sensitive data never leaves your machine.
 - **Bring your own key (BYOK)** — prefer the cloud? Drop in your API key for OpenAI, Google Gemini, or Anthropic Claude and switch at any time.
 - **Intelligent audio pipeline** — [Silero VAD](https://github.com/snakers4/silero-vad) filters silence before transcription, [WhisperX](https://github.com/m-bain/whisperX) handles speech-to-text, and a LangGraph agent extracts action items and generates the structured summary.
+- **Evidence-backed meeting intelligence** — decisions and action items include confidence, inference labels, exact transcript quotes, and links back to timestamped source segments.
+- **Reliable configuration** — provider-specific credentials, explicit save behavior, recoverable validation errors, and Hugging Face gated-model access checks.
 - **Compact floating widget** — sits as a small always-on-top pill while you work; expands to the full view when you need to review notes or browse meeting history.
-- **Persistent history** — every session is saved locally in SQLite and available for review at any time.
+- **Persistent history** — every session, structured summary, and versioned transcript segment set is saved locally in SQLite.
 - **Two themes** — Liquid Glass (dark) and Minimalist Notebook (light).
 
 ## Architecture
@@ -63,7 +65,7 @@ Built with a high-performance hybrid architecture: **Tauri 2 + Rust + Python**.
 
 - [Node.js](https://nodejs.org/) v18+
 - [Rust](https://www.rust-lang.org/tools/install) (stable)
-- [Python](https://www.python.org/) 3.10+
+- [Python](https://www.python.org/) 3.12
 
 #### Linux (Ubuntu/Debian) system dependencies
 
@@ -77,15 +79,16 @@ sudo apt update && sudo apt install -y build-essential pkg-config libglib2.0-dev
 
 ```bash
 # 1. Clone
-git clone https://github.com/your-username/ai-notetaking.git
-cd ai-notetaking
+git clone https://github.com/Igor-C-Assuncao/IA-notetaking.git
+cd IA-notetaking
 
 # 2. Frontend and Rust dependencies
 npm install
 
 # 3. Python backend
 cd src-python
-pip install -r requirements.txt
+python -m venv .venv
+.\.venv\Scripts\python.exe -m pip install -r requirements.txt
 cd ..
 
 # 4. Start dev environment
@@ -94,9 +97,17 @@ npm run tauri dev
 
 ### Build for production
 
+On Windows, build the CPU-only Python sidecar first. This avoids embedding the
+multi-gigabyte CUDA Torch runtime in the default installer:
+
 ```bash
+npm run sidecar:build:windows
+npm run sidecar:check
 npm run tauri build
 ```
+
+The Windows sidecar release budget is 1536 MiB. The current validated CPU build
+is approximately 405 MiB. See [docs/WINDOWS_SIDECAR_SIZE.md](docs/WINDOWS_SIDECAR_SIZE.md).
 
 ## Configuration
 
@@ -106,10 +117,97 @@ Open the settings panel (gear icon on the widget) to configure:
 |---|---|
 | **Provider** | `Ollama` (local) · `OpenAI` · `Gemini` · `Anthropic` |
 | **Model** | Any model name supported by the selected provider |
-| **API Key** | Required for cloud providers; not stored for Ollama |
+| **API Key** | Required for cloud providers; stored in the operating-system keychain |
+| **Hugging Face Token** | Optional read token used to validate access to gated Pyannote diarization models |
 | **Theme** | Liquid Glass (dark) or Minimalist Notebook (light) |
 
-Settings are persisted locally via `tauri-plugin-store`.
+Non-secret settings are persisted locally via `tauri-plugin-store`.
+
+## Quality and testing
+
+```bash
+# Frontend
+npm test
+npm run build
+
+# Python
+src-python\.venv\Scripts\python.exe -m pytest src-python\tests -q -m "not slow"
+
+# Rust
+cd src-tauri
+cargo test
+```
+
+The benchmark harness scores transcription, evidence validity, decisions,
+action items, assignees, hallucination rate, completion rate, and human review:
+
+```bash
+src-python\.venv\Scripts\python.exe benchmarks\run_benchmark.py \
+  --input benchmarks\datasets\example_fixture.json
+```
+
+To exercise the report pipeline with generated prediction artifacts:
+
+```bash
+src-python\.venv\Scripts\python.exe benchmarks\run_benchmark.py \
+  --input benchmarks\datasets\example_fixture.json \
+  --generate-predictions \
+  --prediction-mode mock
+```
+
+For local full-pipeline baselines, use `--prediction-mode llm` with a configured
+provider/model and fixtures under `benchmarks/private/`. Transcript fixtures
+benchmark the meeting-intelligence stage; audio fixtures run transcription first.
+
+Generated reports are written to `benchmarks/reports/<timestamp>_<git-sha>/`.
+See [benchmarks/README.md](benchmarks/README.md) for the fixture contract and
+[docs/IMPLEMENTATION_PLAN_QUALITY_AND_CONFIGURATION.md](docs/IMPLEMENTATION_PLAN_QUALITY_AND_CONFIGURATION.md)
+for the quality roadmap.
+
+### Quality validation snapshot
+
+These runs validate benchmark infrastructure, report generation, release gates,
+and selected early baselines. Mock and smoke rows are not production-quality
+claims.
+
+#### Validation and smoke checks
+
+The deterministic `example-001` fixture validates the scorer and report pipeline:
+
+| Metric | Score |
+|---|---:|
+| Weighted overall score | 1.000 |
+| Word error rate | 0.000 |
+| Character error rate | 0.000 |
+| Decision precision | 1.000 |
+| Action-item precision | 1.000 |
+| Explicit assignee accuracy | 1.000 |
+| Evidence quote validity | 1.000 |
+| Critical-claim hallucination rate | 0.000 |
+| Pipeline completion rate | 1.000 |
+| Human factuality | 5.0 / 5 |
+| Human usefulness | 5.0 / 5 |
+
+Latest validation runs:
+
+| Mode | Run | Commit | Result |
+|---|---|---|---|
+| Generated prediction artifacts (`--prediction-mode mock`) | `2026-06-16_135711_69308fe` | `69308fe` | PASS, weighted score `1.000` |
+| Precomputed prediction scoring | `2026-06-16_135712_69308fe` | `69308fe` | PASS, weighted score `1.000` |
+
+All configured release gates pass for this fixture. Speaker attribution was not
+measured. These values verify benchmark correctness and must not be treated as a
+production-quality baseline.
+
+#### Early real baseline
+
+| Dataset | Mode | Run | Commit | Result |
+|---|---|---|---|---|
+| AMI `IB4001` | ASR, Ollama `llama3`, `--gate-profile asr` | `2026-06-16_211950_14bc2e7` | `14bc2e7` | PASS, weighted score `0.924`, WER `0.258`, CER `0.200`, latency `68.428s` |
+
+The AMI row is a single-fixture transcription baseline and should be treated as
+an early signal only. Representative AMI, QMSum, CORAA, consented internal
+meeting fixtures, and larger LLM-generated QMSum runs are still required.
 
 ## Roadmap
 
@@ -122,8 +220,8 @@ Settings are persisted locally via `tauri-plugin-store`.
 | 4 — BYOK + Settings | ✅ Done | Multi-provider support, persistent settings, themes |
 | 5 — UI polish | ✅ Done | Compact widget, expanded view, meeting history |
 | 6 — Window UX | ✅ Done | Native drag region, window controls, popover window |
-| 7 — Testing | 🔜 Planned | Unit and integration tests |
-| 8 — v1.0 Release | 🔜 Planned | CI/CD, packaging, signed builds |
+| 7 — Testing | ✅ Active | Frontend, Python, Rust, benchmark, and packaged-sidecar validation |
+| 8 — v1.0 Release | 🚧 In progress | CI/CD, CPU sidecar packaging, signing, cross-platform release validation |
 
 ## Contributing
 

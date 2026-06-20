@@ -1,9 +1,10 @@
 # src-python/rag_service.py
-import os
 import json
+import os
 import urllib.request
 import urllib.error
 import numpy as np
+from config import get_app_data_dir
 
 class EmbeddingModelFactory:
     """
@@ -79,9 +80,10 @@ class RAGService:
     RAG Service handling text chunking, local vector indexing, persistence, and cosine similarity search.
     """
     def __init__(self):
-        current_dir = os.path.dirname(os.path.abspath(__file__))
-        self.index_path = os.path.join(current_dir, "vector_index.json")
-        self.vectors_path = os.path.join(current_dir, "vector_index.npy")
+        rag_dir = get_app_data_dir() / "rag"
+        rag_dir.mkdir(parents=True, exist_ok=True)
+        self.index_path = str(rag_dir / "vector_index.json")
+        self.vectors_path = str(rag_dir / "vector_index.npy")
         
         self.chunks = []       # list of dict: {meeting_id, title, date, text}
         self.vectors = None    # numpy array: [N, D]
@@ -119,11 +121,15 @@ class RAGService:
         self.chunks = []
         self.vectors = None
         if os.path.exists(self.index_path):
-            try: os.remove(self.index_path)
-            except Exception: pass
+            try:
+                os.remove(self.index_path)
+            except Exception:
+                pass
         if os.path.exists(self.vectors_path):
-            try: os.remove(self.vectors_path)
-            except Exception: pass
+            try:
+                os.remove(self.vectors_path)
+            except Exception:
+                pass
         print("DEBUG: [RAG] Vector index cleared.", flush=True)
 
     def chunk_text(self, text: str, word_limit: int = 150, overlap: int = 50) -> list:

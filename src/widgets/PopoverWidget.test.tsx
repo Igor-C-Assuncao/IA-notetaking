@@ -1,6 +1,8 @@
 import { describe, test, expect, vi, beforeEach } from "vitest";
-import { render, screen, fireEvent } from "@testing-library/react";
+import { render, screen, fireEvent, waitFor } from "@testing-library/react";
 import { PopoverWidget } from "./PopoverWidget";
+
+const mockClose = vi.fn();
 
 // Mock Tauri APIs
 vi.mock("@tauri-apps/api/core", () => ({
@@ -12,7 +14,7 @@ vi.mock("@tauri-apps/api/core", () => ({
 
 vi.mock("@tauri-apps/api/window", () => ({
   getCurrentWindow: vi.fn(() => ({
-    close: vi.fn(),
+    close: mockClose,
   })),
 }));
 
@@ -56,11 +58,13 @@ let mockSettings = {
 const mockUpdateSettings = vi.fn(async (updated: any) => {
   mockSettings = { ...mockSettings, ...updated };
 });
+const mockGetProviderApiKey = vi.fn(async () => "");
 
 vi.mock("@app/providers/SettingsProvider", () => ({
   useSettings: () => ({
     settings: mockSettings,
     updateSettings: mockUpdateSettings,
+    getProviderApiKey: mockGetProviderApiKey,
     loading: false,
   }),
 }));
@@ -72,7 +76,15 @@ describe("PopoverWidget Toggle Components", () => {
     mockSettings.speakerDiarization = false;
     mockSettings.alwaysOnTop = true;
     mockSettings.ragEnabled = false;
-    mockUpdateSettings.mockClear();
+    mockSettings.provider = "ollama";
+    mockSettings.apiKey = "";
+    mockUpdateSettings.mockReset();
+    mockUpdateSettings.mockImplementation(async (updated: any) => {
+      mockSettings = { ...mockSettings, ...updated };
+    });
+    mockGetProviderApiKey.mockReset();
+    mockGetProviderApiKey.mockResolvedValue("");
+    mockClose.mockReset();
   });
 
   test("verifies that PopoverWidget is rendered and the system audio toggle can be clicked to update state", async () => {
@@ -100,5 +112,47 @@ describe("PopoverWidget Toggle Components", () => {
         systemAudio: true,
       })
     );
+  });
+
+  test("loads the destination provider credential when provider changes", async () => {
+    mockGetProviderApiKey.mockResolvedValueOnce("anthropic-saved-key");
+    render(<PopoverWidget />);
+
+    fireEvent.click(screen.getByRole("button", { name: "AI Provider" }));
+    fireEvent.change(screen.getAllByRole("combobox")[0], {
+      target: { value: "anthropic" },
+    });
+
+    await waitFor(() => expect(mockGetProviderApiKey).toHaveBeenCalledWith("anthropic"));
+    expect(screen.getByPlaceholderText("sk-...")).toHaveValue("anthropic-saved-key");
+
+    fireEvent.click(screen.getByRole("button", { name: "Save Changes" }));
+
+    await waitFor(() => expect(mockUpdateSettings).toHaveBeenCalledWith(
+      expect.objectContaining({
+        provider: "anthropic",
+        apiKey: "anthropic-saved-key",
+      }),
+    ));
+  });
+
+  test("keeps edits open and reports a failed save", async () => {
+    mockUpdateSettings.mockRejectedValueOnce(new Error("keychain unavailable"));
+    render(<PopoverWidget />);
+
+    fireEvent.click(screen.getByRole("switch"));
+    fireEvent.click(screen.getByRole("button", { name: "Save Changes" }));
+
+    expect(await screen.findByRole("alert")).toHaveTextContent("Could not save changes");
+    expect(screen.getByRole("switch")).toHaveAttribute("aria-checked", "true");
+    expect(mockClose).not.toHaveBeenCalled();
+  });
+
+  test("does not close the settings window when focus moves away", () => {
+    render(<PopoverWidget />);
+
+    fireEvent.blur(window);
+
+    expect(mockClose).not.toHaveBeenCalled();
   });
 });

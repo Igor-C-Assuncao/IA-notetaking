@@ -1,6 +1,4 @@
-import pytest
 import numpy as np
-import torch
 from unittest.mock import MagicMock, patch
 from vad_service import VADService
 
