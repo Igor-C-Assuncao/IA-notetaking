@@ -1,6 +1,6 @@
 import json
 from unittest.mock import MagicMock
-from llm_service import MeetingWorkflowEngine, LLMFactory
+from llm_service import MeetingWorkflowEngine, LLMFactory, parse_json_payload
 
 def test_extract_entities_node_success(mock_llm):
     engine = MeetingWorkflowEngine(provider_name="ollama", model_name="llama3")
@@ -183,12 +183,19 @@ def test_generate_summary_node_fallback(mock_llm):
     state = {
         "entities": {},
         "decisions": [],
-        "actions": []
+        "actions": [],
+        "clean_transcript": "Alice confirmed the launch plan. Bob will update the checklist.",
     }
     
     res = engine.generate_summary_node(state)
-    assert res["structured_summary"]["tldr"] == "Failed to generate structured summary."
+    assert res["structured_summary"]["tldr"] == "Alice confirmed the launch plan."
+    assert res["structured_summary"]["summary_generation_warning"]
     assert res["final_markdown"] == ""
+
+def test_parse_json_payload_repairs_trailing_commas():
+    parsed = parse_json_payload('```json\n{"tldr": "Done", "summary_points": ["A",],}\n```')
+    assert parsed["tldr"] == "Done"
+    assert parsed["summary_points"] == ["A"]
 
 def test_langgraph_strategy_and_llm_factory(mock_llm, monkeypatch):
     # Mocking MeetingWorkflowEngine.run to avoid building full graphs during simple checks

@@ -4,8 +4,10 @@ from typing import TypedDict
 from langgraph.graph import StateGraph, START, END
 from langchain_core.messages import SystemMessage, HumanMessage
 import json as json_lib
+import re
 from config import DEFAULTS, load_model_manifest
 from schemas import ActionItem, Decision, SCHEMA_VERSION
+
 
 def extract_json_payload(text: str) -> str:
     """
@@ -37,6 +39,19 @@ def extract_json_payload(text: str) -> str:
         return text
         
     return text[start:end+1]
+
+
+def parse_json_payload(text: str) -> dict | list:
+    """
+    Parses JSON from LLM output, allowing common local-model mistakes such as
+    trailing commas before closing braces/brackets.
+    """
+    cleaned = extract_json_payload(text)
+    try:
+        return json_lib.loads(cleaned)
+    except json_lib.JSONDecodeError:
+        repaired = re.sub(r",\s*([}\]])", r"\1", cleaned)
+        return json_lib.loads(repaired)
 
 
 # ---------------------------------------------------------
@@ -138,8 +153,7 @@ class MeetingWorkflowEngine:
         
         raw = response.content.strip()
         try:
-            cleaned_raw = extract_json_payload(raw)
-            entities = json_lib.loads(cleaned_raw)
+            entities = parse_json_payload(raw)
             # Ensure safe fallback keys
             for k in ["speakers", "numbers", "dates", "projects", "acronyms"]:
                 if k not in entities:
@@ -223,8 +237,7 @@ class MeetingWorkflowEngine:
         
         raw = response.content.strip()
         try:
-            cleaned_raw = extract_json_payload(raw)
-            data = json_lib.loads(cleaned_raw)
+            data = parse_json_payload(raw)
             decisions, actions = self._validate_evidence_claims(data, state)
         except Exception:
             print("DEBUG: [LangGraph] Node 3 JSON parse failed.", file=sys.stderr)
@@ -408,6 +421,59 @@ class MeetingWorkflowEngine:
         except (TypeError, ValueError):
             return 0.5
 
+    @staticmethod
+    def _fallback_summary_from_state(state: AgentState, decisions: list, actions: list) -> dict:
+        transcript = (
+            state.get("clean_transcript")
+            or state.get("raw_transcript")
+            or ""
+        ).strip()
+        sentences = [
+            sentence.strip()
+            for sentence in re.split(r"(?<=[.!?])\s+", transcript)
+            if sentence.strip()
+        ]
+        tldr = sentences[0] if sentences else "Summary could not be generated from the available transcript."
+        if len(tldr) > 240:
+            tldr = tldr[:237].rstrip() + "..."
+
+        summary_points = sentences[:3] if sentences else []
+        entities = state.get("entities", {}) or {}
+        tags = [
+            str(tag)
+            for tag in entities.get("projects", [])[:5]
+            if str(tag).strip()
+        ]
+        participants = [
+            {
+                "name": speaker.get("name", "Unknown"),
+                "role": speaker.get("role_hint") or "",
+                "engagement_level": "unknown",
+            }
+            for speaker in entities.get("speakers", [])[:10]
+            if isinstance(speaker, dict)
+        ]
+        metrics = [
+            {
+                "label": number.get("context", "Metric"),
+                "value": number.get("value", ""),
+                "trend": "flat",
+            }
+            for number in entities.get("numbers", [])[:10]
+            if isinstance(number, dict)
+        ]
+
+        return {
+            "metadata": {"title": "Meeting Summary", "date": state.get("meeting_date", ""), "tags": tags},
+            "tldr": tldr,
+            "participants": participants,
+            "metrics": metrics,
+            "key_decisions": [],
+            "action_items": [],
+            "summary_points": summary_points,
+            "summary_generation_warning": "LLM returned invalid structured JSON; generated fallback summary from transcript.",
+        }
+
     # --- NODE 4: Structured Summary (JSON) ---
     def generate_summary_node(self, state: AgentState):
         print("DEBUG: [LangGraph] Node 4: Generating structured summary...", file=sys.stderr)
@@ -459,19 +525,12 @@ class MeetingWorkflowEngine:
 
         raw = response.content.strip()
         try:
-            cleaned_raw = extract_json_payload(raw)
-            structured = json_lib.loads(cleaned_raw)
+            structured = parse_json_payload(raw)
+            if not isinstance(structured, dict):
+                raise ValueError("Structured summary payload was not a JSON object.")
         except Exception:
             print("DEBUG: [LangGraph] Node 4 JSON parse failed.", file=sys.stderr)
-            structured = {
-                "metadata": {"title": "Summary", "date": "", "tags": []},
-                "tldr": "Failed to generate structured summary.",
-                "participants": [],
-                "metrics": [],
-                "key_decisions": [],
-                "action_items": [],
-                "summary_points": []
-            }
+            structured = self._fallback_summary_from_state(state, decisions, actions)
 
         structured["schema_version"] = SCHEMA_VERSION
         structured["key_decisions"] = [
