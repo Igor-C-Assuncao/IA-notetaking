@@ -17,7 +17,8 @@ benchmarks/private/*
 dist
 dist-ssr
 *.local
-
+.tmp-qmsum/
+benchmarks/AMI/
 # Editor directories and files
 .vscode/*
 !.vscode/extensions.json
