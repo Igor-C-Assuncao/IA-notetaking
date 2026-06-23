@@ -164,10 +164,7 @@ fn manifest_entry_for(kind: &str) -> Result<EngineManifestEntry, String> {
 
 fn engine_dir(app: &AppHandle, kind: &str) -> Result<PathBuf, String> {
     let app_data_dir = app.path().app_data_dir().map_err(|e| e.to_string())?;
-    Ok(app_data_dir
-        .join("engines")
-        .join(ENGINE_VERSION)
-        .join(kind))
+    Ok(app_data_dir.join("engines").join(ENGINE_VERSION).join(kind))
 }
 
 fn engine_path(app: &AppHandle, kind: &str) -> Result<PathBuf, String> {
@@ -280,7 +277,11 @@ fn download_engine(app: AppHandle, kind: String) -> Result<EngineStatus, String>
                 &mut hasher,
                 &mut downloaded,
                 manifest_entry.size_bytes,
-                &format!("Downloading local engine part {} of {}", index + 1, chunks.len()),
+                &format!(
+                    "Downloading local engine part {} of {}",
+                    index + 1,
+                    chunks.len()
+                ),
             )?;
         }
     } else {
@@ -391,7 +392,9 @@ fn download_engine_asset(
         if read == 0 {
             break;
         }
-        output.write_all(&buffer[..read]).map_err(|e| e.to_string())?;
+        output
+            .write_all(&buffer[..read])
+            .map_err(|e| e.to_string())?;
         package_hasher.update(&buffer[..read]);
         chunk_hasher.update(&buffer[..read]);
         downloaded_asset += read as u64;
@@ -442,11 +445,12 @@ fn check_ollama() -> Result<OllamaStatus, String> {
         .map(|output| output.status.success())
         .unwrap_or(false);
 
-    let installed = winget_available && Command::new("winget")
-        .args(["list", "--id", "Ollama.Ollama", "-e"])
-        .output()
-        .map(|output| output.status.success())
-        .unwrap_or(false);
+    let installed = winget_available
+        && Command::new("winget")
+            .args(["list", "--id", "Ollama.Ollama", "-e"])
+            .output()
+            .map(|output| output.status.success())
+            .unwrap_or(false);
 
     let response = reqwest::blocking::Client::builder()
         .timeout(std::time::Duration::from_secs(2))
@@ -457,7 +461,9 @@ fn check_ollama() -> Result<OllamaStatus, String> {
 
     match response {
         Ok(resp) if resp.status().is_success() => {
-            let json = resp.json::<serde_json::Value>().map_err(|e| e.to_string())?;
+            let json = resp
+                .json::<serde_json::Value>()
+                .map_err(|e| e.to_string())?;
             let models = json
                 .get("models")
                 .and_then(|v| v.as_array())
@@ -551,7 +557,10 @@ fn pull_ollama_model(app: AppHandle, model: String) -> Result<(), String> {
         .map_err(|e| e.to_string())?;
 
     if !response.status().is_success() {
-        return Err(format!("Ollama pull failed with HTTP {}", response.status()));
+        return Err(format!(
+            "Ollama pull failed with HTTP {}",
+            response.status()
+        ));
     }
 
     let mut buffer = [0_u8; 1024 * 16];
@@ -1476,11 +1485,8 @@ fn start_sidecar(
     };
 
     println!("[RUST INFO] Starting sidecar through bootstrap flow.");
-    app.emit(
-        "sidecar-starting",
-        serde_json::json!({ "kind": kind }),
-    )
-    .ok();
+    app.emit("sidecar-starting", serde_json::json!({ "kind": kind }))
+        .ok();
 
     spawn_and_supervise_python(
         app,
