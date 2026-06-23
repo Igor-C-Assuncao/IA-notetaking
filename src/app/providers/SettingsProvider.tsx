@@ -27,6 +27,10 @@ export interface Settings {
   ragEmbeddingModel: string;
   ragHistorySynced: boolean;
   hf_token: string;
+  engineKind: "cpu" | "gpu";
+  engineVersion: string;
+  engineInstalled: boolean;
+  enginePath: string;
 }
 
 const DEFAULT_SETTINGS: Settings = {
@@ -51,6 +55,10 @@ const DEFAULT_SETTINGS: Settings = {
   ragEmbeddingModel: "nomic-embed-text",
   ragHistorySynced: false,
   hf_token: "",
+  engineKind: "cpu",
+  engineVersion: "0.1.0",
+  engineInstalled: false,
+  enginePath: "",
 };
 
 interface SettingsContextType {

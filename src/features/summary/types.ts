@@ -54,6 +54,7 @@ export interface StructuredSummary {
     due_date: string | null;
   })[];
   summary_points?: string[];
+  summary_generation_warning?: string;
   risks?: string[];
   open_questions?: string[];
   unresolved_topics?: string[];

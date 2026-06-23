@@ -1,6 +1,8 @@
 use keyring::Entry;
 use rusqlite::Connection;
-use std::io::{BufRead, BufReader, Write};
+use sha2::{Digest, Sha256};
+use std::fs::File;
+use std::io::{BufRead, BufReader, Read, Write};
 use std::path::PathBuf;
 use std::process::{Child, ChildStdin, Command, Stdio};
 use std::sync::{Arc, Mutex};
@@ -64,6 +66,538 @@ struct AppState {
     db: Arc<Mutex<Connection>>,
     python_stdin: Arc<Mutex<Option<ChildStdin>>>,
     python_child: Arc<Mutex<Option<Child>>>,
+}
+
+const ENGINE_VERSION: &str = "0.1.0";
+const ENGINE_RELEASE_BASE: &str =
+    "https://github.com/Igor-C-Assuncao/IA-notetaking/releases/download/v0.1.0";
+const ENGINE_MANIFEST_FILE: &str = "engines-manifest.json";
+
+#[derive(serde::Serialize)]
+struct EngineStatus {
+    installed: bool,
+    kind: String,
+    version: String,
+    path: Option<String>,
+    size_bytes: Option<u64>,
+    dev_mode: bool,
+}
+
+#[derive(serde::Deserialize)]
+struct EngineManifest {
+    engines: Vec<EngineManifestEntry>,
+}
+
+#[derive(serde::Deserialize, Clone)]
+struct EngineManifestEntry {
+    kind: String,
+    file_name: String,
+    sha256: String,
+    size_bytes: u64,
+    url: Option<String>,
+    chunks: Option<Vec<EngineManifestChunk>>,
+}
+
+#[derive(serde::Deserialize, Clone)]
+struct EngineManifestChunk {
+    file_name: String,
+    sha256: String,
+    size_bytes: u64,
+    url: Option<String>,
+}
+
+struct EngineAssetDownload<'a> {
+    kind: &'a str,
+    url: &'a str,
+    expected_size: u64,
+    expected_sha256: Option<&'a str>,
+    package_size: u64,
+    message: &'a str,
+}
+
+#[derive(serde::Serialize)]
+struct OllamaStatus {
+    installed: bool,
+    running: bool,
+    models: Vec<String>,
+    message: String,
+}
+
+fn engine_file_name(kind: &str) -> &'static str {
+    match kind {
+        "gpu" => "ai-notetaking-engine-windows-x64-gpu.exe",
+        _ => "ai-notetaking-engine-windows-x64-cpu.exe",
+    }
+}
+
+fn engine_download_url(kind: &str) -> String {
+    format!("{}/{}", ENGINE_RELEASE_BASE, engine_file_name(kind))
+}
+
+fn engine_asset_url(file_name: &str) -> String {
+    format!("{}/{}", ENGINE_RELEASE_BASE, file_name)
+}
+
+fn engine_manifest_url() -> String {
+    format!("{}/{}", ENGINE_RELEASE_BASE, ENGINE_MANIFEST_FILE)
+}
+
+fn fetch_engine_manifest() -> Result<EngineManifest, String> {
+    let client = reqwest::blocking::Client::builder()
+        .timeout(std::time::Duration::from_secs(20))
+        .build()
+        .map_err(|e| e.to_string())?;
+    let response = client
+        .get(engine_manifest_url())
+        .send()
+        .map_err(|e| format!("Failed to fetch engine manifest: {}", e))?;
+    if !response.status().is_success() {
+        return Err(format!(
+            "Engine manifest download failed with HTTP {}",
+            response.status()
+        ));
+    }
+    response
+        .json::<EngineManifest>()
+        .map_err(|e| format!("Invalid engine manifest: {}", e))
+}
+
+fn manifest_entry_for(kind: &str) -> Result<EngineManifestEntry, String> {
+    let manifest = fetch_engine_manifest()?;
+    manifest
+        .engines
+        .into_iter()
+        .find(|entry| entry.kind == kind)
+        .ok_or_else(|| format!("Engine manifest does not contain a '{}' package.", kind))
+}
+
+fn engine_dir(app: &AppHandle, kind: &str) -> Result<PathBuf, String> {
+    let app_data_dir = app.path().app_data_dir().map_err(|e| e.to_string())?;
+    Ok(app_data_dir.join("engines").join(ENGINE_VERSION).join(kind))
+}
+
+fn engine_path(app: &AppHandle, kind: &str) -> Result<PathBuf, String> {
+    Ok(engine_dir(app, kind)?.join(engine_file_name(kind)))
+}
+
+fn find_downloaded_engine(app: &AppHandle, kind: &str) -> Option<PathBuf> {
+    let path = engine_path(app, kind).ok()?;
+    let is_nonempty = path
+        .metadata()
+        .map(|metadata| metadata.len() > 0)
+        .unwrap_or(false);
+    if is_nonempty {
+        Some(path)
+    } else {
+        None
+    }
+}
+
+#[tauri::command]
+fn get_engine_status(app: AppHandle, kind: Option<String>) -> Result<EngineStatus, String> {
+    let kind = kind.unwrap_or_else(|| "cpu".to_string());
+
+    if cfg!(debug_assertions) {
+        return Ok(EngineStatus {
+            installed: true,
+            kind,
+            version: ENGINE_VERSION.to_string(),
+            path: None,
+            size_bytes: None,
+            dev_mode: true,
+        });
+    }
+
+    let path = find_downloaded_engine(&app, &kind);
+    let size_bytes = path
+        .as_ref()
+        .and_then(|p| p.metadata().ok().map(|metadata| metadata.len()));
+
+    Ok(EngineStatus {
+        installed: path.is_some(),
+        kind,
+        version: ENGINE_VERSION.to_string(),
+        path: path.map(|p| p.to_string_lossy().to_string()),
+        size_bytes,
+        dev_mode: false,
+    })
+}
+
+#[tauri::command]
+fn download_engine(app: AppHandle, kind: String) -> Result<EngineStatus, String> {
+    if cfg!(debug_assertions) {
+        return get_engine_status(app, Some(kind));
+    }
+
+    let target_dir = engine_dir(&app, &kind)?;
+    std::fs::create_dir_all(&target_dir).map_err(|e| e.to_string())?;
+    let manifest_entry = manifest_entry_for(&kind)?;
+    let target_path = engine_dir(&app, &kind)?.join(&manifest_entry.file_name);
+    let partial_path = target_path.with_extension("download");
+    let _ = std::fs::remove_file(&partial_path);
+
+    app.emit(
+        "engine-download-progress",
+        serde_json::json!({
+            "kind": kind,
+            "stage": "downloading",
+            "downloadedBytes": 0,
+            "totalBytes": null,
+            "message": "Starting engine download"
+        }),
+    )
+    .ok();
+
+    let client = reqwest::blocking::Client::builder()
+        .connect_timeout(std::time::Duration::from_secs(20))
+        .timeout(std::time::Duration::from_secs(60 * 45))
+        .build()
+        .map_err(|e| e.to_string())?;
+    let mut file = File::create(&partial_path).map_err(|e| e.to_string())?;
+    let mut hasher = Sha256::new();
+    let mut downloaded = 0_u64;
+
+    if let Some(chunks) = manifest_entry.chunks.clone() {
+        let chunk_total = chunks
+            .iter()
+            .try_fold(0_u64, |sum, chunk| sum.checked_add(chunk.size_bytes))
+            .ok_or_else(|| "Engine chunk sizes overflowed.".to_string())?;
+        if chunk_total != manifest_entry.size_bytes {
+            let _ = std::fs::remove_file(&partial_path);
+            return Err(format!(
+                "Engine manifest chunk sizes do not match package size. Expected {} bytes, got {} bytes.",
+                manifest_entry.size_bytes, chunk_total
+            ));
+        }
+
+        for (index, chunk) in chunks.iter().enumerate() {
+            let url = chunk
+                .url
+                .clone()
+                .unwrap_or_else(|| engine_asset_url(&chunk.file_name));
+            download_engine_asset(
+                &app,
+                &client,
+                &mut file,
+                &mut hasher,
+                &mut downloaded,
+                EngineAssetDownload {
+                    kind: &kind,
+                    url: &url,
+                    expected_size: chunk.size_bytes,
+                    expected_sha256: Some(&chunk.sha256),
+                    package_size: manifest_entry.size_bytes,
+                    message: &format!(
+                        "Downloading local engine part {} of {}",
+                        index + 1,
+                        chunks.len()
+                    ),
+                },
+            )?;
+        }
+    } else {
+        let url = manifest_entry
+            .url
+            .clone()
+            .unwrap_or_else(|| engine_download_url(&kind));
+        download_engine_asset(
+            &app,
+            &client,
+            &mut file,
+            &mut hasher,
+            &mut downloaded,
+            EngineAssetDownload {
+                kind: &kind,
+                url: &url,
+                expected_size: manifest_entry.size_bytes,
+                expected_sha256: None,
+                package_size: manifest_entry.size_bytes,
+                message: "Downloading local engine",
+            },
+        )?;
+    }
+
+    file.flush().map_err(|e| e.to_string())?;
+    let hash = hasher
+        .finalize()
+        .iter()
+        .map(|byte| format!("{:02x}", byte))
+        .collect::<String>();
+    if downloaded != manifest_entry.size_bytes {
+        let _ = std::fs::remove_file(&partial_path);
+        return Err(format!(
+            "Engine package size mismatch. Expected {} bytes, got {} bytes.",
+            manifest_entry.size_bytes, downloaded
+        ));
+    }
+
+    if hash.to_lowercase() != manifest_entry.sha256.to_lowercase() {
+        let _ = std::fs::remove_file(&partial_path);
+        return Err("Engine package integrity check failed. The downloaded file did not match the expected SHA-256.".to_string());
+    }
+
+    app.emit(
+        "engine-download-progress",
+        serde_json::json!({
+            "kind": kind,
+            "stage": "verifying",
+            "downloadedBytes": downloaded,
+            "totalBytes": manifest_entry.size_bytes,
+            "sha256": hash,
+            "message": "Verifying engine package"
+        }),
+    )
+    .ok();
+
+    std::fs::rename(&partial_path, &target_path).map_err(|e| e.to_string())?;
+
+    app.emit(
+        "engine-download-completed",
+        serde_json::json!({
+            "kind": kind,
+            "path": target_path.to_string_lossy(),
+            "sha256": hash,
+            "sizeBytes": downloaded
+        }),
+    )
+    .ok();
+
+    get_engine_status(app, Some(kind))
+}
+
+fn download_engine_asset(
+    app: &AppHandle,
+    client: &reqwest::blocking::Client,
+    output: &mut File,
+    package_hasher: &mut Sha256,
+    downloaded_total: &mut u64,
+    asset: EngineAssetDownload<'_>,
+) -> Result<(), String> {
+    let mut response = client.get(asset.url).send().map_err(|e| e.to_string())?;
+    if !response.status().is_success() {
+        return Err(format!(
+            "Engine download failed with HTTP {} from {}",
+            response.status(),
+            asset.url
+        ));
+    }
+
+    if let Some(total) = response.content_length() {
+        if total != asset.expected_size {
+            return Err(format!(
+                "Engine asset size mismatch before download. Expected {} bytes, got {} bytes from {}.",
+                asset.expected_size, total, asset.url
+            ));
+        }
+    }
+
+    let mut chunk_hasher = Sha256::new();
+    let mut downloaded_asset = 0_u64;
+    let mut buffer = [0_u8; 1024 * 256];
+
+    loop {
+        let read = response.read(&mut buffer).map_err(|e| e.to_string())?;
+        if read == 0 {
+            break;
+        }
+        output
+            .write_all(&buffer[..read])
+            .map_err(|e| e.to_string())?;
+        package_hasher.update(&buffer[..read]);
+        chunk_hasher.update(&buffer[..read]);
+        downloaded_asset += read as u64;
+        *downloaded_total += read as u64;
+
+        app.emit(
+            "engine-download-progress",
+            serde_json::json!({
+                "kind": asset.kind,
+                "stage": "downloading",
+                "downloadedBytes": *downloaded_total,
+                "totalBytes": asset.package_size,
+                "message": asset.message
+            }),
+        )
+        .ok();
+    }
+
+    if downloaded_asset != asset.expected_size {
+        return Err(format!(
+            "Engine asset size mismatch. Expected {} bytes, got {} bytes from {}.",
+            asset.expected_size, downloaded_asset, asset.url
+        ));
+    }
+
+    if let Some(expected_hash) = asset.expected_sha256 {
+        let hash = chunk_hasher
+            .finalize()
+            .iter()
+            .map(|byte| format!("{:02x}", byte))
+            .collect::<String>();
+        if hash.to_lowercase() != expected_hash.to_lowercase() {
+            return Err(format!(
+                "Engine asset integrity check failed for {}. The downloaded chunk did not match the expected SHA-256.",
+                asset.url
+            ));
+        }
+    }
+
+    Ok(())
+}
+
+#[tauri::command]
+fn check_ollama() -> Result<OllamaStatus, String> {
+    let winget_available = Command::new("winget")
+        .arg("--version")
+        .output()
+        .map(|output| output.status.success())
+        .unwrap_or(false);
+
+    let installed = winget_available
+        && Command::new("winget")
+            .args(["list", "--id", "Ollama.Ollama", "-e"])
+            .output()
+            .map(|output| output.status.success())
+            .unwrap_or(false);
+
+    let response = reqwest::blocking::Client::builder()
+        .timeout(std::time::Duration::from_secs(2))
+        .build()
+        .map_err(|e| e.to_string())?
+        .get("http://localhost:11434/api/tags")
+        .send();
+
+    match response {
+        Ok(resp) if resp.status().is_success() => {
+            let json = resp
+                .json::<serde_json::Value>()
+                .map_err(|e| e.to_string())?;
+            let models = json
+                .get("models")
+                .and_then(|v| v.as_array())
+                .map(|items| {
+                    items
+                        .iter()
+                        .filter_map(|item| item.get("name").and_then(|name| name.as_str()))
+                        .map(|name| name.to_string())
+                        .collect::<Vec<_>>()
+                })
+                .unwrap_or_default();
+            Ok(OllamaStatus {
+                installed: true,
+                running: true,
+                models,
+                message: "Ollama is running.".to_string(),
+            })
+        }
+        _ => Ok(OllamaStatus {
+            installed,
+            running: false,
+            models: Vec::new(),
+            message: if !winget_available {
+                "Windows Package Manager (winget) is not available. Install Ollama manually from ollama.com/download, then open Ollama and re-check.".to_string()
+            } else if installed {
+                "Ollama is installed but the local service is not running. Open the Ollama app, then re-check.".to_string()
+            } else {
+                "Ollama is not installed. You can install it automatically with winget.".to_string()
+            },
+        }),
+    }
+}
+
+#[tauri::command]
+fn install_ollama_winget(app: AppHandle) -> Result<(), String> {
+    let winget_available = Command::new("winget")
+        .arg("--version")
+        .output()
+        .map(|output| output.status.success())
+        .unwrap_or(false);
+    if !winget_available {
+        return Err("winget is not available on this Windows installation.".to_string());
+    }
+
+    app.emit(
+        "ollama-install-progress",
+        serde_json::json!({
+            "stage": "starting",
+            "message": "Starting Ollama installer with winget"
+        }),
+    )
+    .ok();
+
+    let status = Command::new("winget")
+        .args([
+            "install",
+            "--id",
+            "Ollama.Ollama",
+            "-e",
+            "--accept-package-agreements",
+            "--accept-source-agreements",
+        ])
+        .status()
+        .map_err(|e| format!("Failed to start winget: {}", e))?;
+
+    if status.success() {
+        app.emit(
+            "ollama-install-progress",
+            serde_json::json!({
+                "stage": "completed",
+                "message": "Ollama installation completed"
+            }),
+        )
+        .ok();
+        Ok(())
+    } else {
+        Err(format!("winget exited with status {}", status))
+    }
+}
+
+#[tauri::command]
+fn pull_ollama_model(app: AppHandle, model: String) -> Result<(), String> {
+    let client = reqwest::blocking::Client::builder()
+        .timeout(None)
+        .build()
+        .map_err(|e| e.to_string())?;
+    let mut response = client
+        .post("http://localhost:11434/api/pull")
+        .json(&serde_json::json!({ "name": model }))
+        .send()
+        .map_err(|e| e.to_string())?;
+
+    if !response.status().is_success() {
+        return Err(format!(
+            "Ollama pull failed with HTTP {}",
+            response.status()
+        ));
+    }
+
+    let mut buffer = [0_u8; 1024 * 16];
+    let mut pending = String::new();
+    loop {
+        let read = response.read(&mut buffer).map_err(|e| e.to_string())?;
+        if read == 0 {
+            break;
+        }
+        pending.push_str(&String::from_utf8_lossy(&buffer[..read]));
+        while let Some(pos) = pending.find('\n') {
+            let line = pending[..pos].trim().to_string();
+            pending = pending[pos + 1..].to_string();
+            if line.is_empty() {
+                continue;
+            }
+            if let Ok(value) = serde_json::from_str::<serde_json::Value>(&line) {
+                app.emit("ollama-pull-progress", value).ok();
+            }
+        }
+    }
+
+    if !pending.trim().is_empty() {
+        if let Ok(value) = serde_json::from_str::<serde_json::Value>(pending.trim()) {
+            app.emit("ollama-pull-progress", value).ok();
+        }
+    }
+
+    Ok(())
 }
 
 // ── 3. Database commands ──────────────────────────────────────
@@ -191,13 +725,28 @@ fn search_meetings(state: State<'_, AppState>, query: String) -> Result<Vec<Meet
 
 #[tauri::command]
 fn send_command_to_python(state: State<'_, AppState>, payload: String) -> Result<(), String> {
-    println!("[RUST DEBUG] Sending to Python: {}", payload);
+    let log_payload = serde_json::from_str::<serde_json::Value>(&payload)
+        .map(|mut value| {
+            redact_secret_field(&mut value, "api_key");
+            redact_secret_field(&mut value, "hf_token");
+            value.to_string()
+        })
+        .unwrap_or_else(|_| "<non-json payload>".to_string());
+    println!("[RUST DEBUG] Sending to Python: {}", log_payload);
     let lock = state.python_stdin.lock().unwrap();
     if let Some(mut stdin) = lock.as_ref() {
         writeln!(stdin, "{}", payload).map_err(|e| e.to_string())?;
         return Ok(());
     }
     Err("Python process not initialized or stdin unavailable".to_string())
+}
+
+fn redact_secret_field(value: &mut serde_json::Value, key: &str) {
+    if let Some(secret) = value.get_mut(key) {
+        if secret.as_str().map(|s| !s.is_empty()).unwrap_or(false) {
+            *secret = serde_json::Value::String("<redacted>".to_string());
+        }
+    }
 }
 
 // ── 5. Window mode commands ───────────────────────────────────
@@ -233,6 +782,18 @@ async fn set_wizard_mode(window: Window) -> Result<(), String> {
     window.set_decorations(false).map_err(|e| e.to_string())?;
     window.set_always_on_top(false).map_err(|e| e.to_string())?;
     window.set_resizable(false).map_err(|e| e.to_string())?;
+    window.center().map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+#[tauri::command]
+async fn set_bootstrap_mode(window: Window) -> Result<(), String> {
+    window
+        .set_size(LogicalSize::new(760.0, 640.0))
+        .map_err(|e| e.to_string())?;
+    window.set_decorations(false).map_err(|e| e.to_string())?;
+    window.set_always_on_top(false).map_err(|e| e.to_string())?;
+    window.set_resizable(true).map_err(|e| e.to_string())?;
     window.center().map_err(|e| e.to_string())?;
     Ok(())
 }
@@ -554,6 +1115,7 @@ fn spawn_and_supervise_python(
     db: Arc<Mutex<Connection>>,
     python_stdin: Arc<Mutex<Option<ChildStdin>>>,
     python_child: Arc<Mutex<Option<Child>>>,
+    requested_engine_path: Option<PathBuf>,
 ) {
     std::thread::spawn(move || {
         let mut restart_attempts = 0;
@@ -578,10 +1140,24 @@ fn spawn_and_supervise_python(
             }
 
             let project_dir = app_handle.path().resource_dir().unwrap_or_default();
-            let dev_python_script = project_dir.join("../src-python/main.py");
-            let is_dev = dev_python_script.exists();
+            let app_data_dir = app_handle
+                .path()
+                .app_data_dir()
+                .unwrap_or_else(|_| PathBuf::from("."));
+            let manifest_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+            let repo_root = manifest_dir
+                .parent()
+                .map(PathBuf::from)
+                .unwrap_or_else(|| manifest_dir.clone());
+            let dev_python_script = repo_root.join("src-python").join("main.py");
+            let dev_python = repo_root
+                .join("src-python")
+                .join(".venv")
+                .join("Scripts")
+                .join("python.exe");
+            let is_dev = cfg!(debug_assertions) && dev_python_script.exists();
 
-            let mut sidecar_path = None;
+            let mut sidecar_path = requested_engine_path.clone();
             let search_dirs = [
                 project_dir.clone(),
                 project_dir.join("binaries"),
@@ -590,33 +1166,36 @@ fn spawn_and_supervise_python(
                     .and_then(|path| path.parent().map(PathBuf::from))
                     .unwrap_or_default(),
             ];
-            for binaries_dir in search_dirs {
-                if let Ok(entries) = std::fs::read_dir(binaries_dir) {
-                    for entry in entries.flatten() {
-                        let path = entry.path();
-                        if let Some(file_name) = path.file_name().and_then(|n| n.to_str()) {
-                            let is_engine = file_name.starts_with("ai-notetaking-engine")
-                                && !file_name.ends_with(".pdb");
-                            let is_nonempty = path
-                                .metadata()
-                                .map(|metadata| metadata.len() > 0)
-                                .unwrap_or(false);
-                            if is_engine && is_nonempty {
-                                sidecar_path = Some(path);
-                                break;
+            if sidecar_path.is_none() {
+                for binaries_dir in search_dirs {
+                    if let Ok(entries) = std::fs::read_dir(binaries_dir) {
+                        for entry in entries.flatten() {
+                            let path = entry.path();
+                            if let Some(file_name) = path.file_name().and_then(|n| n.to_str()) {
+                                let is_engine = file_name.starts_with("ai-notetaking-engine")
+                                    && !file_name.ends_with(".pdb");
+                                let is_nonempty = path
+                                    .metadata()
+                                    .map(|metadata| metadata.len() > 0)
+                                    .unwrap_or(false);
+                                if is_engine && is_nonempty {
+                                    sidecar_path = Some(path);
+                                    break;
+                                }
                             }
                         }
                     }
-                }
-                if sidecar_path.is_some() {
-                    break;
+                    if sidecar_path.is_some() {
+                        break;
+                    }
                 }
             }
 
             let child_res = if is_dev {
                 if cfg!(target_os = "windows") {
-                    Command::new(r"..\src-python\.venv\Scripts\python.exe")
-                        .arg(r"..\src-python\main.py")
+                    Command::new(&dev_python)
+                        .arg(&dev_python_script)
+                        .env("AI_NOTETAKING_DATA_DIR", &app_data_dir)
                         .stdin(Stdio::piped())
                         .stdout(Stdio::piped())
                         .stderr(Stdio::inherit())
@@ -625,6 +1204,7 @@ fn spawn_and_supervise_python(
                     Command::new("bash")
                         .current_dir("../")
                         .arg("src-python/run.sh")
+                        .env("AI_NOTETAKING_DATA_DIR", &app_data_dir)
                         .stdin(Stdio::piped())
                         .stdout(Stdio::piped())
                         .stderr(Stdio::inherit())
@@ -633,6 +1213,7 @@ fn spawn_and_supervise_python(
             } else if let Some(path) = sidecar_path {
                 println!("[Supervisor] Spawning production sidecar: {:?}", path);
                 Command::new(path)
+                    .env("AI_NOTETAKING_DATA_DIR", &app_data_dir)
                     .stdin(Stdio::piped())
                     .stdout(Stdio::piped())
                     .stderr(Stdio::inherit())
@@ -889,6 +1470,43 @@ fn spawn_and_supervise_python(
 }
 
 #[tauri::command]
+fn start_sidecar(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    kind: Option<String>,
+) -> Result<(), String> {
+    {
+        let stdin_lock = state.python_stdin.lock().unwrap();
+        if stdin_lock.is_some() {
+            return Ok(());
+        }
+    }
+
+    let kind = kind.unwrap_or_else(|| "cpu".to_string());
+    let engine_path = if cfg!(debug_assertions) {
+        None
+    } else {
+        Some(
+            find_downloaded_engine(&app, &kind)
+                .ok_or_else(|| format!("{} engine is not installed.", kind))?,
+        )
+    };
+
+    println!("[RUST INFO] Starting sidecar through bootstrap flow.");
+    app.emit("sidecar-starting", serde_json::json!({ "kind": kind }))
+        .ok();
+
+    spawn_and_supervise_python(
+        app,
+        Arc::clone(&state.db),
+        Arc::clone(&state.python_stdin),
+        Arc::clone(&state.python_child),
+        engine_path,
+    );
+    Ok(())
+}
+
+#[tauri::command]
 fn reconnect_sidecar(app: AppHandle, state: State<'_, AppState>) -> Result<(), String> {
     println!("[RUST INFO] Manual sidecar reconnection triggered.");
     // Clear any existing child just in case
@@ -909,6 +1527,7 @@ fn reconnect_sidecar(app: AppHandle, state: State<'_, AppState>) -> Result<(), S
         Arc::clone(&state.db),
         Arc::clone(&state.python_stdin),
         Arc::clone(&state.python_child),
+        None,
     );
     Ok(())
 }
@@ -995,8 +1614,6 @@ pub fn run() {
         .plugin(tauri_plugin_fs::init())
         .plugin(tauri_plugin_http::init())
         .setup(|app| {
-            let app_handle = app.handle().clone();
-
             // 1. Initialize persistent application data.
             let app_data_dir = app
                 .path()
@@ -1044,14 +1661,8 @@ pub fn run() {
             // 3. Atomically Migrate settings.json secrets to OS Keychain
             migrate_settings_to_keychain(app);
 
-            // 4. Spawn Python Engine via Supervisor Process
-            let state = app.state::<AppState>();
-            spawn_and_supervise_python(
-                app_handle.clone(),
-                Arc::clone(&state.db),
-                Arc::clone(&state.python_stdin),
-                Arc::clone(&state.python_child),
-            );
+            // 4. The Python engine is started by the frontend bootstrap after
+            // it verifies or downloads the selected local engine.
 
             // Register global keyboard shortcuts.
             // Use Cmd+Shift on macOS, Ctrl+Shift on Windows/Linux.
@@ -1107,14 +1718,21 @@ pub fn run() {
             set_compact_mode,
             set_expanded_mode,
             set_wizard_mode,
+            set_bootstrap_mode,
             open_popover_window,
             close_popover_window,
             request_audio_devices,
             reprocess_meeting,
             trigger_index_backfill,
+            get_engine_status,
+            download_engine,
+            check_ollama,
+            install_ollama_winget,
+            pull_ollama_model,
             set_secret,
             get_secret,
             delete_secret,
+            start_sidecar,
             reconnect_sidecar,
             open_logs_folder,
         ]);

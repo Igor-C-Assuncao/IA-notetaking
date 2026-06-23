@@ -3,10 +3,10 @@
 export const DEFAULTS = {
   // LLM & Inference Defaults
   provider: 'ollama',
-  model: 'gemma4:e2b',
+  model: 'llama3.1:8b',
   
   // Application Defaults
-  theme: 'liquid-glass',
+  theme: 'minimalist-notebook',
   systemAudio: false,
   autoSummarize: true,
   speakerDiarization: false,

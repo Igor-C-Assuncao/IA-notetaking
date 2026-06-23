@@ -88,15 +88,32 @@ jobs:
           cp dist/ai-notetaking-engine ../src-tauri/binaries/ai-notetaking-engine-x86_64-unknown-linux-gnu
 
       # ── 4. Tauri Compilation and GitHub Release Upload ─────────────
-      - name: Build and Upload Tauri Release Bundles
-        uses: tauri-apps/tauri-action@v0
+      - name: Build Tauri Release Bundles
         env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
-        with:
-          tagName: ${{ github.ref_name }}
-          releaseName: 'v1.0.0 Release - v__VERSION__'
-          releaseBody: 'Production release v1.0.0 for AI Notetaker. Dynamic local sidecar bundles, models, and linter systems fully packaged.'
-          releaseDraft: true
-          prerelease: false
+        run: npm run tauri build
+
+      - name: Create Draft Release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh release view "${{ github.ref_name }}" >/dev/null 2>&1 || gh release create "${{ github.ref_name }}" \
+            --draft \
+            --title "AI NoteTaking ${{ github.ref_name }}" \
+            --notes "Production release ${{ github.ref_name }} for AI Notetaker."
+
+      - name: Upload Tauri Release Bundles
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          mapfile -d '' assets < <(find src-tauri/target/release/bundle -type f \
+            \( -name '*.AppImage' -o -name '*.deb' -o -name '*.rpm' -o -name '*.dmg' -o -name '*.msi' -o -name '*.exe' -o -name '*.json' \) \
+            -print0)
+          if [ "${#assets[@]}" -eq 0 ]; then
+            echo "No Tauri bundle assets found."
+            find src-tauri/target/release -maxdepth 4 -type f
+            exit 1
+          fi
+          gh release upload "${{ github.ref_name }}" "${assets[@]}" --clobber

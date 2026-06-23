@@ -11,6 +11,7 @@ import { CompactWidget } from "@widgets/CompactWidget";
 import { ExpandedView } from "@widgets/ExpandedView";
 import { PopoverWidget } from "@widgets/PopoverWidget";
 
+import { EngineBootstrap } from "@features/bootstrap/EngineBootstrap";
 import { useWindowMode } from "@features/window-chrome/hooks/useWindowMode";
 import { useRecording } from "@features/recording/hooks/useRecording";
 import { OnboardingWizard } from "@features/onboarding/OnboardingWizard";
@@ -149,11 +150,11 @@ function InnerRoot() {
   
   if (loading) return null;
   
-  if (!settings.onboarding_completed) {
-    return <OnboardingWizard />;
-  }
-
-  return <MainApp />;
+  return (
+    <EngineBootstrap>
+      {!settings.onboarding_completed ? <OnboardingWizard /> : <MainApp />}
+    </EngineBootstrap>
+  );
 }
 
 export default function Root() {

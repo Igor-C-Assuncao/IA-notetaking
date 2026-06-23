@@ -474,6 +474,32 @@ class MeetingWorkflowEngine:
             "summary_generation_warning": "LLM returned invalid structured JSON; generated fallback summary from transcript.",
         }
 
+    def _parse_summary_or_repair(self, raw: str) -> dict:
+        try:
+            structured = parse_json_payload(raw)
+            if isinstance(structured, dict):
+                return structured
+            raise ValueError("Structured summary payload was not a JSON object.")
+        except Exception as parse_error:
+            print(f"DEBUG: [LangGraph] Node 4 JSON parse failed: {parse_error}", file=sys.stderr)
+
+        repair_prompt = (
+            "Convert the following malformed meeting-summary response into ONE valid JSON object.\n"
+            "Return ONLY JSON. Do not include markdown fences, prose, comments, or trailing commas.\n"
+            "The JSON object must include these keys: metadata, tldr, participants, metrics, "
+            "key_decisions, action_items, summary_points.\n"
+            "Use empty arrays for missing list fields and empty strings for missing scalar fields."
+        )
+        repair_response = self.llm.invoke([
+            SystemMessage(content=repair_prompt),
+            HumanMessage(content=raw[:12000]),
+        ])
+        repaired = parse_json_payload(repair_response.content.strip())
+        if not isinstance(repaired, dict):
+            raise ValueError("Repaired structured summary payload was not a JSON object.")
+        repaired["summary_generation_warning"] = "LLM summary JSON was repaired before rendering."
+        return repaired
+
     # --- NODE 4: Structured Summary (JSON) ---
     def generate_summary_node(self, state: AgentState):
         print("DEBUG: [LangGraph] Node 4: Generating structured summary...", file=sys.stderr)
@@ -525,11 +551,9 @@ class MeetingWorkflowEngine:
 
         raw = response.content.strip()
         try:
-            structured = parse_json_payload(raw)
-            if not isinstance(structured, dict):
-                raise ValueError("Structured summary payload was not a JSON object.")
+            structured = self._parse_summary_or_repair(raw)
         except Exception:
-            print("DEBUG: [LangGraph] Node 4 JSON parse failed.", file=sys.stderr)
+            print("DEBUG: [LangGraph] Node 4 JSON repair failed.", file=sys.stderr)
             structured = self._fallback_summary_from_state(state, decisions, actions)
 
         structured["schema_version"] = SCHEMA_VERSION

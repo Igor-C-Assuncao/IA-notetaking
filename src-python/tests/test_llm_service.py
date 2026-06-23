@@ -192,6 +192,36 @@ def test_generate_summary_node_fallback(mock_llm):
     assert res["structured_summary"]["summary_generation_warning"]
     assert res["final_markdown"] == ""
 
+def test_generate_summary_node_repairs_invalid_json(mock_llm):
+    engine = MeetingWorkflowEngine(provider_name="ollama", model_name="llama3")
+    engine.llm = mock_llm
+
+    broken_response = MagicMock()
+    broken_response.content = "Here is the summary: {metadata: bad json"
+    repaired_response = MagicMock()
+    repaired_response.content = json.dumps({
+        "metadata": {"title": "Launch", "date": "", "tags": ["release"]},
+        "tldr": "The launch plan was confirmed.",
+        "participants": [],
+        "metrics": [],
+        "key_decisions": [],
+        "action_items": [],
+        "summary_points": ["Launch plan confirmed."]
+    })
+    mock_llm.invoke.side_effect = [broken_response, repaired_response]
+
+    state = {
+        "entities": {"numbers": [], "speakers": []},
+        "decisions": [],
+        "actions": [],
+        "clean_transcript": "Alice confirmed the launch plan.",
+    }
+
+    res = engine.generate_summary_node(state)
+    assert res["structured_summary"]["tldr"] == "The launch plan was confirmed."
+    assert res["structured_summary"]["summary_generation_warning"] == "LLM summary JSON was repaired before rendering."
+    assert mock_llm.invoke.call_count == 2
+
 def test_parse_json_payload_repairs_trailing_commas():
     parsed = parse_json_payload('```json\n{"tldr": "Done", "summary_points": ["A",],}\n```')
     assert parsed["tldr"] == "Done"

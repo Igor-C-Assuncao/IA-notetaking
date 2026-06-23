@@ -6,7 +6,7 @@
   "build": {
     "beforeDevCommand": "npm run dev",
     "devUrl": "http://localhost:1420",
-    "beforeBuildCommand": "npm run build && node scripts/validate-sidecars.mjs",
+    "beforeBuildCommand": "npm run build",
     "frontendDist": "../dist"
   },
   "app": {
@@ -31,10 +31,6 @@
   "bundle": {
     "active": true,
     "targets": "all",
-    "externalBin": [
-      "binaries/audio-tap",
-      "binaries/ai-notetaking-engine"
-    ],
     "macOS": {
       "entitlements": "entitlements.plist",
       "signingIdentity": "-"
