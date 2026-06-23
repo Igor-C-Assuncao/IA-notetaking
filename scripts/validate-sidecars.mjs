@@ -2,7 +2,7 @@ import fs from "node:fs";
 import path from "node:path";
 
 const targetTriple = {
-  win32: "x86_64-pc-windows-msvc.exe",
+  win32: "windows-x64-cpu.exe",
   darwin: process.arch === "arm64"
     ? "aarch64-apple-darwin"
     : "x86_64-apple-darwin",
@@ -19,7 +19,8 @@ const sidecarPath = path.resolve(
   `ai-notetaking-engine-${targetTriple}`,
 );
 const maxSizeMiB = Number(process.env.SIDECAR_MAX_MIB || 1536);
-const allowMissing = process.env.SIDECAR_CHECK_ALLOW_MISSING === "1";
+const allowMissing = process.env.SIDECAR_CHECK_ALLOW_MISSING === "1" ||
+  process.env.SIDECAR_DOWNLOAD_AT_RUNTIME === "1";
 
 let size = 0;
 try {

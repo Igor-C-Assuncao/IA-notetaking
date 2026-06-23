@@ -42,7 +42,7 @@ def get_manifest_model(section: str, key: str, default: str) -> str:
 DEFAULTS = {
     # ── LLM & Inference Defaults ───────────────────────────────────────────
     "provider": "ollama",
-    "model": "gemma4:e2b",
+    "model": "llama3.1:8b",
     
     # LangChain / LangGraph parameters for summarization & extraction
     "temperature": 0.2,
