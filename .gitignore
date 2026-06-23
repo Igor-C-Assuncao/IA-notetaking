@@ -72,3 +72,5 @@ temp_*.wav
 .claude
 
 src-tauri/binaries/audio-tap-aarch64-apple-darwin
+src-tauri/binaries/ai-notetaking-engine-windows-x64-*.exe
+src-tauri/binaries/ai-notetaking-engine-windows-x64-*.exe.part*

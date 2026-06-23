@@ -95,6 +95,15 @@ struct EngineManifestEntry {
     sha256: String,
     size_bytes: u64,
     url: Option<String>,
+    chunks: Option<Vec<EngineManifestChunk>>,
+}
+
+#[derive(serde::Deserialize, Clone)]
+struct EngineManifestChunk {
+    file_name: String,
+    sha256: String,
+    size_bytes: u64,
+    url: Option<String>,
 }
 
 #[derive(serde::Serialize)]
@@ -114,6 +123,10 @@ fn engine_file_name(kind: &str) -> &'static str {
 
 fn engine_download_url(kind: &str) -> String {
     format!("{}/{}", ENGINE_RELEASE_BASE, engine_file_name(kind))
+}
+
+fn engine_asset_url(file_name: &str) -> String {
+    format!("{}/{}", ENGINE_RELEASE_BASE, file_name)
 }
 
 fn engine_manifest_url() -> String {
@@ -215,10 +228,6 @@ fn download_engine(app: AppHandle, kind: String) -> Result<EngineStatus, String>
     let manifest_entry = manifest_entry_for(&kind)?;
     let target_path = engine_dir(&app, &kind)?.join(&manifest_entry.file_name);
     let partial_path = target_path.with_extension("download");
-    let url = manifest_entry
-        .url
-        .clone()
-        .unwrap_or_else(|| engine_download_url(&kind));
     let _ = std::fs::remove_file(&partial_path);
 
     app.emit(
@@ -238,55 +247,60 @@ fn download_engine(app: AppHandle, kind: String) -> Result<EngineStatus, String>
         .timeout(std::time::Duration::from_secs(60 * 45))
         .build()
         .map_err(|e| e.to_string())?;
-    let mut response = client.get(&url).send().map_err(|e| e.to_string())?;
-    if !response.status().is_success() {
-        return Err(format!(
-            "Engine download failed with HTTP {} from {}",
-            response.status(),
-            url
-        ));
-    }
-
-    let total_bytes = response.content_length();
-    if let Some(total) = total_bytes {
-        if total != manifest_entry.size_bytes {
-            return Err(format!(
-                "Engine package size mismatch before download. Expected {} bytes, got {} bytes.",
-                manifest_entry.size_bytes, total
-            ));
-        }
-    }
     let mut file = File::create(&partial_path).map_err(|e| e.to_string())?;
     let mut hasher = Sha256::new();
     let mut downloaded = 0_u64;
-    let mut buffer = [0_u8; 1024 * 256];
 
-    loop {
-        let read = match response.read(&mut buffer) {
-            Ok(read) => read,
-            Err(e) => {
-                let _ = std::fs::remove_file(&partial_path);
-                return Err(e.to_string());
-            }
-        };
-        if read == 0 {
-            break;
+    if let Some(chunks) = manifest_entry.chunks.clone() {
+        let chunk_total = chunks
+            .iter()
+            .try_fold(0_u64, |sum, chunk| sum.checked_add(chunk.size_bytes))
+            .ok_or_else(|| "Engine chunk sizes overflowed.".to_string())?;
+        if chunk_total != manifest_entry.size_bytes {
+            let _ = std::fs::remove_file(&partial_path);
+            return Err(format!(
+                "Engine manifest chunk sizes do not match package size. Expected {} bytes, got {} bytes.",
+                manifest_entry.size_bytes, chunk_total
+            ));
         }
-        file.write_all(&buffer[..read]).map_err(|e| e.to_string())?;
-        hasher.update(&buffer[..read]);
-        downloaded += read as u64;
 
-        app.emit(
-            "engine-download-progress",
-            serde_json::json!({
-                "kind": kind,
-                "stage": "downloading",
-                "downloadedBytes": downloaded,
-                "totalBytes": total_bytes,
-                "message": "Downloading local engine"
-            }),
-        )
-        .ok();
+        for (index, chunk) in chunks.iter().enumerate() {
+            let url = chunk
+                .url
+                .clone()
+                .unwrap_or_else(|| engine_asset_url(&chunk.file_name));
+            download_engine_asset(
+                &app,
+                &client,
+                &kind,
+                &url,
+                chunk.size_bytes,
+                Some(&chunk.sha256),
+                &mut file,
+                &mut hasher,
+                &mut downloaded,
+                manifest_entry.size_bytes,
+                &format!("Downloading local engine part {} of {}", index + 1, chunks.len()),
+            )?;
+        }
+    } else {
+        let url = manifest_entry
+            .url
+            .clone()
+            .unwrap_or_else(|| engine_download_url(&kind));
+        download_engine_asset(
+            &app,
+            &client,
+            &kind,
+            &url,
+            manifest_entry.size_bytes,
+            None,
+            &mut file,
+            &mut hasher,
+            &mut downloaded,
+            manifest_entry.size_bytes,
+            "Downloading local engine",
+        )?;
     }
 
     file.flush().map_err(|e| e.to_string())?;
@@ -314,7 +328,7 @@ fn download_engine(app: AppHandle, kind: String) -> Result<EngineStatus, String>
             "kind": kind,
             "stage": "verifying",
             "downloadedBytes": downloaded,
-            "totalBytes": total_bytes,
+            "totalBytes": manifest_entry.size_bytes,
             "sha256": hash,
             "message": "Verifying engine package"
         }),
@@ -335,6 +349,89 @@ fn download_engine(app: AppHandle, kind: String) -> Result<EngineStatus, String>
     .ok();
 
     get_engine_status(app, Some(kind))
+}
+
+fn download_engine_asset(
+    app: &AppHandle,
+    client: &reqwest::blocking::Client,
+    kind: &str,
+    url: &str,
+    expected_size: u64,
+    expected_sha256: Option<&str>,
+    output: &mut File,
+    package_hasher: &mut Sha256,
+    downloaded_total: &mut u64,
+    package_size: u64,
+    message: &str,
+) -> Result<(), String> {
+    let mut response = client.get(url).send().map_err(|e| e.to_string())?;
+    if !response.status().is_success() {
+        return Err(format!(
+            "Engine download failed with HTTP {} from {}",
+            response.status(),
+            url
+        ));
+    }
+
+    if let Some(total) = response.content_length() {
+        if total != expected_size {
+            return Err(format!(
+                "Engine asset size mismatch before download. Expected {} bytes, got {} bytes from {}.",
+                expected_size, total, url
+            ));
+        }
+    }
+
+    let mut chunk_hasher = Sha256::new();
+    let mut downloaded_asset = 0_u64;
+    let mut buffer = [0_u8; 1024 * 256];
+
+    loop {
+        let read = response.read(&mut buffer).map_err(|e| e.to_string())?;
+        if read == 0 {
+            break;
+        }
+        output.write_all(&buffer[..read]).map_err(|e| e.to_string())?;
+        package_hasher.update(&buffer[..read]);
+        chunk_hasher.update(&buffer[..read]);
+        downloaded_asset += read as u64;
+        *downloaded_total += read as u64;
+
+        app.emit(
+            "engine-download-progress",
+            serde_json::json!({
+                "kind": kind,
+                "stage": "downloading",
+                "downloadedBytes": *downloaded_total,
+                "totalBytes": package_size,
+                "message": message
+            }),
+        )
+        .ok();
+    }
+
+    if downloaded_asset != expected_size {
+        return Err(format!(
+            "Engine asset size mismatch. Expected {} bytes, got {} bytes from {}.",
+            expected_size, downloaded_asset, url
+        ));
+    }
+
+    if let Some(expected_hash) = expected_sha256 {
+        let hash = chunk_hasher
+            .finalize()
+            .iter()
+            .map(|byte| format!("{:02x}", byte))
+            .collect::<String>();
+        if hash.to_lowercase() != expected_hash.to_lowercase() {
+            return Err(format!(
+                "Engine asset integrity check failed for {}. The downloaded chunk did not match the expected SHA-256.",
+                url
+            ));
+        }
+    }
+
+    Ok(())
 }
 
 #[tauri::command]

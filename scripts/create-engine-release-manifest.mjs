@@ -6,6 +6,7 @@ const repoRoot = process.cwd();
 const binariesDir = path.resolve(repoRoot, "src-tauri", "binaries");
 const releaseBase = process.env.ENGINE_RELEASE_BASE ||
   "https://github.com/Igor-C-Assuncao/IA-notetaking/releases/download/v0.1.0";
+const maxSingleAssetBytes = Number(process.env.ENGINE_MAX_SINGLE_ASSET_BYTES || 2_000_000_000);
 
 const candidates = [
   { kind: "cpu", fileName: "ai-notetaking-engine-windows-x64-cpu.exe" },
@@ -40,13 +41,34 @@ for (const candidate of candidates) {
     console.warn(`[engine-manifest] Skipping empty ${candidate.fileName}`);
     continue;
   }
-  engines.push({
+  const entry = {
     kind: candidate.kind,
     file_name: candidate.fileName,
     size_bytes: stat.size,
     sha256: sha256(filePath),
     url: `${releaseBase}/${candidate.fileName}`,
-  });
+  };
+
+  const chunkPaths = fs
+    .readdirSync(binariesDir)
+    .filter((name) => name.startsWith(`${candidate.fileName}.part`))
+    .sort()
+    .map((name) => path.join(binariesDir, name));
+
+  if (stat.size > maxSingleAssetBytes && chunkPaths.length > 0) {
+    entry.chunks = chunkPaths.map((chunkPath) => {
+      const chunkName = path.basename(chunkPath);
+      return {
+        file_name: chunkName,
+        size_bytes: fs.statSync(chunkPath).size,
+        sha256: sha256(chunkPath),
+        url: `${releaseBase}/${chunkName}`,
+      };
+    });
+    delete entry.url;
+  }
+
+  engines.push(entry);
 }
 
 if (engines.length === 0) {
