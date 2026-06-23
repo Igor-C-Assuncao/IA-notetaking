@@ -106,6 +106,15 @@ struct EngineManifestChunk {
     url: Option<String>,
 }
 
+struct EngineAssetDownload<'a> {
+    kind: &'a str,
+    url: &'a str,
+    expected_size: u64,
+    expected_sha256: Option<&'a str>,
+    package_size: u64,
+    message: &'a str,
+}
+
 #[derive(serde::Serialize)]
 struct OllamaStatus {
     installed: bool,
@@ -269,19 +278,21 @@ fn download_engine(app: AppHandle, kind: String) -> Result<EngineStatus, String>
             download_engine_asset(
                 &app,
                 &client,
-                &kind,
-                &url,
-                chunk.size_bytes,
-                Some(&chunk.sha256),
                 &mut file,
                 &mut hasher,
                 &mut downloaded,
-                manifest_entry.size_bytes,
-                &format!(
-                    "Downloading local engine part {} of {}",
-                    index + 1,
-                    chunks.len()
-                ),
+                EngineAssetDownload {
+                    kind: &kind,
+                    url: &url,
+                    expected_size: chunk.size_bytes,
+                    expected_sha256: Some(&chunk.sha256),
+                    package_size: manifest_entry.size_bytes,
+                    message: &format!(
+                        "Downloading local engine part {} of {}",
+                        index + 1,
+                        chunks.len()
+                    ),
+                },
             )?;
         }
     } else {
@@ -292,15 +303,17 @@ fn download_engine(app: AppHandle, kind: String) -> Result<EngineStatus, String>
         download_engine_asset(
             &app,
             &client,
-            &kind,
-            &url,
-            manifest_entry.size_bytes,
-            None,
             &mut file,
             &mut hasher,
             &mut downloaded,
-            manifest_entry.size_bytes,
-            "Downloading local engine",
+            EngineAssetDownload {
+                kind: &kind,
+                url: &url,
+                expected_size: manifest_entry.size_bytes,
+                expected_sha256: None,
+                package_size: manifest_entry.size_bytes,
+                message: "Downloading local engine",
+            },
         )?;
     }
 
@@ -355,30 +368,25 @@ fn download_engine(app: AppHandle, kind: String) -> Result<EngineStatus, String>
 fn download_engine_asset(
     app: &AppHandle,
     client: &reqwest::blocking::Client,
-    kind: &str,
-    url: &str,
-    expected_size: u64,
-    expected_sha256: Option<&str>,
     output: &mut File,
     package_hasher: &mut Sha256,
     downloaded_total: &mut u64,
-    package_size: u64,
-    message: &str,
+    asset: EngineAssetDownload<'_>,
 ) -> Result<(), String> {
-    let mut response = client.get(url).send().map_err(|e| e.to_string())?;
+    let mut response = client.get(asset.url).send().map_err(|e| e.to_string())?;
     if !response.status().is_success() {
         return Err(format!(
             "Engine download failed with HTTP {} from {}",
             response.status(),
-            url
+            asset.url
         ));
     }
 
     if let Some(total) = response.content_length() {
-        if total != expected_size {
+        if total != asset.expected_size {
             return Err(format!(
                 "Engine asset size mismatch before download. Expected {} bytes, got {} bytes from {}.",
-                expected_size, total, url
+                asset.expected_size, total, asset.url
             ));
         }
     }
@@ -403,24 +411,24 @@ fn download_engine_asset(
         app.emit(
             "engine-download-progress",
             serde_json::json!({
-                "kind": kind,
+                "kind": asset.kind,
                 "stage": "downloading",
                 "downloadedBytes": *downloaded_total,
-                "totalBytes": package_size,
-                "message": message
+                "totalBytes": asset.package_size,
+                "message": asset.message
             }),
         )
         .ok();
     }
 
-    if downloaded_asset != expected_size {
+    if downloaded_asset != asset.expected_size {
         return Err(format!(
             "Engine asset size mismatch. Expected {} bytes, got {} bytes from {}.",
-            expected_size, downloaded_asset, url
+            asset.expected_size, downloaded_asset, asset.url
         ));
     }
 
-    if let Some(expected_hash) = expected_sha256 {
+    if let Some(expected_hash) = asset.expected_sha256 {
         let hash = chunk_hasher
             .finalize()
             .iter()
@@ -429,7 +437,7 @@ fn download_engine_asset(
         if hash.to_lowercase() != expected_hash.to_lowercase() {
             return Err(format!(
                 "Engine asset integrity check failed for {}. The downloaded chunk did not match the expected SHA-256.",
-                url
+                asset.url
             ));
         }
     }
