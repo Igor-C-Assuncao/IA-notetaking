@@ -1,6 +1,7 @@
 import os
 from unittest.mock import MagicMock, patch
 
+from schemas import SCHEMA_VERSION
 from transcription_service import TranscriptionService
 
 REAL_INIT_ENV = {"IS_TESTING": "0"}
@@ -206,5 +207,5 @@ def test_transcribe_runtime_failure_returns_structured_error():
                 "code": "TRANSCRIPTION_FAILED",
                 "message": "decoder failed",
             },
-            "schema_version": 2,
+            "schema_version": SCHEMA_VERSION,
         }

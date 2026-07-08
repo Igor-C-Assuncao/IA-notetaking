@@ -10,7 +10,7 @@ import threading
 # Internal services
 from audio_capture import AudioCaptureFactory, list_audio_devices
 from transcription_service import TranscriptionService
-from llm_service import LLMFactory, MeetingWorkflowEngine
+from llm_service import LLMFactory, MeetingWorkflowEngine, rank_previous_meetings
 from langchain_core.messages import SystemMessage, HumanMessage
 from rag_service import RAGService
 from config import DEFAULTS, get_app_data_dir
@@ -232,6 +232,7 @@ def main():
                             "Below is the relevant context retrieved from the user's past meetings to answer their query.\n"
                             "Analyze this context and answer the user query clearly and professionally.\n"
                             "CRITICAL: You must cite the meetings you reference using their title and date in bracket format like this: [Meeting Title](date).\n"
+                            "Always answer in the same language as the user's query.\n"
                             "If the retrieved context does not contain enough information to answer, state this clearly, but answer as best as possible."
                         )
                         
@@ -272,7 +273,19 @@ def main():
                 provider_name = command.get("provider", "ollama")
                 model_name = command.get("model", "llama3")
                 api_key = command.get("api_key", "")
-                
+
+                # Persisted diarized segments: without them the engine rebuilds
+                # segments from plain text (no speakers/timestamps), degrading
+                # chapters and participation stats on reprocess.
+                transcript_segments = command.get("transcript_segments")
+                if isinstance(transcript_segments, str):
+                    try:
+                        transcript_segments = json.loads(transcript_segments)
+                    except (json.JSONDecodeError, TypeError):
+                        transcript_segments = None
+                if not isinstance(transcript_segments, list):
+                    transcript_segments = None
+
                 try:
                     llm = LLMFactory.get_provider(provider_name, model_name)
                     result = llm.generate_notes(
@@ -280,7 +293,9 @@ def main():
                         api_key=api_key,
                         system_prompt=system_prompt or None,
                         diarized_segments=None,
-                        meeting_date=time.strftime("%Y-%m-%d %H:%M:%S")
+                        meeting_date=time.strftime("%Y-%m-%d %H:%M:%S"),
+                        transcript_segments=transcript_segments,
+                        language=command.get("language"),
                     )
                     send_event("REPROCESS_COMPLETED", {
                         "meeting_id": meeting_id,
@@ -290,6 +305,126 @@ def main():
                     send_event("PIPELINE_STATUS", {"step": "Done."})
                 except Exception as e:
                     send_event("ERROR", {"message": f"Reprocess LLM Error: {str(e)}"})
+
+            elif action == "GENERATE_FOLLOWUP":
+                send_event("PIPELINE_STATUS", {"step": "Drafting follow-up email..."})
+
+                meeting_id = command.get("meeting_id")
+                structured = command.get("structured_summary") or {}
+                if isinstance(structured, str):
+                    try:
+                        structured = json.loads(structured)
+                    except (json.JSONDecodeError, TypeError):
+                        structured = {}
+                if not isinstance(structured, dict):
+                    structured = {}
+
+                language = command.get("language")
+                if not language:
+                    metadata = structured.get("metadata") or {}
+                    if isinstance(metadata, dict):
+                        language = metadata.get("language")
+
+                try:
+                    if not structured:
+                        raise ValueError("No structured summary available for this meeting.")
+                    engine = MeetingWorkflowEngine(
+                        command.get("provider", "ollama"),
+                        command.get("model", "llama3"),
+                        api_key=command.get("api_key") or None,
+                        language=language,
+                    )
+                    email = engine.generate_followup_email(structured)
+                    send_event("FOLLOWUP_GENERATED", {
+                        "meeting_id": meeting_id,
+                        "email_draft": {
+                            "subject": email.get("subject", ""),
+                            "body": email.get("body", ""),
+                            "generated_at": time.strftime("%Y-%m-%d %H:%M:%S"),
+                        },
+                    })
+                    send_event("PIPELINE_STATUS", {"step": "Done."})
+                except Exception as e:
+                    send_event("ERROR", {"message": f"Follow-up LLM Error: {str(e)}"})
+
+            elif action == "ANALYZE_CONTINUITY":
+                send_event("PIPELINE_STATUS", {"step": "Analyzing continuity..."})
+
+                meeting_id = command.get("meeting_id")
+                structured = command.get("structured_summary") or {}
+                if isinstance(structured, str):
+                    try:
+                        structured = json.loads(structured)
+                    except (json.JSONDecodeError, TypeError):
+                        structured = {}
+                if not isinstance(structured, dict):
+                    structured = {}
+
+                language = command.get("language")
+                if not language:
+                    metadata = structured.get("metadata") or {}
+                    if isinstance(metadata, dict):
+                        language = metadata.get("language")
+
+                previous_meetings = [
+                    meeting for meeting in (command.get("previous_meetings") or [])
+                    if isinstance(meeting, dict)
+                    and meeting.get("meeting_id") is not None
+                    and isinstance(meeting.get("summary"), dict)
+                ]
+
+                try:
+                    generated_at = time.strftime("%Y-%m-%d %H:%M:%S")
+                    if not previous_meetings:
+                        # First meeting on this topic: empty report, no LLM/RAG call.
+                        # The UI renders its own message so no language issue arises.
+                        send_event("CONTINUITY_GENERATED", {
+                            "meeting_id": meeting_id,
+                            "continuity": {
+                                "related_meetings": [],
+                                "reverted_or_changed_decisions": [],
+                                "recurring_open_actions": [],
+                                "recurring_topics": [],
+                                "summary": "",
+                                "generated_at": generated_at,
+                            },
+                        })
+                        send_event("PIPELINE_STATUS", {"step": "Done."})
+                    else:
+                        rag_results = []
+                        if rag_service:
+                            try:
+                                metadata = structured.get("metadata") or {}
+                                tags = metadata.get("tags") if isinstance(metadata, dict) else []
+                                query = (str(structured.get("tldr") or "") + " " + " ".join(
+                                    str(tag) for tag in tags or []
+                                )).strip()[:1000]
+                                if query:
+                                    rag_results = rag_service.query_similarity(
+                                        query,
+                                        command.get("embedding_provider", "ollama"),
+                                        command.get("embedding_model", "nomic-embed-text"),
+                                        top_k=8,
+                                    )
+                            except Exception as rag_error:
+                                print(f"DEBUG: Continuity RAG ranking failed: {rag_error}", file=sys.stderr)
+
+                        related = rank_previous_meetings(previous_meetings, rag_results, meeting_id)
+
+                        engine = MeetingWorkflowEngine(
+                            command.get("provider", "ollama"),
+                            command.get("model", "llama3"),
+                            api_key=command.get("api_key") or None,
+                            language=language,
+                        )
+                        report = engine.generate_continuity_report(structured, related)
+                        send_event("CONTINUITY_GENERATED", {
+                            "meeting_id": meeting_id,
+                            "continuity": {**report, "generated_at": generated_at},
+                        })
+                        send_event("PIPELINE_STATUS", {"step": "Done."})
+                except Exception as e:
+                    send_event("ERROR", {"message": f"Continuity LLM Error: {str(e)}"})
 
             elif action == "VALIDATE_NOTION":
                 token = command.get("notion_token")
@@ -550,6 +685,7 @@ def main():
                         "text": transcription_result["text"],
                         "segments": transcription_result.get("segments"),
                         "diarized": transcription_result.get("diarized", False),
+                        "language": transcription_result.get("language"),
                         "warnings": transcription_result.get("warnings", []),
                         "schema_version": transcription_result.get("schema_version", 1),
                     })
@@ -574,6 +710,7 @@ def main():
                             diarized_segments=transcription_result.get("segments") if transcription_result.get("diarized") else None,
                             meeting_date=time.strftime("%Y-%m-%d %H:%M:%S"),
                             transcript_segments=transcription_result.get("segments", []),
+                            language=transcription_result.get("language"),
                         )
                         send_event("NOTES_GENERATED", {
                             "markdown": result.get("markdown", ""),

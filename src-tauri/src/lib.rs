@@ -827,17 +827,41 @@ fn reprocess_meeting(
         meeting_id
     );
 
-    // Fetch raw_transcript and structured_summary from the DB
+    // Fetch raw_transcript, structured_summary and transcript_segments from the DB
     let db = state.db.lock().unwrap();
     let mut stmt = db
-        .prepare("SELECT raw_transcript, structured_summary FROM meetings WHERE id = ?1")
+        .prepare("SELECT raw_transcript, structured_summary, transcript_segments FROM meetings WHERE id = ?1")
         .map_err(|e| e.to_string())?;
 
-    let (raw_transcript, structured_summary): (String, Option<String>) = stmt
+    let (raw_transcript, structured_summary, transcript_segments): (
+        String,
+        Option<String>,
+        Option<String>,
+    ) = stmt
         .query_row(rusqlite::params![meeting_id], |row| {
-            Ok((row.get(0)?, row.get(1)?))
+            Ok((row.get(0)?, row.get(1)?, row.get(2)?))
         })
         .map_err(|e| e.to_string())?;
+
+    // Detected transcription language, persisted inside structured_summary.metadata.
+    // Re-sending it keeps reprocessed output in the meeting's original language.
+    let language = structured_summary
+        .as_deref()
+        .and_then(|s| serde_json::from_str::<serde_json::Value>(s).ok())
+        .and_then(|v| {
+            v.get("metadata")
+                .and_then(|m| m.get("language"))
+                .and_then(|l| l.as_str())
+                .map(|l| l.to_string())
+        })
+        .filter(|l| !l.is_empty());
+
+    // Persisted segments carry speakers/timestamps; without them the Python side
+    // rebuilds bare segments and chapters/participation come back degraded.
+    let segments_value = transcript_segments
+        .as_deref()
+        .and_then(|s| serde_json::from_str::<serde_json::Value>(s).ok())
+        .filter(|v| v.is_array());
 
     // Dispatch to Python stdin
     let lock = state.python_stdin.lock().unwrap();
@@ -851,6 +875,8 @@ fn reprocess_meeting(
             "model": model,
             "api_key": api_key,
             "structured_summary": structured_summary,
+            "language": language,
+            "transcript_segments": segments_value,
         });
         writeln!(stdin, "{}", payload).map_err(|e| e.to_string())?;
         return Ok(());
@@ -1345,6 +1371,97 @@ fn spawn_and_supervise_python(
                                                     eprintln!("[RUST ERROR] Failed to auto-save meeting from NOTES_GENERATED: {}", e);
                                                 }
                                             }
+                                        }
+                                    }
+                                }
+
+                                // Persist on-demand follow-up email drafts into the meeting's
+                                // structured_summary (read-modify-write so the rest of the
+                                // summary is untouched). No `continue`: the event must still
+                                // reach the frontend below so the UI can react.
+                                if event_name == "FOLLOWUP_GENERATED" {
+                                    if let Some(data) = json["data"].as_object() {
+                                        let meeting_id =
+                                            data.get("meeting_id").and_then(|v| v.as_i64());
+                                        let email_draft = data.get("email_draft").cloned();
+
+                                        if let (Some(id), Some(draft)) = (meeting_id, email_draft) {
+                                            let db_lock = db_clone.lock().unwrap();
+                                            let existing: Result<Option<String>, _> = db_lock
+                                                .query_row(
+                                                    "SELECT structured_summary FROM meetings WHERE id = ?1",
+                                                    rusqlite::params![id],
+                                                    |row| row.get(0),
+                                                );
+                                            match existing {
+                                                Ok(existing) => {
+                                                    let mut structured = existing
+                                                        .as_deref()
+                                                        .and_then(|s| {
+                                                            serde_json::from_str::<serde_json::Value>(s).ok()
+                                                        })
+                                                        .unwrap_or_else(|| serde_json::json!({}));
+                                                    structured["email_draft"] = draft;
+                                                    if let Err(e) = db_lock.execute(
+                                                        "UPDATE meetings SET structured_summary = ?1 WHERE id = ?2",
+                                                        rusqlite::params![structured.to_string(), id],
+                                                    ) {
+                                                        eprintln!("[RUST ERROR] Failed to persist follow-up email: {}", e);
+                                                    } else {
+                                                        println!("[RUST SUCCESS] Follow-up email persisted for meeting {}", id);
+                                                    }
+                                                }
+                                                Err(e) => {
+                                                    eprintln!("[RUST ERROR] Failed to load meeting {} for follow-up persist: {}", id, e);
+                                                }
+                                            }
+                                        } else {
+                                            println!("[RUST DEBUG] FOLLOWUP_GENERATED without meeting_id; skipping persistence");
+                                        }
+                                    }
+                                }
+
+                                // Persist on-demand continuity reports the same way as
+                                // follow-up drafts. No `continue`: the frontend must
+                                // still receive the event.
+                                if event_name == "CONTINUITY_GENERATED" {
+                                    if let Some(data) = json["data"].as_object() {
+                                        let meeting_id =
+                                            data.get("meeting_id").and_then(|v| v.as_i64());
+                                        let continuity = data.get("continuity").cloned();
+
+                                        if let (Some(id), Some(report)) = (meeting_id, continuity) {
+                                            let db_lock = db_clone.lock().unwrap();
+                                            let existing: Result<Option<String>, _> = db_lock
+                                                .query_row(
+                                                    "SELECT structured_summary FROM meetings WHERE id = ?1",
+                                                    rusqlite::params![id],
+                                                    |row| row.get(0),
+                                                );
+                                            match existing {
+                                                Ok(existing) => {
+                                                    let mut structured = existing
+                                                        .as_deref()
+                                                        .and_then(|s| {
+                                                            serde_json::from_str::<serde_json::Value>(s).ok()
+                                                        })
+                                                        .unwrap_or_else(|| serde_json::json!({}));
+                                                    structured["continuity"] = report;
+                                                    if let Err(e) = db_lock.execute(
+                                                        "UPDATE meetings SET structured_summary = ?1 WHERE id = ?2",
+                                                        rusqlite::params![structured.to_string(), id],
+                                                    ) {
+                                                        eprintln!("[RUST ERROR] Failed to persist continuity report: {}", e);
+                                                    } else {
+                                                        println!("[RUST SUCCESS] Continuity report persisted for meeting {}", id);
+                                                    }
+                                                }
+                                                Err(e) => {
+                                                    eprintln!("[RUST ERROR] Failed to load meeting {} for continuity persist: {}", id, e);
+                                                }
+                                            }
+                                        } else {
+                                            println!("[RUST DEBUG] CONTINUITY_GENERATED without meeting_id; skipping persistence");
                                         }
                                     }
                                 }
