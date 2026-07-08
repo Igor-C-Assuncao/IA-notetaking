@@ -5,6 +5,7 @@ use std::fs::File;
 use std::io::{BufRead, BufReader, Read, Write};
 use std::path::PathBuf;
 use std::process::{Child, ChildStdin, Command, Stdio};
+use std::sync::atomic::{AtomicU64, Ordering as AtomicOrdering};
 use std::sync::{Arc, Mutex};
 use tauri::{AppHandle, Emitter, Manager, State, WebviewUrl, WebviewWindowBuilder};
 use tauri::{LogicalSize, Window};
@@ -66,6 +67,11 @@ struct AppState {
     db: Arc<Mutex<Connection>>,
     python_stdin: Arc<Mutex<Option<ChildStdin>>>,
     python_child: Arc<Mutex<Option<Child>>>,
+    // Monotonic supervisor generation: every (re)start claims a new value and
+    // stale supervisor loops exit instead of respawning. Prevents two
+    // supervisors (e.g. React StrictMode double-invoking start_sidecar) from
+    // endlessly overwriting each other's stdin and restarting each other.
+    supervisor_gen: Arc<AtomicU64>,
 }
 
 const ENGINE_VERSION: &str = "0.1.0";
@@ -1142,12 +1148,24 @@ fn spawn_and_supervise_python(
     python_stdin: Arc<Mutex<Option<ChildStdin>>>,
     python_child: Arc<Mutex<Option<Child>>>,
     requested_engine_path: Option<PathBuf>,
+    supervisor_gen: Arc<AtomicU64>,
+    my_gen: u64,
 ) {
     std::thread::spawn(move || {
         let mut restart_attempts = 0;
         let max_attempts = 3;
 
         loop {
+            // A newer supervisor claimed the sidecar (start_sidecar/reconnect):
+            // this loop must stop instead of respawning and stealing stdin back.
+            if supervisor_gen.load(AtomicOrdering::SeqCst) != my_gen {
+                println!(
+                    "[Supervisor] Generation {} superseded; supervisor exiting.",
+                    my_gen
+                );
+                break;
+            }
+
             println!(
                 "[Supervisor] Spawning Python sidecar (Attempt {})...",
                 restart_attempts + 1
@@ -1253,6 +1271,18 @@ fn spawn_and_supervise_python(
 
             match child_res {
                 Ok(mut child) => {
+                    // Re-check before touching shared state: if another
+                    // supervisor took over while we were spawning, discard
+                    // this child instead of overwriting its stdin.
+                    if supervisor_gen.load(AtomicOrdering::SeqCst) != my_gen {
+                        println!(
+                            "[Supervisor] Generation {} superseded during spawn; killing extra child.",
+                            my_gen
+                        );
+                        let _ = child.kill();
+                        break;
+                    }
+
                     let stdin = child.stdin.take().expect("Failed to open Python stdin");
                     let stdout = child.stdout.take().expect("Failed to open Python stdout");
 
@@ -1526,6 +1556,16 @@ fn spawn_and_supervise_python(
                         *stdin_lock = None;
                     }
 
+                    // Expected exit: a newer supervisor replaced this child's
+                    // stdin (EOF -> clean exit). Not a crash — leave silently.
+                    if supervisor_gen.load(AtomicOrdering::SeqCst) != my_gen {
+                        println!(
+                            "[Supervisor] Generation {} superseded; not restarting.",
+                            my_gen
+                        );
+                        break;
+                    }
+
                     // Sidecar went down
                     app_handle
                         .emit(
@@ -1613,12 +1653,17 @@ fn start_sidecar(
     app.emit("sidecar-starting", serde_json::json!({ "kind": kind }))
         .ok();
 
+    // Claim a new supervisor generation: any previous supervisor loop becomes
+    // stale and exits instead of fighting this one over the stdin handle.
+    let my_gen = state.supervisor_gen.fetch_add(1, AtomicOrdering::SeqCst) + 1;
     spawn_and_supervise_python(
         app,
         Arc::clone(&state.db),
         Arc::clone(&state.python_stdin),
         Arc::clone(&state.python_child),
         engine_path,
+        Arc::clone(&state.supervisor_gen),
+        my_gen,
     );
     Ok(())
 }
@@ -1638,13 +1683,16 @@ fn reconnect_sidecar(app: AppHandle, state: State<'_, AppState>) -> Result<(), S
         *stdin_lock = None;
     }
 
-    // Spawn supervisor thread
+    // Spawn supervisor thread under a fresh generation (retires the old one)
+    let my_gen = state.supervisor_gen.fetch_add(1, AtomicOrdering::SeqCst) + 1;
     spawn_and_supervise_python(
         app,
         Arc::clone(&state.db),
         Arc::clone(&state.python_stdin),
         Arc::clone(&state.python_child),
         None,
+        Arc::clone(&state.supervisor_gen),
+        my_gen,
     );
     Ok(())
 }
@@ -1751,6 +1799,7 @@ pub fn run() {
                 db: Arc::new(Mutex::new(conn)),
                 python_stdin: Arc::new(Mutex::new(None)),
                 python_child: Arc::new(Mutex::new(None)),
+                supervisor_gen: Arc::new(AtomicU64::new(0)),
             });
 
             // 2. Initialize Daily Rotating Logs

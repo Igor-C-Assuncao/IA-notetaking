@@ -37,6 +37,10 @@ const ENGINE_COPY: Record<EngineKind, { title: string; body: string; details: st
   },
 };
 
+// React StrictMode mounts effects twice in dev; without this guard the boot
+// effect would invoke start_sidecar twice and spawn duplicate supervisors.
+let bootstrapEffectRan = false;
+
 function formatBytes(bytes?: number | null) {
   if (!bytes) return "";
   const units = ["B", "MB", "GB"];
@@ -94,6 +98,8 @@ export function EngineBootstrap({ children }: { children: ReactNode }) {
   }, []);
 
   useEffect(() => {
+    if (bootstrapEffectRan) return;
+    bootstrapEffectRan = true;
     invoke("set_bootstrap_mode").catch(console.error);
     checkEngine(engineKind);
     // eslint-disable-next-line react-hooks/exhaustive-deps
