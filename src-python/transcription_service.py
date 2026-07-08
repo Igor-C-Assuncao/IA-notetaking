@@ -2,10 +2,16 @@
 import sys
 import os
 import traceback
+import wave
+import numpy as np
 import torch
 import whisperx
 from config import DEFAULTS
 from schemas import SCHEMA_VERSION, TranscriptSegment, TranscriptWord
+
+
+MIN_TRANSCRIBABLE_RMS = 20.0
+MIN_TRANSCRIBABLE_PEAK = 1000
 
 # Suppress excessive TensorFlow/oneDNN warnings
 os.environ['TF_CPP_MIN_LOG_LEVEL'] = '3'
@@ -124,6 +130,21 @@ class TranscriptionService:
                 "audio file is empty - recording may have been too short",
             )
 
+        signal_stats = self._audio_signal_stats(audio_path)
+        if signal_stats and signal_stats["duration_sec"] >= 2.0:
+            rms = signal_stats["rms"]
+            peak = signal_stats["peak"]
+            if rms < MIN_TRANSCRIBABLE_RMS and peak < MIN_TRANSCRIBABLE_PEAK:
+                print(
+                    f"DEBUG: [Transcription Error: AUDIO_TOO_QUIET] "
+                    f"rms={rms:.2f}, peak={peak}, duration={signal_stats['duration_sec']:.1f}s",
+                    file=sys.stderr,
+                )
+                return self._error(
+                    "AUDIO_TOO_QUIET",
+                    "captured audio is too quiet to transcribe reliably; select the active microphone or enable system audio capture",
+                )
+
         print(f"DEBUG: [AI] Transcribing: {audio_path}", file=sys.stderr)
         warnings = []
 
@@ -194,6 +215,28 @@ class TranscriptionService:
         except Exception as e:
             return self._error("TRANSCRIPTION_FAILED", str(e))
 
+    @staticmethod
+    def _audio_signal_stats(audio_path: str) -> dict | None:
+        """Returns simple PCM stats for guarding against Whisper silence hallucinations."""
+        try:
+            with wave.open(audio_path, "rb") as wav:
+                frames = wav.getnframes()
+                sample_rate = wav.getframerate() or 1
+                sample_width = wav.getsampwidth()
+                raw = wav.readframes(frames)
+            if sample_width != 2 or not raw:
+                return None
+            samples = np.frombuffer(raw, dtype=np.int16)
+            if samples.size == 0:
+                return None
+            return {
+                "duration_sec": frames / sample_rate,
+                "rms": float(np.sqrt(np.mean(samples.astype(np.float64) ** 2))),
+                "peak": int(np.max(np.abs(samples))),
+            }
+        except Exception as stats_error:
+            print(f"DEBUG: [Audio Stats] Could not inspect audio signal: {stats_error}", file=sys.stderr)
+            return None
     def _diarize(
         self,
         audio,

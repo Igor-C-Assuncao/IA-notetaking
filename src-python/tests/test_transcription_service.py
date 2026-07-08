@@ -1,4 +1,7 @@
 import os
+import wave
+
+import numpy as np
 from unittest.mock import MagicMock, patch
 
 from schemas import SCHEMA_VERSION
@@ -87,6 +90,29 @@ def test_transcribe_missing_or_empty_file():
             assert res["ok"] is False
             assert res["error"]["code"] == "AUDIO_FILE_EMPTY"
             assert "empty" in res["error"]["message"]
+
+
+def test_transcribe_rejects_audio_that_is_too_quiet(tmp_path):
+    quiet_path = tmp_path / "quiet.wav"
+    samples = np.zeros(16000 * 3, dtype=np.int16)
+    with wave.open(str(quiet_path), "wb") as wav:
+        wav.setnchannels(1)
+        wav.setsampwidth(2)
+        wav.setframerate(16000)
+        wav.writeframes(samples.tobytes())
+
+    with patch.dict(os.environ, REAL_INIT_ENV), \
+         patch("torch.cuda.is_available", return_value=False), \
+         patch("whisperx.load_model"):
+
+        service = TranscriptionService()
+        with patch("whisperx.load_audio") as mock_load_audio:
+            res = service.transcribe(str(quiet_path))
+
+    assert res["ok"] is False
+    assert res["error"]["code"] == "AUDIO_TOO_QUIET"
+    assert "too quiet" in res["error"]["message"]
+    mock_load_audio.assert_not_called()
 
 def test_transcribe_plain_success():
     with patch.dict(os.environ, REAL_INIT_ENV), \
