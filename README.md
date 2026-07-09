@@ -225,8 +225,17 @@ meeting fixtures, and larger LLM-generated QMSum runs are still required.
 
 ## Contributing
 
-Contributions are welcome. If you are interested in AI, desktop development, or audio engineering, check out the open issues and submit a pull request. Please follow the existing code conventions and include a clear description of what your change does.
+Contributions are welcome. If you are interested in AI, desktop development, or audio engineering, check out the open issues and submit a pull request. Please read [CONTRIBUTING.md](CONTRIBUTING.md) — commits must be signed off (DCO) — and follow the existing code conventions.
 
 ## License
 
 Licensed under the [Apache License 2.0](LICENSE).
+
+Copyright 2026 Igor Cassimiro Assunção. Redistributions and derivative works
+must retain the attribution notices in the [NOTICE](NOTICE) file, as required
+by Section 4 of the license.
+
+**Trademark notice:** the Apache License does not grant permission to use the
+name "AI NoteTaking" or the project logo (License, Section 6). Forks and
+derivative works may not use the name or logo to identify themselves without
+prior written permission.

@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 Igor Cassimiro Assunção
 export interface TranscriptWord {
   text: string;
   start_ms: number | null;

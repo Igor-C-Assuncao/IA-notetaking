@@ -1,0 +1,17 @@
+cff-version: 1.2.0
+message: "If you use this software, please cite it as below."
+title: "AI NoteTaking"
+type: software
+authors:
+  - family-names: "Cassimiro Assunção"
+    given-names: "Igor"
+repository-code: "https://github.com/Igor-C-Assuncao/IA-notetaking"
+license: Apache-2.0
+abstract: "An open-source, invisible, privacy-first AI notetaker for meetings. Captures microphone and system (loopback) audio, then generates transcripts and structured summaries locally."
+keywords:
+  - meeting-notes
+  - transcription
+  - whisperx
+  - tauri
+  - local-first
+date-released: 2026-03-25

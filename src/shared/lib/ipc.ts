@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 Igor Cassimiro Assunção
 import { PythonEvent } from "../types/ipc-events";
 import { invoke } from "@tauri-apps/api/core";
 

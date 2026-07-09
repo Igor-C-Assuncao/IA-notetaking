@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 Igor Cassimiro Assunção
 import { createContext, useContext, useEffect, ReactNode, useRef } from "react";
 import { listen, UnlistenFn } from "@tauri-apps/api/event";
 import { parsePythonEvent } from "@shared/lib/ipc";

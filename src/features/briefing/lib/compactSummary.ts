@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 Igor Cassimiro Assunção
 import type { StructuredSummary } from "@features/summary/types";
 
 export interface CompactSummary {

@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+# Copyright 2026 Igor Cassimiro Assunção
 import numpy as np
 from unittest.mock import MagicMock, patch
 from vad_service import VADService

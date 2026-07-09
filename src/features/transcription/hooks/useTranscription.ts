@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 Igor Cassimiro Assunção
 import { useState, useMemo } from "react";
 import { usePythonEvent } from "@app/providers/IpcProvider";
 import type { TranscriptSegment } from "@features/summary/types";
