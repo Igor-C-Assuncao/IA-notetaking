@@ -13,6 +13,13 @@ use tauri::{AppHandle, Emitter, Manager, State, WebviewUrl, WebviewWindowBuilder
 use tauri::{LogicalSize, Window};
 use tauri_plugin_global_shortcut::{Code, GlobalShortcutExt, Modifiers, Shortcut, ShortcutState};
 
+// Parses a stored structured_summary JSON blob, falling back to an empty
+// object so read-modify-write persistence never loses the rest of the summary.
+fn parse_structured_summary(raw: Option<&str>) -> serde_json::Value {
+    raw.and_then(|s| serde_json::from_str(s).ok())
+        .unwrap_or_else(|| serde_json::json!({}))
+}
+
 #[cfg(target_os = "linux")]
 fn sanitize_snap_runtime_env() {
     // When VS Code is installed as Snap, these vars can leak Snap GTK/GIO paths
@@ -1427,12 +1434,9 @@ fn spawn_and_supervise_python(
                                                 );
                                             match existing {
                                                 Ok(existing) => {
-                                                    let mut structured = existing
-                                                        .as_deref()
-                                                        .and_then(|s| {
-                                                            serde_json::from_str::<serde_json::Value>(s).ok()
-                                                        })
-                                                        .unwrap_or_else(|| serde_json::json!({}));
+                                                    let mut structured = parse_structured_summary(
+                                                        existing.as_deref(),
+                                                    );
                                                     structured["email_draft"] = draft;
                                                     if let Err(e) = db_lock.execute(
                                                         "UPDATE meetings SET structured_summary = ?1 WHERE id = ?2",
@@ -1472,12 +1476,9 @@ fn spawn_and_supervise_python(
                                                 );
                                             match existing {
                                                 Ok(existing) => {
-                                                    let mut structured = existing
-                                                        .as_deref()
-                                                        .and_then(|s| {
-                                                            serde_json::from_str::<serde_json::Value>(s).ok()
-                                                        })
-                                                        .unwrap_or_else(|| serde_json::json!({}));
+                                                    let mut structured = parse_structured_summary(
+                                                        existing.as_deref(),
+                                                    );
                                                     structured["continuity"] = report;
                                                     if let Err(e) = db_lock.execute(
                                                         "UPDATE meetings SET structured_summary = ?1 WHERE id = ?2",
