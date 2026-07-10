@@ -21,18 +21,15 @@ Built with a high-performance hybrid architecture: **Tauri 2 + Rust + Python**.
 
 ## Features
 
-- **Invisible capture** — records system audio and microphone natively via loopback; no bots, no meeting links, no permissions requested from the host.
-- **Privacy-first, local-first** — full support for running LLMs 100% locally via [Ollama](https://ollama.com/), so sensitive data never leaves your machine.
-- **Bring your own key (BYOK)** — prefer the cloud? Drop in your API key for OpenAI, Google Gemini, or Anthropic Claude and switch at any time.
-- **Intelligent audio pipeline** — [Silero VAD](https://github.com/snakers4/silero-vad) filters silence before transcription, [WhisperX](https://github.com/m-bain/whisperX) handles speech-to-text, and a LangGraph agent extracts action items and generates the structured summary.
-- **Evidence-backed meeting intelligence** — decisions and action items include confidence, inference labels, exact transcript quotes, and links back to timestamped source segments.
-- **Meeting briefing dashboard** — cross-meeting continuity reports: recurring topics, decision changes, and related meetings surfaced before you join the next call.
-- **Live processing feedback** — reprocessing reports staged progress in real time (context preparation, token estimation, AI calls, chunking, finalization) with elapsed time and token/billing status per provider.
-- **Per-source audio monitoring** — separate live level meters for microphone and system audio, so you can see at a glance which sources are actually being captured.
-- **Reliable configuration** — provider-specific credentials, explicit save behavior, recoverable validation errors, and Hugging Face gated-model access checks.
-- **Compact floating widget** — sits as a small always-on-top pill while you work; expands to the full view when you need to review notes or browse meeting history.
-- **Persistent history** — every session, structured summary, and versioned transcript segment set is saved locally in SQLite.
-- **Two themes** — Liquid Glass (dark) and Minimalist Notebook (light).
+- **Invisible meeting capture** - records microphone and system audio natively via loopback; no bots, meeting links, or host-side permissions.
+- **Local-first AI engine** - runs fully local with Ollama, with optional BYOK cloud providers for OpenAI, Google Gemini, and Anthropic Claude.
+- **Windows engine distribution** - v0.2.0 ships downloadable CPU and split GPU engine assets with a manifest-driven runtime install flow.
+- **Audio-to-intelligence pipeline** - Silero VAD, WhisperX, and LangGraph turn captured speech into transcripts, structured summaries, decisions, action items, and risks.
+- **Evidence-backed summaries** - key claims include confidence, inference labels, transcript quotes, and timestamped source segment references.
+- **Meeting briefing dashboard** - surfaces cross-meeting continuity, recurring topics, decision changes, follow-up drafts, chapters, and participation signals.
+- **Live processing visibility** - reprocessing emits staged progress, elapsed time, token estimates, provider/model details, and token/billing status.
+- **Per-source audio monitoring** - microphone and system audio levels are shown separately so capture problems are visible before transcription.
+- **Compact desktop workflow** - always-on-top widget, expanded review view, local SQLite meeting history, settings, themes, and keychain-backed secrets.
 
 ## Architecture
 
@@ -168,42 +165,7 @@ See [benchmarks/README.md](benchmarks/README.md) for the fixture contract and
 [docs/IMPLEMENTATION_PLAN_QUALITY_AND_CONFIGURATION.md](docs/IMPLEMENTATION_PLAN_QUALITY_AND_CONFIGURATION.md)
 for the quality roadmap.
 
-### Quality validation snapshot
-
-These runs validate benchmark infrastructure, report generation, release gates,
-and selected early baselines. Mock and smoke rows are not production-quality
-claims.
-
-#### Validation and smoke checks
-
-The deterministic `example-001` fixture validates the scorer and report pipeline:
-
-| Metric | Score |
-|---|---:|
-| Weighted overall score | 1.000 |
-| Word error rate | 0.000 |
-| Character error rate | 0.000 |
-| Decision precision | 1.000 |
-| Action-item precision | 1.000 |
-| Explicit assignee accuracy | 1.000 |
-| Evidence quote validity | 1.000 |
-| Critical-claim hallucination rate | 0.000 |
-| Pipeline completion rate | 1.000 |
-| Human factuality | 5.0 / 5 |
-| Human usefulness | 5.0 / 5 |
-
-Latest validation runs:
-
-| Mode | Run | Commit | Result |
-|---|---|---|---|
-| Generated prediction artifacts (`--prediction-mode mock`) | `2026-06-16_135711_69308fe` | `69308fe` | PASS, weighted score `1.000` |
-| Precomputed prediction scoring | `2026-06-16_135712_69308fe` | `69308fe` | PASS, weighted score `1.000` |
-
-All configured release gates pass for this fixture. Speaker attribution was not
-measured. These values verify benchmark correctness and must not be treated as a
-production-quality baseline.
-
-#### Early real baseline
+### Early real baseline
 
 | Dataset | Mode | Run | Commit | Result |
 |---|---|---|---|---|
@@ -218,30 +180,34 @@ meeting fixtures, and larger LLM-generated QMSum runs are still required.
 ### 0.2.0 (current)
 
 - Meeting briefing intelligence pipeline and briefing dashboard UI
-- Real-time reprocess progress (`REPROCESS_STATUS` events: staged progress, elapsed time, token estimates, provider/model info)
+- Cross-meeting continuity reports, follow-up drafts, chapters, participation signals, risks, open questions, and richer structured summaries
+- Real-time reprocess progress (`REPROCESS_STATUS`: staged progress, elapsed time, token estimates, provider/model info)
 - Per-source audio telemetry (mic vs system levels) with the new `AudioInputMeter` component
-- Recording pipeline reliability fixes: captured audio is no longer dropped, near-silent recordings are rejected before transcription
+- Recording reliability fixes: captured audio is no longer dropped, near-silent recordings are rejected before transcription
+- Windows runtime engine distribution: CPU asset, split GPU assets, and `engines-manifest.json` for runtime download/install
 - Project licensing formalized: Apache 2.0 `LICENSE` + `NOTICE`, SPDX headers on all sources, DCO adopted for contributions, `CITATION.cff`
 
 ### 0.1.0
 
-- Initial release: loopback + microphone capture, Silero VAD, WhisperX transcription, LangGraph summaries
+- Initial local desktop app: compact widget, expanded review view, meeting history in SQLite, Liquid Glass and Notebook themes
+- Native loopback + microphone capture, Silero VAD, WhisperX transcription, and LangGraph summaries
 - BYOK multi-provider support (Ollama, OpenAI, Gemini, Anthropic) with keychain-stored secrets
-- Compact floating widget, expanded view, meeting history in SQLite, two themes
+- Early benchmark harness and release gates for transcription/summary quality checks
 
-## Roadmap
+## Roadmap to 1.0
 
-| Sprint | Status | Scope |
+| Version | Status | Focus |
 |---|---|---|
-| 0 — Foundation | ✅ Done | Project scaffold, Tauri + Python IPC bridge, SQLite |
-| 1 — Audio capture | ✅ Done | Loopback capture, WASAPI / ScreenCaptureKit factory |
-| 2 — VAD + Transcription | ✅ Done | Silero VAD, WhisperX integration |
-| 3 — AI pipeline | ✅ Done | LangGraph agent, action item extraction, summaries |
-| 4 — BYOK + Settings | ✅ Done | Multi-provider support, persistent settings, themes |
-| 5 — UI polish | ✅ Done | Compact widget, expanded view, meeting history |
-| 6 — Window UX | ✅ Done | Native drag region, window controls, popover window |
-| 7 — Testing | ✅ Active | Frontend, Python, Rust, benchmark, and packaged-sidecar validation |
-| 8 — v1.0 Release | 🚧 In progress | CI/CD, CPU sidecar packaging, signing, cross-platform release validation |
+| 0.1.0 | Released | Local desktop foundation: native capture, transcription, LangGraph summaries, BYOK providers, widget UI, local history |
+| 0.2.0 | Released | Meeting intelligence: briefing dashboard, continuity, follow-up drafts, runtime progress, per-source telemetry, CPU/GPU engine assets |
+| 0.3.x | Next | Reliability hardening: crash recovery, sidecar restart behavior, clearer error states, retry policy, offline/provider failure handling |
+| 0.4.x | Planned | Performance: startup time, sidecar size, memory use, long-meeting chunking, GPU/CPU selection, streaming responsiveness |
+| 0.5.x | Planned | Quality validation: larger AMI/QMSum/CORAA baselines, consented internal fixtures, regression thresholds, hallucination/evidence gates |
+| 0.6.x | Planned | Packaging and updates: signed Windows installer, update flow, release asset verification, install/repair UX |
+| 0.7.x | Planned | Cross-platform release confidence: macOS/Linux packaging paths, audio capability checks, platform-specific fallback behavior |
+| 0.8.x | Planned | Product polish: search and navigation refinements, meeting review ergonomics, export flows, settings diagnostics |
+| 0.9.x | Planned | Security and privacy review: keychain audit, data-retention controls, local file permissions, dependency/license review |
+| 1.0.0 | Target | Stable release: documented support matrix, reproducible release process, strong reliability/performance baseline, no critical known data-loss paths |
 
 ## Contributing
 
