@@ -1,12 +1,18 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 Igor Cassimiro Assunção
 import {
   CalendarIcon,
   CheckCircleIcon,
+  CircleDashedIcon,
   FlagIcon,
   HashIcon,
+  ListBulletsIcon,
+  QuestionIcon,
   QuotesIcon,
   UsersIcon,
   WarningIcon,
 } from "@phosphor-icons/react";
+import type { ReactNode } from "react";
 
 import { StructuredSummary } from "../types";
 
@@ -73,7 +79,37 @@ function EvidenceDetails({
   );
 }
 
+export function FollowUpColumn({
+  title,
+  icon,
+  items,
+}: {
+  title: string;
+  icon: ReactNode;
+  items?: string[];
+}) {
+  if (!items || items.length === 0) return null;
+  return (
+    <div className="summary-column">
+      <h3 className="summary-column-title">
+        {icon}
+        {title}
+      </h3>
+      <ul className="summary-followup-list">
+        {items.map((item, i) => (
+          <li key={i}>{item}</li>
+        ))}
+      </ul>
+    </div>
+  );
+}
+
 export function SummaryDashboard({ summary, onViewEvidence }: SummaryDashboardProps) {
+  const hasFollowUps =
+    (summary.risks?.length ?? 0) > 0 ||
+    (summary.open_questions?.length ?? 0) > 0 ||
+    (summary.unresolved_topics?.length ?? 0) > 0;
+
   return (
     <div className="summary-dashboard">
       <section className="summary-hero">
@@ -100,6 +136,20 @@ export function SummaryDashboard({ summary, onViewEvidence }: SummaryDashboardPr
           <p className="summary-item-muted">{summary.summary_generation_warning}</p>
         )}
       </section>
+
+      {summary.summary_points && summary.summary_points.length > 0 && (
+        <section className="summary-column">
+          <h3 className="summary-column-title">
+            <ListBulletsIcon className="summary-icon accent" />
+            Key Points
+          </h3>
+          <ul className="summary-followup-list">
+            {summary.summary_points.map((point, i) => (
+              <li key={i}>{point}</li>
+            ))}
+          </ul>
+        </section>
+      )}
 
       {summary.metrics && summary.metrics.length > 0 && (
         <section className="summary-metrics-grid">
@@ -196,6 +246,26 @@ export function SummaryDashboard({ summary, onViewEvidence }: SummaryDashboardPr
           </div>
         )}
       </section>
+
+      {hasFollowUps && (
+        <section className="summary-two-column">
+          <FollowUpColumn
+            title="Risks"
+            icon={<WarningIcon className="summary-icon warning" />}
+            items={summary.risks}
+          />
+          <FollowUpColumn
+            title="Open Questions"
+            icon={<QuestionIcon className="summary-icon accent" />}
+            items={summary.open_questions}
+          />
+          <FollowUpColumn
+            title="Unresolved Topics"
+            icon={<CircleDashedIcon className="summary-icon muted" />}
+            items={summary.unresolved_topics}
+          />
+        </section>
+      )}
     </div>
   );
 }

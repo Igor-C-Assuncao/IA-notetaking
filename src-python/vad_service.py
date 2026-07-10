@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+# Copyright 2026 Igor Cassimiro Assunção
 # src-python/vad_service.py
 import sys
 import torch
@@ -62,10 +64,12 @@ class VADService:
             print(f"DEBUG: [VAD Processing Error] {e}", file=sys.stderr)
             return audio_data # Fallback to raw audio
 
-        # 6. If no speech is found, return empty array
+        # 6. If no speech is found, preserve the original audio. Returning an
+        # empty array makes downstream transcription report AUDIO_FILE_EMPTY
+        # even when capture succeeded but VAD was too strict for the input.
         if not speech_timestamps:
-            print("DEBUG: [VAD] No speech detected in this recording.", file=sys.stderr)
-            return np.array([], dtype=audio_data.dtype)
+            print("DEBUG: [VAD] No speech detected; preserving raw audio.", file=sys.stderr)
+            return audio_data
 
         # 7. Reconstruct the HIGH QUALITY audio using the detected timestamps
         segments = []

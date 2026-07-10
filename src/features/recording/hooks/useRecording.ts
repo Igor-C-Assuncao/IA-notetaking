@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 Igor Cassimiro Assunção
 import { useState, useEffect } from "react";
 import { usePythonEvent } from "@app/providers/IpcProvider";
 import { useSettings } from "@app/providers/SettingsProvider";
@@ -7,9 +9,22 @@ import { invoke } from "@tauri-apps/api/core";
 let globalIsRecording = false;
 let globalRecordingSeconds = 0;
 let globalAudioLevel = 0;
+let globalMicLevel = 0;
+let globalSystemLevel = 0;
 let globalStatus = "Ready";
 
 const recordingListeners = new Set<() => void>();
+
+export type AudioInputState = "none" | "low" | "ok";
+
+export function getAudioInputState(audioLevel: number): {
+  state: AudioInputState;
+  label: string;
+} {
+  if (audioLevel < 0.01) return { state: "none", label: "No input detected" };
+  if (audioLevel < 0.04) return { state: "low", label: "Low input" };
+  return { state: "ok", label: "Input detected" };
+}
 
 function emitRecordingChange() {
   recordingListeners.forEach((l) => l());
@@ -49,6 +64,8 @@ export function resetGlobalRecordingState() {
   globalIsRecording = false;
   globalRecordingSeconds = 0;
   globalAudioLevel = 0;
+  globalMicLevel = 0;
+  globalSystemLevel = 0;
   globalStatus = "Ready";
   if (globalTimerInterval) {
     clearInterval(globalTimerInterval);
@@ -62,6 +79,8 @@ export function useRecording() {
   const [isRecording, setIsRecordingState] = useState(globalIsRecording);
   const [recordingSeconds, setRecordingSecondsState] = useState(globalRecordingSeconds);
   const [audioLevel, setAudioLevelState] = useState(globalAudioLevel);
+  const [micLevel, setMicLevelState] = useState(globalMicLevel);
+  const [systemLevel, setSystemLevelState] = useState(globalSystemLevel);
   const [status, setStatusState] = useState(globalStatus);
 
   useEffect(() => {
@@ -69,6 +88,8 @@ export function useRecording() {
       setIsRecordingState(globalIsRecording);
       setRecordingSecondsState(globalRecordingSeconds);
       setAudioLevelState(globalAudioLevel);
+      setMicLevelState(globalMicLevel);
+      setSystemLevelState(globalSystemLevel);
       setStatusState(globalStatus);
     };
     recordingListeners.add(handleChange);
@@ -82,7 +103,10 @@ export function useRecording() {
   });
 
   usePythonEvent("VAD_TELEMETRY", (data) => {
-    globalAudioLevel = data.level;
+    const nextLevel = data.level || Math.max(data.micLevel || 0, data.systemLevel || 0);
+    globalAudioLevel = nextLevel;
+    globalMicLevel = data.micLevel ?? nextLevel;
+    globalSystemLevel = data.systemLevel ?? 0;
     emitRecordingChange();
   });
 
@@ -92,7 +116,11 @@ export function useRecording() {
   });
 
   usePythonEvent("TRANSCRIPTION_FAILED", (data) => {
-    globalStatus = `Transcription failed: ${data.message}`;
+    if (data.code === "AUDIO_TOO_QUIET") {
+      globalStatus = "Transcription failed: audio was too quiet. Select the correct microphone or turn on System Audio.";
+    } else {
+      globalStatus = `Transcription failed: ${data.message}`;
+    }
     emitRecordingChange();
   });
 
@@ -124,5 +152,7 @@ export function useRecording() {
     }
   };
 
-  return { isRecording, recordingSeconds, audioLevel, status, toggleRecording };
+  const inputState = getAudioInputState(audioLevel);
+
+  return { isRecording, recordingSeconds, audioLevel, micLevel, systemLevel, inputState, status, toggleRecording };
 }

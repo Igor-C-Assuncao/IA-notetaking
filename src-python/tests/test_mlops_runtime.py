@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+# Copyright 2026 Igor Cassimiro Assunção
 import json
 
 from config import get_app_data_dir, load_model_manifest

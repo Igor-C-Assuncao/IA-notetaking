@@ -1,8 +1,14 @@
 {
   "name": "ai-notetaking",
   "private": true,
-  "version": "0.1.0",
+  "version": "0.2.0",
   "type": "module",
+  "license": "Apache-2.0",
+  "author": "Igor Cassimiro Assunção",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/Igor-C-Assuncao/IA-notetaking.git"
+  },
   "scripts": {
     "dev": "vite",
     "build": "tsc && vite build",

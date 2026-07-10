@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 Igor Cassimiro Assunção
 import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { fetch as tauriFetch } from "@tauri-apps/plugin-http";
 import { describe, expect, test, vi } from "vitest";

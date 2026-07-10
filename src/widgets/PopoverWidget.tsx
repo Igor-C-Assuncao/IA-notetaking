@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 Igor Cassimiro Assunção
 import { useEffect, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { getCurrentWindow } from "@tauri-apps/api/window";
@@ -7,6 +9,7 @@ import { Toggle } from "@shared/components/Toggle";
 import { ShortcutsModal } from "@features/settings/ShortcutsModal";
 import { usePythonEvent } from "@app/providers/IpcProvider";
 import { AudioDevice } from "@shared/types/ipc-events";
+import { AudioInputMeter } from "@features/recording/components/AudioInputMeter";
 
 export function PopoverWidget() {
   const { settings, updateSettings, getProviderApiKey, loading } = useSettings();
@@ -428,9 +431,7 @@ Your task is to analyze this transcript and generate a premium-grade executive s
             <div className="popover-section">
               <label className="popover-label">Input Level</label>
               <div style={{ display: "flex", gap: "8px", alignItems: "center" }}>
-                <div className="popover-level-meter" style={{ flex: 1, marginBottom: 0 }}>
-                  <div className="popover-level-bar" style={{ width: `${Math.min(100, audioLevel * 100)}%` }} />
-                </div>
+                <AudioInputMeter audioLevel={audioLevel} />
                 <button 
                   className="popover-btn secondary" 
                   style={{ whiteSpace: "nowrap", padding: "4px 8px", fontSize: "11px", minHeight: "unset", height: "24px", marginTop: 0 }} 
@@ -450,6 +451,11 @@ Your task is to analyze this transcript and generate a premium-grade executive s
                 </div>
                 <Toggle checked={localSettings.systemAudio} onChange={(v) => setLocalSettings({ ...localSettings, systemAudio: v })} />
               </div>
+              {!localSettings.systemAudio && (
+                <div className="popover-system-audio-warning" role="status">
+                  System audio is off. Calls playing through headphones or speakers need loopback to be captured.
+                </div>
+              )}
             </div>
           </div>
         )}

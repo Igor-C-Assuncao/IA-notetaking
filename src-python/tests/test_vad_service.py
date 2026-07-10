@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+# Copyright 2026 Igor Cassimiro Assunção
 import numpy as np
 from unittest.mock import MagicMock, patch
 from vad_service import VADService
@@ -35,18 +37,18 @@ def test_trim_silence_empty_input():
         res = service.trim_silence(empty_audio, 16000)
         assert res.size == 0
 
-def test_trim_silence_pure_silence():
+def test_trim_silence_preserves_audio_when_no_speech_detected():
     mock_model = MagicMock()
     mock_get_speech = MagicMock(return_value=[]) # no speech segments
     
     with patch("torch.hub.load", return_value=(mock_model, [mock_get_speech])):
         service = VADService()
         
-        # Audio filled with zeros
+        # VAD can miss quiet or malformed captures; preserve raw audio instead of producing an empty WAV
         silent_audio = np.zeros(16000, dtype=np.int16)
         res = service.trim_silence(silent_audio, 16000)
         
-        assert res.size == 0
+        assert np.array_equal(res, silent_audio)
         mock_get_speech.assert_called_once()
 
 def test_trim_silence_pure_speech():

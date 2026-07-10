@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 Igor Cassimiro Assunção
 import { createContext, useContext, useEffect, ReactNode } from "react";
 import { useSettings } from "./SettingsProvider";
 

@@ -1,8 +1,10 @@
 [package]
 name = "ai-notetaking"
-version = "0.1.0"
-description = "A Tauri App"
-authors = ["you"]
+version = "0.2.0"
+description = "Open-source, privacy-first AI notetaker for meetings (Tauri 2 + Rust + Python)"
+authors = ["Igor Cassimiro Assunção"]
+license = "Apache-2.0"
+repository = "https://github.com/Igor-C-Assuncao/IA-notetaking"
 edition = "2021"
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html

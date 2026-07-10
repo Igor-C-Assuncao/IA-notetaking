@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 Igor Cassimiro Assunção
 import { useEffect, useRef, useState } from "react";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { listen } from "@tauri-apps/api/event";
@@ -74,15 +76,27 @@ function MainApp() {
       
       loadHistory();
 
-      // Trigger background RAG vector indexing for the newly created meeting
+      // Trigger background RAG vector indexing for the newly created meeting.
+      // Index with the persisted title/date so RAG citations and continuity
+      // chips match the meeting shown in the sidebar (not synthetic values).
       if (settings.ragEnabled) {
         const now = new Date();
+        let savedTitle: string | undefined;
+        let savedDate: string | undefined;
+        try {
+          const meetings = await invoke<{ id: number; title: string; date: string }[]>("get_meetings");
+          const saved = meetings.find((m) => m.id === meetingId);
+          savedTitle = saved?.title;
+          savedDate = saved?.date;
+        } catch (err) {
+          console.warn("Could not read saved meeting for indexing metadata:", err);
+        }
         await invoke("send_command_to_python", {
           payload: JSON.stringify({
             action: "INDEX_MEETING",
             meeting_id: meetingId,
-            title: `Meeting on ${now.toLocaleDateString()}`,
-            date: now.toISOString().slice(0, 19).replace('T', ' '),
+            title: savedTitle ?? `Meeting on ${now.toLocaleDateString()}`,
+            date: savedDate ?? now.toISOString().slice(0, 19).replace('T', ' '),
             raw_transcript: transcriptText,
             embedding_provider: settings.ragProvider,
             embedding_model: settings.ragEmbeddingModel

@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 Igor Cassimiro Assunção
 import { useState, useMemo, useEffect, useRef } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { writeText } from "@tauri-apps/plugin-clipboard-manager";
@@ -14,6 +16,7 @@ import { detectOS } from "@shared/lib/detectOS";
 import { useSettings } from "@app/providers/SettingsProvider";
 import { useTheme } from "@app/providers/ThemeProvider";
 import { useRecording } from "@features/recording/hooks/useRecording";
+import { AudioInputMeter } from "@features/recording/components/AudioInputMeter";
 import { useTranscription } from "@features/transcription/hooks/useTranscription";
 import { useSummary } from "@features/summary/hooks/useSummary";
 import { useMeetings } from "@features/meetings/hooks/useMeetings";
@@ -22,14 +25,10 @@ import { ReprocessModal } from "@features/meetings/components/ReprocessModal";
 import { CopilotSidebar } from "@features/rag/components/CopilotSidebar";
 import { parseActionItems, parseTldr } from "@features/summary/lib/parsers";
 import { SummaryDashboard } from "@features/summary/components/SummaryDashboard";
-import type { TranscriptSegment } from "@features/summary/types";
-
-function formatSegmentTime(milliseconds: number) {
-  const totalSeconds = Math.max(0, Math.floor(milliseconds / 1000));
-  const minutes = Math.floor(totalSeconds / 60);
-  const seconds = totalSeconds % 60;
-  return `${minutes}:${seconds.toString().padStart(2, "0")}`;
-}
+import { BriefingDashboard } from "@features/briefing/components/BriefingDashboard";
+import { compactSummaryForContinuity } from "@features/briefing/lib/compactSummary";
+import { formatSegmentTime } from "@shared/lib/formatSegmentTime";
+import type { StructuredSummary, TranscriptSegment } from "@features/summary/types";
 
 export function ExpandedView({
   isTransitioning, toggleWindowMode
@@ -38,12 +37,12 @@ export function ExpandedView({
 }) {
   const { settings } = useSettings();
   const { isLG, waveColor } = useTheme();
-  const { isRecording, recordingSeconds, status, toggleRecording } = useRecording();
-  const { setTranscriptionText, segments, search, setSearch, filteredTranscript } = useTranscription();
+  const { isRecording, recordingSeconds, audioLevel, micLevel, systemLevel, status, toggleRecording } = useRecording();
+  const { setTranscriptionText, segments, language, search, setSearch, filteredTranscript } = useTranscription();
   const { notes, setNotesText, tldr, actionItems, structuredSummary } = useSummary();
   const { meetingsHistory, selectedMeetingId, setSelectedMeetingId, sidebarSearch, setSidebarSearch, loadHistory } = useMeetings();
   
-  const [activeTab, setActiveTab] = useState<"transcript" | "summary" | "actions">("transcript");
+  const [activeTab, setActiveTab] = useState<"transcript" | "briefing" | "summary" | "actions">("transcript");
   const [copiedNotes, setCopiedNotes] = useState(false);
   const [copiedWebAI, setCopiedWebAI] = useState(false);
   const [highlightedSegmentId, setHighlightedSegmentId] = useState<string | null>(null);
@@ -75,7 +74,7 @@ export function ExpandedView({
     ? (currentMeeting.markdown_summary ? parseActionItems(currentMeeting.markdown_summary) : [])
     : actionItems;
 
-  const displayedStructured = useMemo(() => {
+  const displayedStructured = useMemo<StructuredSummary | null>(() => {
     if (selectedMeetingId !== null && currentMeeting) {
       if (currentMeeting.structured_summary) {
         try {
@@ -129,6 +128,122 @@ export function ExpandedView({
   const [toastMessage, setToastMessage] = useState("");
   const [toastLink, setToastLink] = useState("");
   const [isCopilotOpen, setIsCopilotOpen] = useState(false);
+  const [isGeneratingFollowUp, setIsGeneratingFollowUp] = useState(false);
+
+  // Follow-up drafts are persisted per saved meeting; live sessions have no id yet.
+  const canGenerateFollowUp = selectedMeetingId !== null && !!displayedStructured;
+
+  const handleGenerateFollowUp = async () => {
+    if (!canGenerateFollowUp || isGeneratingFollowUp) return;
+    setIsGeneratingFollowUp(true);
+    try {
+      await invoke("send_command_to_python", {
+        payload: JSON.stringify({
+          action: "GENERATE_FOLLOWUP",
+          meeting_id: selectedMeetingId,
+          structured_summary: displayedStructured,
+          provider: settings.provider,
+          model: settings.modelName,
+          api_key: settings.apiKey || "",
+          language: displayedStructured?.metadata?.language || language || null,
+        }),
+      });
+    } catch (err) {
+      setIsGeneratingFollowUp(false);
+      setToastMessage(`❌ Follow-up failed: ${String(err)}`);
+      setTimeout(() => setToastMessage(""), 4000);
+    }
+  };
+
+  usePythonEvent("FOLLOWUP_GENERATED", () => {
+    setIsGeneratingFollowUp(false);
+    // The Rust side already persisted the draft into structured_summary
+    loadHistory();
+    setToastMessage("✓ Follow-up email drafted!");
+    setTimeout(() => setToastMessage(""), 3000);
+  });
+
+  const [isAnalyzingContinuity, setIsAnalyzingContinuity] = useState(false);
+  const canAnalyzeContinuity = selectedMeetingId !== null && !!displayedStructured;
+
+  const handleAnalyzeContinuity = async () => {
+    if (!canAnalyzeContinuity || isAnalyzingContinuity) return;
+    const current = meetingsHistory.find((m) => m.id === selectedMeetingId);
+    if (!current) return;
+
+    // Meetings strictly before the current one (date, then id as tiebreaker),
+    // newest first, capped and compacted so the payload stays small.
+    const previousMeetings = meetingsHistory
+      .filter((m) =>
+        m.id !== current.id &&
+        (m.date < current.date || (m.date === current.date && m.id < current.id)) &&
+        !!m.structured_summary
+      )
+      .sort((a, b) => (a.date < b.date ? 1 : -1))
+      .slice(0, 15)
+      .flatMap((m) => {
+        if (!m.structured_summary) return [];
+        try {
+          const parsed = JSON.parse(m.structured_summary) as StructuredSummary;
+          return [{
+            meeting_id: m.id,
+            title: m.title,
+            date: m.date,
+            summary: compactSummaryForContinuity(parsed),
+          }];
+        } catch {
+          return [];
+        }
+      });
+
+    setIsAnalyzingContinuity(true);
+    try {
+      await invoke("send_command_to_python", {
+        payload: JSON.stringify({
+          action: "ANALYZE_CONTINUITY",
+          meeting_id: selectedMeetingId,
+          structured_summary: displayedStructured,
+          language: displayedStructured?.metadata?.language || language || null,
+          provider: settings.provider,
+          model: settings.modelName,
+          api_key: settings.apiKey || "",
+          embedding_provider: settings.ragProvider,
+          embedding_model: settings.ragEmbeddingModel,
+          previous_meetings: previousMeetings,
+        }),
+      });
+    } catch (err) {
+      setIsAnalyzingContinuity(false);
+      setToastMessage(`❌ Continuity analysis failed: ${String(err)}`);
+      setTimeout(() => setToastMessage(""), 4000);
+    }
+  };
+
+  usePythonEvent("CONTINUITY_GENERATED", () => {
+    setIsAnalyzingContinuity(false);
+    // The Rust side already persisted the report into structured_summary
+    loadHistory();
+    setToastMessage("✓ Continuity analysis ready!");
+    setTimeout(() => setToastMessage(""), 3000);
+  });
+
+  const openMeeting = (meetingId: number) => {
+    const m = meetingsHistory.find((meeting) => meeting.id === meetingId);
+    if (!m) return;
+    // Same effect as clicking the sidebar item, but keeps the Briefing tab
+    // open so the user can compare the related meeting side by side.
+    setSelectedMeetingId(m.id);
+    if (setTranscriptionText) setTranscriptionText(m.raw_transcript);
+    if (setNotesText) setNotesText(m.markdown_summary);
+  };
+
+  usePythonEvent("ERROR", (data) => {
+    if (!isGeneratingFollowUp && !isAnalyzingContinuity) return;
+    setIsGeneratingFollowUp(false);
+    setIsAnalyzingContinuity(false);
+    setToastMessage(`❌ ${data.message}`);
+    setTimeout(() => setToastMessage(""), 5000);
+  });
 
   const isWin = detectOS() === "win";
 
@@ -488,7 +603,12 @@ export function ExpandedView({
               </div>
             </div>
             <div className="meeting-header-right">
-              {isRecording && <Waveform width={60} height={14} color={waveColor} active bars={14} />}
+              {isRecording && (
+                <div className="recording-input-cluster">
+                  <Waveform width={60} height={14} color={waveColor} active bars={14} level={audioLevel} micLevel={micLevel} systemLevel={systemLevel} />
+                  <AudioInputMeter audioLevel={audioLevel} compact />
+                </div>
+              )}
               {selectedMeetingId !== null && !isRecording && (
                 <button
                   className="record-btn-expanded secondary"
@@ -523,11 +643,18 @@ export function ExpandedView({
             </div>
           </div>
 
+          {isRecording && !settings.systemAudio && (
+            <div className="system-audio-warning" role="status">
+              System audio is off. Remote meeting audio may not be captured.
+            </div>
+          )}
+
           <div className="tab-bar">
             <div className="tabs">
-              {(["transcript", "summary", "actions"] as const).map((t) => (
+              {(["transcript", "briefing", "summary", "actions"] as const).map((t) => (
                 <button key={t} className={`tab-btn ${activeTab === t ? "active" : ""}`} onClick={() => setActiveTab(t)}>
                   {t === "transcript" && "Transcript"}
+                  {t === "briefing" && "Briefing"}
                   {t === "summary" && "Summary"}
                   {t === "actions" && `Action Items${displayedActionItems.length ? ` · ${displayedActionItems.length}` : ""}`}
                 </button>
@@ -563,9 +690,29 @@ export function ExpandedView({
                   ? <pre className="transcript-text">{displayedTranscript}</pre>
                   : <div className="empty-state">
                     {isRecording
-                      ? <><Waveform width={60} height={14} color={waveColor} active bars={14} /><span>Transcribing…</span></>
+                      ? <><Waveform width={60} height={14} color={waveColor} active bars={14} level={audioLevel} micLevel={micLevel} systemLevel={systemLevel} /><span>Transcribing…</span></>
                       : <span>Start recording to see the transcript here.</span>}
                   </div>}
+              </div>
+            )}
+            {activeTab === "briefing" && (
+              <div className="tab-panel">
+                {displayedStructured ? (
+                  <BriefingDashboard
+                    summary={displayedStructured}
+                    onViewEvidence={viewEvidence}
+                    onGenerateFollowUp={handleGenerateFollowUp}
+                    isGeneratingFollowUp={isGeneratingFollowUp}
+                    canGenerateFollowUp={canGenerateFollowUp}
+                    onAnalyzeContinuity={handleAnalyzeContinuity}
+                    isAnalyzingContinuity={isAnalyzingContinuity}
+                    canAnalyzeContinuity={canAnalyzeContinuity}
+                    onOpenMeeting={openMeeting}
+                    onCopy={safeWriteText}
+                  />
+                ) : (
+                  <div className="empty-state"><span>Briefing will appear here once recording is processed.</span></div>
+                )}
               </div>
             )}
             {activeTab === "summary" && (

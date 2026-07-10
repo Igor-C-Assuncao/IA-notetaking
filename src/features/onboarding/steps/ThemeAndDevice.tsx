@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 Igor Cassimiro Assunção
 import { Dispatch, SetStateAction, useEffect, useRef, useState } from "react";
 import { WizardState } from "../OnboardingWizard";
 import { invoke } from "@tauri-apps/api/core";

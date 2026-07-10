@@ -1,3 +1,13 @@
+[project]
+name = "ai-notetaking-engine"
+version = "0.2.0"
+description = "Python AI engine (sidecar) for AI NoteTaking: audio capture, VAD, transcription, and meeting intelligence"
+license = "Apache-2.0"
+authors = [{ name = "Igor Cassimiro Assunção" }]
+
+[project.urls]
+Repository = "https://github.com/Igor-C-Assuncao/IA-notetaking"
+
 [tool.pytest.ini_options]
 testpaths = ["src-python/tests"]
 pythonpath = ["src-python"]

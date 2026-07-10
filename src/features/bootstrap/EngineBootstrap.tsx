@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 Igor Cassimiro Assunção
 import { ReactNode, useEffect, useMemo, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
@@ -6,6 +8,9 @@ import { useSettings } from "@app/providers/SettingsProvider";
 import { usePythonEvent } from "@app/providers/IpcProvider";
 
 type EngineKind = "cpu" | "gpu";
+type BootstrapPhase = "checking" | "choose" | "downloading" | "starting" | "ready" | "error";
+type BootstrapTaskState = "done" | "active" | "pending" | "error";
+type BootstrapVariant = "setup" | "initializing";
 
 interface EngineStatus {
   installed: boolean;
@@ -37,6 +42,10 @@ const ENGINE_COPY: Record<EngineKind, { title: string; body: string; details: st
   },
 };
 
+// React StrictMode mounts effects twice in dev; without this guard the boot
+// effect would invoke start_sidecar twice and spawn duplicate supervisors.
+let bootstrapEffectRan = false;
+
 function formatBytes(bytes?: number | null) {
   if (!bytes) return "";
   const units = ["B", "MB", "GB"];
@@ -49,13 +58,65 @@ function formatBytes(bytes?: number | null) {
   return `${value.toFixed(unit === 0 ? 0 : 1)} ${units[unit]}`;
 }
 
+function buildBootstrapTasks(
+  variant: BootstrapVariant,
+  phase: BootstrapPhase,
+  downloadStage: string | undefined,
+  message: string,
+  startupSlow: boolean,
+  hasError: boolean,
+) {
+  const isVerifying = downloadStage === "verifying";
+  const isLoadingModels = phase === "starting" && (startupSlow || message.toLowerCase().includes("loading local models"));
+  const stateForSetup = (id: "check" | "download" | "verify" | "start"): BootstrapTaskState => {
+    if (hasError && phase === "error") return id === "start" ? "error" : "done";
+    if (phase === "checking" || phase === "choose") return id === "check" ? "active" : "pending";
+    if (phase === "downloading") {
+      if (id === "check") return "done";
+      if (id === "download") return isVerifying ? "done" : "active";
+      if (id === "verify") return isVerifying ? "active" : "pending";
+      return "pending";
+    }
+    if (phase === "starting") return id === "start" ? "active" : "done";
+    if (phase === "ready") return "done";
+    return "pending";
+  };
+
+  const stateForInitializing = (id: "check" | "start" | "load"): BootstrapTaskState => {
+    if (hasError && phase === "error") return id === "start" ? "error" : id === "check" ? "done" : "pending";
+    if (phase === "checking") return id === "check" ? "active" : "pending";
+    if (phase === "starting") {
+      if (id === "check") return "done";
+      if (id === "start") return isLoadingModels ? "done" : "active";
+      return isLoadingModels ? "active" : "pending";
+    }
+    if (phase === "ready") return "done";
+    return "pending";
+  };
+
+  if (variant === "setup") {
+    return [
+      { id: "check", label: "Check component", detail: "Looking for the local transcription component.", state: stateForSetup("check") },
+      { id: "download", label: "Download", detail: "Downloading the selected transcription package.", state: stateForSetup("download") },
+      { id: "verify", label: "Verify", detail: "Checking the package before startup.", state: stateForSetup("verify") },
+      { id: "start", label: "Start services", detail: "Starting the local transcription services.", state: stateForSetup("start") },
+    ];
+  }
+
+  return [
+    { id: "check", label: "Check component", detail: "Confirming the local transcription component is available.", state: stateForInitializing("check") },
+    { id: "start", label: "Start services", detail: "Starting the local transcription services.", state: stateForInitializing("start") },
+    { id: "load", label: "Load models", detail: startupSlow ? "First launch can take a few minutes." : "Preparing transcription models.", state: stateForInitializing("load") },
+  ];
+}
+
 export function EngineBootstrap({ children }: { children: ReactNode }) {
   const { settings, updateSettings } = useSettings();
   const win = getCurrentWindow();
   const isLightTheme = settings.theme === "minimalist-notebook";
   const [engineKind, setEngineKind] = useState<EngineKind>(settings.engineKind || "cpu");
   const [status, setStatus] = useState<EngineStatus | null>(null);
-  const [phase, setPhase] = useState<"checking" | "choose" | "downloading" | "starting" | "ready" | "error">("checking");
+  const [phase, setPhase] = useState<BootstrapPhase>("checking");
   const [progress, setProgress] = useState<ProgressPayload | null>(null);
   const [message, setMessage] = useState("Checking the local transcription component...");
   const [error, setError] = useState("");
@@ -65,6 +126,15 @@ export function EngineBootstrap({ children }: { children: ReactNode }) {
     if (!progress?.totalBytes) return 0;
     return Math.min(100, Math.round((progress.downloadedBytes / progress.totalBytes) * 100));
   }, [progress]);
+
+  const bootstrapVariant: BootstrapVariant = status?.installed === false || phase === "downloading" ? "setup" : "initializing";
+
+  const bootstrapTasks = useMemo(
+    () => buildBootstrapTasks(bootstrapVariant, phase, progress?.stage, message, startupSlow, Boolean(error)),
+    [bootstrapVariant, phase, progress?.stage, message, startupSlow, error]
+  );
+
+  const activeTaskDetail = bootstrapTasks.find((task) => task.state === "active" || task.state === "error")?.detail;
 
   usePythonEvent("SYSTEM_READY", () => {
     setMessage("Transcription component started. Loading local models...");
@@ -94,6 +164,8 @@ export function EngineBootstrap({ children }: { children: ReactNode }) {
   }, []);
 
   useEffect(() => {
+    if (bootstrapEffectRan) return;
+    bootstrapEffectRan = true;
     invoke("set_bootstrap_mode").catch(console.error);
     checkEngine(engineKind);
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -191,7 +263,7 @@ export function EngineBootstrap({ children }: { children: ReactNode }) {
       <section className="bootstrap-panel">
         <div className="bootstrap-header">
           <div className="bootstrap-topbar">
-            <span className="bootstrap-kicker">First-time setup</span>
+            <span className="bootstrap-kicker">{bootstrapVariant === "setup" ? "First-time setup" : "Initializing services"}</span>
             <div className="topbar-actions">
               <button className="theme-toggle-btn" type="button" onClick={toggleTheme}>
                 {isLightTheme ? "Dark theme" : "Light theme"}
@@ -201,11 +273,11 @@ export function EngineBootstrap({ children }: { children: ReactNode }) {
               </button>
             </div>
           </div>
-          <h1>AI NoteTaking</h1>
-          <p>First we prepare the local transcription component. Later you can choose whether note generation uses local AI or a cloud API.</p>
+          <h1>{bootstrapVariant === "setup" ? "AI NoteTaking" : "Starting AI NoteTaking"}</h1>
+          <p>{bootstrapVariant === "setup" ? "First we prepare the local transcription component. Later you can choose whether note generation uses local AI or a cloud API." : "Starting local transcription services before opening the app."}</p>
         </div>
 
-        {(phase === "choose" || phase === "error") && (
+        {bootstrapVariant === "setup" && (phase === "choose" || phase === "error") && (
           <div className="engine-options">
             {(Object.keys(ENGINE_COPY) as EngineKind[]).map((kind) => (
               <button
@@ -222,12 +294,26 @@ export function EngineBootstrap({ children }: { children: ReactNode }) {
           </div>
         )}
 
+        <div className="bootstrap-task-list" aria-label="Setup progress">
+          {bootstrapTasks.map((task) => (
+            <div key={task.id} className={`bootstrap-task ${task.state}`}>
+              <span className="bootstrap-task-marker" aria-hidden="true">
+                {task.state === "done" ? "✓" : task.state === "error" ? "!" : task.state === "active" ? "..." : ""}
+              </span>
+              <div>
+                <strong>{task.label}</strong>
+                {(task.state === "active" || task.state === "error") && <p>{task.detail}</p>}
+              </div>
+            </div>
+          ))}
+        </div>
+
         {(phase === "checking" || phase === "starting") && (
           <div className="bootstrap-status">
             <span className="spinner" />
             <div>
-              <strong>{phase === "starting" ? "Starting component" : "Checking installation"}</strong>
-              <p>{message}</p>
+              <strong>{phase === "starting" ? "Starting services" : bootstrapVariant === "setup" ? "Checking installation" : "Checking services"}</strong>
+              <p>{activeTaskDetail || message}</p>
             </div>
           </div>
         )}
@@ -257,7 +343,7 @@ export function EngineBootstrap({ children }: { children: ReactNode }) {
         {error && <p className="bootstrap-error" role="alert">{error}</p>}
 
         <div className="bootstrap-actions">
-          {(phase === "choose" || phase === "error") && (
+          {bootstrapVariant === "setup" && (phase === "choose" || phase === "error") && (
             <>
               <button className="btn-secondary" type="button" onClick={() => checkEngine(engineKind)}>
                 Check again
@@ -266,6 +352,11 @@ export function EngineBootstrap({ children }: { children: ReactNode }) {
                 Download {ENGINE_COPY[engineKind].title} component
               </button>
             </>
+          )}
+          {bootstrapVariant === "initializing" && phase === "error" && (
+            <button className="btn-secondary" type="button" onClick={() => checkEngine(engineKind)}>
+              Retry startup
+            </button>
           )}
         </div>
 

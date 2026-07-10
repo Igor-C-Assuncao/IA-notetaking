@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+# Copyright 2026 Igor Cassimiro Assunção
 # src-python/rag_service.py
 import json
 import os

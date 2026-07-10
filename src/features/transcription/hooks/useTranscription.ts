@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 Igor Cassimiro Assunção
 import { useState, useMemo } from "react";
 import { usePythonEvent } from "@app/providers/IpcProvider";
 import type { TranscriptSegment } from "@features/summary/types";
@@ -6,12 +8,14 @@ export function useTranscription() {
   const [transcription, setTranscription] = useState("");
   const [segments, setSegments] = useState<TranscriptSegment[]>([]);
   const [diarized, setDiarized] = useState(false);
+  const [language, setLanguage] = useState<string | null>(null);
   const [search, setSearch] = useState("");
 
   usePythonEvent("TRANSCRIPTION_COMPLETED", (data) => {
     setTranscription(data.text);
     setSegments(data.segments);
     setDiarized(data.diarized);
+    setLanguage(data.language ?? null);
   });
 
   const filteredTranscript = useMemo(() => {
@@ -22,5 +26,5 @@ export function useTranscription() {
       .join("\n");
   }, [transcription, search]);
 
-  return { transcription, setTranscriptionText: setTranscription, segments, diarized, search, setSearch, filteredTranscript };
+  return { transcription, setTranscriptionText: setTranscription, segments, diarized, language, search, setSearch, filteredTranscript };
 }

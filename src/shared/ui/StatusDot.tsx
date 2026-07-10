@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 Igor Cassimiro Assunção
 export function StatusDot({ isRecording, size = 8, isLG }: { isRecording: boolean; size?: number; isLG: boolean }) {
   const color = isRecording ? (isLG ? "#ff4d5f" : "#c03838") : (isLG ? "#30d158" : "#2d5a3d");
   return (

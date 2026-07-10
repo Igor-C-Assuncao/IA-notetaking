@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 Igor Cassimiro Assunção
 const SHORTCUTS = [
   { keys: ["⌘", "⇧", "R"], win: ["Ctrl", "⇧", "R"], label: "Toggle recording" },
   { keys: ["⌘", "⇧", "P"], win: ["Ctrl", "⇧", "P"], label: "Pause / Resume" },

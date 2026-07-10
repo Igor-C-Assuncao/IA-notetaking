@@ -1,6 +1,8 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 Igor Cassimiro Assunção
 import { describe, test, expect, vi, beforeEach } from "vitest";
 import { renderHook, act } from "@testing-library/react";
-import { useRecording, resetGlobalRecordingState } from "./useRecording";
+import { useRecording, resetGlobalRecordingState, getAudioInputState } from "./useRecording";
 import { invoke } from "@tauri-apps/api/core";
 
 // Mock the settings provider
@@ -46,6 +48,9 @@ describe("useRecording Hook", () => {
     expect(result.current.isRecording).toBe(false);
     expect(result.current.recordingSeconds).toBe(0);
     expect(result.current.audioLevel).toBe(0);
+    expect(result.current.micLevel).toBe(0);
+    expect(result.current.systemLevel).toBe(0);
+    expect(result.current.inputState).toEqual({ state: "none", label: "No input detected" });
     expect(result.current.status).toBe("Ready");
   });
 
@@ -71,6 +76,27 @@ describe("useRecording Hook", () => {
     });
     
     expect(result.current.audioLevel).toBe(0.85);
+    expect(result.current.micLevel).toBe(0.85);
+    expect(result.current.systemLevel).toBe(0);
+    expect(result.current.inputState).toEqual({ state: "ok", label: "Input detected" });
+  });
+
+  test("tracks microphone and system telemetry separately", () => {
+    const { result } = renderHook(() => useRecording());
+
+    act(() => {
+      eventHandlers["VAD_TELEMETRY"]({ level: 0.42, micLevel: 0.08, systemLevel: 0.42, activeSources: ["mic", "system"] });
+    });
+
+    expect(result.current.audioLevel).toBe(0.42);
+    expect(result.current.micLevel).toBe(0.08);
+    expect(result.current.systemLevel).toBe(0.42);
+  });
+
+  test("derives audio input states from telemetry levels", () => {
+    expect(getAudioInputState(0)).toEqual({ state: "none", label: "No input detected" });
+    expect(getAudioInputState(0.02)).toEqual({ state: "low", label: "Low input" });
+    expect(getAudioInputState(0.04)).toEqual({ state: "ok", label: "Input detected" });
   });
 
   test("reacts to PIPELINE_STATUS events", () => {
@@ -98,6 +124,19 @@ describe("useRecording Hook", () => {
     });
 
     expect(result.current.status).toBe("Transcription failed: Recording was too short.");
+  });
+
+  test("surfaces actionable audio-too-quiet failures", () => {
+    const { result } = renderHook(() => useRecording());
+
+    act(() => {
+      eventHandlers["TRANSCRIPTION_FAILED"]({
+        code: "AUDIO_TOO_QUIET",
+        message: "Audio too quiet.",
+      });
+    });
+
+    expect(result.current.status).toBe("Transcription failed: audio was too quiet. Select the correct microphone or turn on System Audio.");
   });
 
   test("dispatches START_RECORDING command on toggle when idle", async () => {

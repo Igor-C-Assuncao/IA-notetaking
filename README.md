@@ -5,6 +5,7 @@
 
   <p>An open-source, invisible, privacy-first AI notetaker for your meetings.</p>
 
+  [![Version](https://img.shields.io/badge/Version-0.2.0-informational.svg)](https://github.com/Igor-C-Assuncao/IA-notetaking/releases)
   [![License](https://img.shields.io/badge/License-Apache_2.0-blue.svg)](https://opensource.org/licenses/Apache-2.0)
   [![PRs Welcome](https://img.shields.io/badge/PRs-welcome-brightgreen.svg)](http://makeapullrequest.com)
   [![Tauri](https://img.shields.io/badge/Tauri_2-App-FFC131?logo=tauri&logoColor=white)](https://tauri.app/)
@@ -25,6 +26,9 @@ Built with a high-performance hybrid architecture: **Tauri 2 + Rust + Python**.
 - **Bring your own key (BYOK)** — prefer the cloud? Drop in your API key for OpenAI, Google Gemini, or Anthropic Claude and switch at any time.
 - **Intelligent audio pipeline** — [Silero VAD](https://github.com/snakers4/silero-vad) filters silence before transcription, [WhisperX](https://github.com/m-bain/whisperX) handles speech-to-text, and a LangGraph agent extracts action items and generates the structured summary.
 - **Evidence-backed meeting intelligence** — decisions and action items include confidence, inference labels, exact transcript quotes, and links back to timestamped source segments.
+- **Meeting briefing dashboard** — cross-meeting continuity reports: recurring topics, decision changes, and related meetings surfaced before you join the next call.
+- **Live processing feedback** — reprocessing reports staged progress in real time (context preparation, token estimation, AI calls, chunking, finalization) with elapsed time and token/billing status per provider.
+- **Per-source audio monitoring** — separate live level meters for microphone and system audio, so you can see at a glance which sources are actually being captured.
 - **Reliable configuration** — provider-specific credentials, explicit save behavior, recoverable validation errors, and Hugging Face gated-model access checks.
 - **Compact floating widget** — sits as a small always-on-top pill while you work; expands to the full view when you need to review notes or browse meeting history.
 - **Persistent history** — every session, structured summary, and versioned transcript segment set is saved locally in SQLite.
@@ -209,6 +213,22 @@ The AMI row is a single-fixture transcription baseline and should be treated as
 an early signal only. Representative AMI, QMSum, CORAA, consented internal
 meeting fixtures, and larger LLM-generated QMSum runs are still required.
 
+## Release history
+
+### 0.2.0 (current)
+
+- Meeting briefing intelligence pipeline and briefing dashboard UI
+- Real-time reprocess progress (`REPROCESS_STATUS` events: staged progress, elapsed time, token estimates, provider/model info)
+- Per-source audio telemetry (mic vs system levels) with the new `AudioInputMeter` component
+- Recording pipeline reliability fixes: captured audio is no longer dropped, near-silent recordings are rejected before transcription
+- Project licensing formalized: Apache 2.0 `LICENSE` + `NOTICE`, SPDX headers on all sources, DCO adopted for contributions, `CITATION.cff`
+
+### 0.1.0
+
+- Initial release: loopback + microphone capture, Silero VAD, WhisperX transcription, LangGraph summaries
+- BYOK multi-provider support (Ollama, OpenAI, Gemini, Anthropic) with keychain-stored secrets
+- Compact floating widget, expanded view, meeting history in SQLite, two themes
+
 ## Roadmap
 
 | Sprint | Status | Scope |
@@ -225,8 +245,17 @@ meeting fixtures, and larger LLM-generated QMSum runs are still required.
 
 ## Contributing
 
-Contributions are welcome. If you are interested in AI, desktop development, or audio engineering, check out the open issues and submit a pull request. Please follow the existing code conventions and include a clear description of what your change does.
+Contributions are welcome. If you are interested in AI, desktop development, or audio engineering, check out the open issues and submit a pull request. Please read [CONTRIBUTING.md](CONTRIBUTING.md) — commits must be signed off (DCO) — and follow the existing code conventions.
 
 ## License
 
 Licensed under the [Apache License 2.0](LICENSE).
+
+Copyright 2026 Igor Cassimiro Assunção. Redistributions and derivative works
+must retain the attribution notices in the [NOTICE](NOTICE) file, as required
+by Section 4 of the license.
+
+**Trademark notice:** the Apache License does not grant permission to use the
+name "AI NoteTaking" or the project logo (License, Section 6). Forks and
+derivative works may not use the name or logo to identify themselves without
+prior written permission.

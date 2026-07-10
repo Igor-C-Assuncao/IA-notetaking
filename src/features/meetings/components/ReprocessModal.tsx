@@ -1,8 +1,11 @@
-import { useState } from "react";
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 Igor Cassimiro Assunção
+import { useEffect, useMemo, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { useSettings } from "@app/providers/SettingsProvider";
 import { useTheme } from "@app/providers/ThemeProvider";
 import { usePythonEvent } from "@app/providers/IpcProvider";
+import type { PythonEvent } from "@shared/types/ipc-events";
 
 interface ReprocessModalProps {
   meetingId: number;
@@ -11,6 +14,45 @@ interface ReprocessModalProps {
   originalSummary: string;
   onClose: () => void;
   onSuccess: (newMarkdown: string) => void;
+}
+
+type ReprocessStatus = Extract<PythonEvent, { event: "REPROCESS_STATUS" }>["data"];
+type LogEntry = { elapsedMs: number; message: string; stage: ReprocessStatus["stage"] | "error" };
+
+function formatElapsed(ms: number) {
+  const totalSeconds = Math.max(0, Math.floor(ms / 1000));
+  const minutes = Math.floor(totalSeconds / 60).toString().padStart(2, "0");
+  const seconds = (totalSeconds % 60).toString().padStart(2, "0");
+  return `${minutes}:${seconds}`;
+}
+
+function formatStage(stage?: ReprocessStatus["stage"]) {
+  if (!stage) return "Waiting";
+  return stage
+    .split("_")
+    .map((part) => part.charAt(0).toUpperCase() + part.slice(1))
+    .join(" ")
+    .replace(/\bAi\b/g, "AI");
+}
+
+function normalizeProgress(progress?: number) {
+  if (typeof progress !== "number" || Number.isNaN(progress)) return null;
+  const normalized = progress > 1 ? progress / 100 : progress;
+  return Math.min(1, Math.max(0, normalized));
+}
+
+function tokenMessage(status: ReprocessStatus | null, fallbackProvider: string) {
+  const provider = (status?.provider || fallbackProvider || "").toLowerCase();
+  if (status?.token_status === "local_no_billing" || provider === "ollama") {
+    return "No API token billing; local model processing.";
+  }
+  if (status?.token_status === "actual_unavailable") {
+    return "Actual token usage not reported by provider.";
+  }
+  if (status?.estimated_tokens) {
+    return `Estimated input: ~${new Intl.NumberFormat("en-US").format(Math.round(status.estimated_tokens))} tokens.`;
+  }
+  return "Estimated input tokens will appear after context preparation.";
 }
 
 export function ReprocessModal({
@@ -31,12 +73,46 @@ export function ReprocessModal({
   
   const [isReprocessing, setIsReprocessing] = useState(false);
   const [progressStatus, setProgressStatus] = useState("");
+  const [reprocessStatus, setReprocessStatus] = useState<ReprocessStatus | null>(null);
+  const [logEntries, setLogEntries] = useState<LogEntry[]>([]);
+  const [startedAt, setStartedAt] = useState<number | null>(null);
+  const [elapsedNow, setElapsedNow] = useState(0);
   const [errorMsg, setErrorMsg] = useState("");
 
-  // Listen for pipeline status changes from the Python backend
+  useEffect(() => {
+    if (!isReprocessing || startedAt === null) return;
+    const interval = window.setInterval(() => {
+      setElapsedNow(Date.now() - startedAt);
+    }, 1000);
+    return () => window.clearInterval(interval);
+  }, [isReprocessing, startedAt]);
+
+  const elapsedMs = reprocessStatus?.elapsed_ms ?? elapsedNow;
+  const progress = normalizeProgress(reprocessStatus?.progress);
+  const progressPercent = progress === null ? null : Math.round(progress * 100);
+  const aiInProgress = reprocessStatus
+    ? ["calling_ai", "processing_chunk", "finalizing"].includes(reprocessStatus.stage)
+    : false;
+  const visibleLogEntries = useMemo(() => logEntries.slice(-8), [logEntries]);
+
+  // Keep the old pipeline status as a fallback for older sidecars.
   usePythonEvent("PIPELINE_STATUS", (data) => {
-    if (isReprocessing) {
+    if (isReprocessing && !reprocessStatus) {
       setProgressStatus(data.step);
+    }
+  });
+
+  usePythonEvent("REPROCESS_STATUS", (data) => {
+    if (data.meeting_id !== meetingId) return;
+    setReprocessStatus(data);
+    setProgressStatus(data.message);
+    setLogEntries((current) => [
+      ...current,
+      { elapsedMs: data.elapsed_ms ?? 0, message: data.message, stage: data.stage },
+    ].slice(-8));
+    if (data.stage === "failed") {
+      setIsReprocessing(false);
+      setErrorMsg(data.message);
     }
   });
 
@@ -53,15 +129,34 @@ export function ReprocessModal({
   usePythonEvent("ERROR", (data) => {
     if (isReprocessing) {
       setIsReprocessing(false);
-      setErrorMsg(data.message || "An unexpected LLM error occurred.");
+      const message = data.message || "An unexpected LLM error occurred.";
+      setErrorMsg(message);
+      setLogEntries((current) => [
+        ...current,
+        { elapsedMs, message, stage: "error" as const },
+      ].slice(-8));
     }
   });
 
   const handleRun = async () => {
     if (isReprocessing) return;
+    const now = Date.now();
     setIsReprocessing(true);
+    setStartedAt(now);
+    setElapsedNow(0);
     setErrorMsg("");
     setProgressStatus("Initializing reprocessing...");
+    setReprocessStatus({
+      meeting_id: meetingId,
+      stage: "queued",
+      message: "Initializing reprocessing...",
+      progress: 0.02,
+      elapsed_ms: 0,
+      token_status: provider === "ollama" ? "local_no_billing" : "estimated",
+      provider,
+      model,
+    });
+    setLogEntries([{ elapsedMs: 0, message: "Initializing reprocessing...", stage: "queued" }]);
 
     try {
       await invoke("reprocess_meeting", {
@@ -72,18 +167,24 @@ export function ReprocessModal({
         apiKey: provider === "ollama" ? "" : apiKey,
       });
     } catch (e) {
+      const message = String(e) || "Failed to start reprocessing.";
       console.error(e);
       setIsReprocessing(false);
-      setErrorMsg(String(e) || "Failed to start reprocessing.");
+      setErrorMsg(message);
+      setReprocessStatus((current) => current ? { ...current, stage: "failed", message } : current);
+      setLogEntries((current) => [
+        ...current,
+        { elapsedMs: Date.now() - now, message, stage: "error" as const },
+      ].slice(-8));
     }
   };
 
   return (
     <div className={`modal-overlay ${isLG ? "modal-lg" : "modal-nb"}`}>
-      <div className="modal-container" style={{ maxWidth: "580px", width: "90%" }}>
+      <div className="modal-container" style={{ maxWidth: "620px", width: "90%" }}>
         <div className="modal-header">
           <div className="modal-title">Reprocess Summary</div>
-          <button className="modal-close" onClick={onClose} disabled={isReprocessing}>✕</button>
+          <button className="modal-close" onClick={onClose} disabled={isReprocessing}>x</button>
         </div>
 
         <div className="modal-body" style={{ display: "flex", flexDirection: "column", gap: "16px" }}>
@@ -162,20 +263,63 @@ export function ReprocessModal({
           {/* error display */}
           {errorMsg && (
             <div className="modal-error-box" style={{ color: "#ff3b30", fontSize: "12px", background: "rgba(255,59,48,0.1)", padding: "8px 12px", borderRadius: "6px" }}>
-              ⚠️ {errorMsg}
+              Warning: {errorMsg}
             </div>
           )}
 
-          {/* reprocessing status indicator */}
-          {isReprocessing && (
-            <div style={{ display: "flex", flexDirection: "column", gap: "6px", marginTop: "4px" }}>
-              <div style={{ display: "flex", justifyContent: "space-between", fontSize: "12px" }}>
-                <span>Processing...</span>
-                <span style={{ fontWeight: 600 }}>{progressStatus}</span>
+          {(isReprocessing || reprocessStatus || logEntries.length > 0) && (
+            <div style={{ display: "flex", flexDirection: "column", gap: "10px", marginTop: "4px" }}>
+              <div style={{ display: "flex", justifyContent: "space-between", gap: "12px", fontSize: "12px" }}>
+                <span style={{ fontWeight: 600 }}>Progress</span>
+                <span>{formatElapsed(elapsedMs)}</span>
               </div>
-              <div className="popover-level-meter" style={{ height: "4px", marginBottom: 0 }}>
-                <div className="popover-level-bar animated-loading-bar" style={{ width: "100%" }} />
+
+              <div style={{ display: "grid", gridTemplateColumns: "repeat(2, minmax(0, 1fr))", gap: "8px", fontSize: "12px" }}>
+                <div>
+                  <div className="popover-label">Current stage</div>
+                  <div style={{ fontWeight: 600 }}>{formatStage(reprocessStatus?.stage)}</div>
+                </div>
+                <div>
+                  <div className="popover-label">Provider / model</div>
+                  <div style={{ fontWeight: 600 }}>{reprocessStatus?.provider || provider} / {reprocessStatus?.model || model}</div>
+                </div>
+                <div style={{ gridColumn: "1 / -1" }}>
+                  <div className="popover-label">Token status</div>
+                  <div>{tokenMessage(reprocessStatus, provider)}</div>
+                  {aiInProgress && provider !== "ollama" && (
+                    <div style={{ marginTop: "4px", color: "var(--text-secondary)" }}>
+                      AI request in progress; tokens may be consumed by provider.
+                    </div>
+                  )}
+                </div>
+                {reprocessStatus?.chunk_total && (
+                  <div style={{ gridColumn: "1 / -1" }}>
+                    Chunk {reprocessStatus.chunk_current || 0} of {reprocessStatus.chunk_total}
+                  </div>
+                )}
               </div>
+
+              <div className="popover-level-meter" style={{ height: "5px", marginBottom: 0 }}>
+                <div
+                  className={`popover-level-bar ${progress === null ? "animated-loading-bar" : ""}`}
+                  style={{ width: progressPercent === null ? "100%" : `${progressPercent}%` }}
+                />
+              </div>
+              <div style={{ display: "flex", justifyContent: "space-between", fontSize: "12px", color: "var(--text-secondary)" }}>
+                <span>{progressStatus || reprocessStatus?.message || "Waiting for backend status..."}</span>
+                {progressPercent !== null && <span>{progressPercent}%</span>}
+              </div>
+
+              {visibleLogEntries.length > 0 && (
+                <div style={{ display: "flex", flexDirection: "column", gap: "4px", fontSize: "12px", background: "rgba(127,127,127,0.08)", border: "1px solid var(--border)", borderRadius: "6px", padding: "8px" }}>
+                  {visibleLogEntries.map((entry, index) => (
+                    <div key={`${entry.stage}-${entry.elapsedMs}-${index}`} style={{ display: "grid", gridTemplateColumns: "42px 1fr", gap: "8px" }}>
+                      <span style={{ color: "var(--text-secondary)", fontVariantNumeric: "tabular-nums" }}>{formatElapsed(entry.elapsedMs)}</span>
+                      <span>{entry.message}</span>
+                    </div>
+                  ))}
+                </div>
+              )}
             </div>
           )}
 
