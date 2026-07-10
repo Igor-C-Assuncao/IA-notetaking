@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+# Copyright 2026 Igor Cassimiro Assunção
 import json
 from unittest.mock import MagicMock
 from llm_service import (
@@ -825,3 +827,58 @@ def test_generate_continuity_report_fallback_uses_deterministic_hints(mock_llm):
     assert report["recurring_topics"] == ["docs"]
     assert report["reverted_or_changed_decisions"] == []
     assert report["related_meetings"][0]["reason"] == "recent meeting"
+
+def test_run_emits_progress_callbacks_for_short_transcript(monkeypatch):
+    monkeypatch.setattr(MeetingWorkflowEngine, "_initialize_llm", lambda self: MagicMock())
+    engine = MeetingWorkflowEngine(provider_name="ollama", model_name="llama3")
+    events = []
+
+    monkeypatch.setattr(engine, "extract_entities_node", lambda state: {"entities": {"speakers": [], "numbers": [], "dates": [], "projects": [], "acronyms": []}})
+    monkeypatch.setattr(engine, "clean_transcript_node", lambda state: {"clean_transcript": state["raw_transcript"]})
+    monkeypatch.setattr(engine, "extract_action_items_node", lambda state: {"decisions": [], "actions": []})
+    monkeypatch.setattr(engine, "segment_topics_node", lambda state: {"chapters": []})
+    monkeypatch.setattr(engine, "generate_summary_node", lambda state: {
+        "final_markdown": "# Summary",
+        "structured_summary": {"tldr": "Summary"},
+    })
+
+    result = engine.run("Alice: short sync", progress_callback=events.append)
+
+    assert result["markdown"] == "# Summary"
+    assert [event["stage"] for event in events] == ["calling_ai", "finalizing"]
+    assert events[0]["progress"] == 0.35
+
+
+def test_run_emits_processing_chunk_callbacks_for_long_transcript(monkeypatch):
+    monkeypatch.setattr(MeetingWorkflowEngine, "_initialize_llm", lambda self: MagicMock())
+    defaults = MeetingWorkflowEngine.run.__globals__["DEFAULTS"]
+    monkeypatch.setitem(defaults, "num_ctx", 10)
+    monkeypatch.setitem(defaults, "tokens_per_char", 1)
+    engine = MeetingWorkflowEngine(provider_name="ollama", model_name="llama3")
+    events = []
+    segments = [
+        {"segment_id": f"seg_{index:06d}", "text": "hello"}
+        for index in range(4)
+    ]
+
+    monkeypatch.setattr(engine, "extract_entities_node", lambda state: {"entities": {"speakers": [], "numbers": [], "dates": [], "projects": [], "acronyms": []}})
+    monkeypatch.setattr(engine, "clean_transcript_node", lambda state: {"clean_transcript": state["raw_transcript"]})
+    monkeypatch.setattr(engine, "extract_action_items_node", lambda state: {"decisions": [], "actions": []})
+    monkeypatch.setattr(engine, "segment_topics_node", lambda state: {"chapters": []})
+    monkeypatch.setattr(engine, "generate_summary_node", lambda state: {
+        "final_markdown": "# Long Summary",
+        "structured_summary": {"tldr": "Long Summary"},
+    })
+
+    result = engine.run(
+        " ".join(segment["text"] for segment in segments),
+        transcript_segments=segments,
+        progress_callback=events.append,
+    )
+
+    assert result["markdown"] == "# Long Summary"
+    processing_events = [event for event in events if event["stage"] == "processing_chunk"]
+    assert len(processing_events) >= 2
+    assert processing_events[0]["chunk_current"] == 1
+    assert processing_events[-1]["chunk_total"] == len(processing_events)
+    assert events[-1]["stage"] == "finalizing"

@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+# Copyright 2026 Igor Cassimiro Assunção
 # src-python/llm_service.py
 import sys
 from typing import TypedDict
@@ -1334,8 +1336,17 @@ class MeetingWorkflowEngine:
         diarized_segments: list = None,
         meeting_date: str = None,
         transcript_segments: list = None,
+        progress_callback=None,
     ) -> dict:
         """Builds the graph, compiles it, and runs the transcript through the nodes."""
+
+        def emit_progress(update: dict):
+            if not progress_callback:
+                return
+            try:
+                progress_callback(update)
+            except Exception as error:
+                print(f"DEBUG: [LangGraph] Progress callback failed: {error}", file=sys.stderr)
         
         # Token estimation & Map-Reduce check
         char_count = len(transcript)
@@ -1353,6 +1364,12 @@ class MeetingWorkflowEngine:
                 source_segments,
                 max_chars=max_chunk_chars,
             )
+            emit_progress({
+                "stage": "calling_ai",
+                "message": "Calling AI with chunked context...",
+                "progress": 0.25,
+                "chunk_total": len(segment_chunks),
+            })
             
             merged_entities = {"speakers": [], "numbers": [], "dates": [], "projects": [], "acronyms": []}
             merged_decisions = []
@@ -1362,6 +1379,13 @@ class MeetingWorkflowEngine:
             
             for i, chunk_segments in enumerate(segment_chunks):
                 print(f"DEBUG: [LangGraph] Processing chunk {i+1}/{len(segment_chunks)}", file=sys.stderr)
+                emit_progress({
+                    "stage": "processing_chunk",
+                    "message": f"Processing chunk {i + 1}/{len(segment_chunks)}...",
+                    "progress": 0.25 + ((i + 1) / max(1, len(segment_chunks))) * 0.55,
+                    "chunk_current": i + 1,
+                    "chunk_total": len(segment_chunks),
+                })
                 chunk = "\n".join(segment.get("text", "") for segment in chunk_segments)
                 chunk_state = {
                     "raw_transcript": chunk,
@@ -1394,6 +1418,12 @@ class MeetingWorkflowEngine:
             # end timestamps across chunk borders.
             merged_chapters = self._finalize_chapters(merged_chapters, source_segments)
 
+            emit_progress({
+                "stage": "finalizing",
+                "message": "Finalizing summary...",
+                "progress": 0.9,
+                "chunk_total": len(segment_chunks),
+            })
             final_state = {
                 "entities": merged_entities,
                 "clean_transcript": merged_clean.strip(),
@@ -1429,11 +1459,21 @@ class MeetingWorkflowEngine:
             app = workflow.compile()
             try:
                 print("DEBUG: [LangGraph] Executing workflow...", file=sys.stderr)
+                emit_progress({
+                    "stage": "calling_ai",
+                    "message": "Calling AI model...",
+                    "progress": 0.35,
+                })
                 result = app.invoke({
                     "raw_transcript": transcript,
                     "diarized_segments": diarized_segments,
                     "transcript_segments": transcript_segments or self._segments_from_text(transcript),
                     "meeting_date": meeting_date or "",
+                })
+                emit_progress({
+                    "stage": "finalizing",
+                    "message": "Finalizing summary...",
+                    "progress": 0.9,
                 })
                 return {
                     "markdown": result.get("final_markdown", ""),
@@ -1460,6 +1500,7 @@ class LangGraphStrategy:
         meeting_date: str = None,
         transcript_segments: list = None,
         language: str = None,
+        progress_callback=None,
     ) -> dict:
         try:
             engine = MeetingWorkflowEngine(
@@ -1472,6 +1513,7 @@ class LangGraphStrategy:
                 diarized_segments=diarized_segments,
                 meeting_date=meeting_date,
                 transcript_segments=transcript_segments,
+                progress_callback=progress_callback,
             )
         except Exception as e:
             return {"markdown": f"[LangGraph Error: {str(e)}]", "structured": {}}

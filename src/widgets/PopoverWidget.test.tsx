@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 Igor Cassimiro Assunção
 import { describe, test, expect, vi, beforeEach } from "vitest";
 import { render, screen, fireEvent, waitFor } from "@testing-library/react";
 import { PopoverWidget } from "./PopoverWidget";
@@ -87,6 +89,11 @@ describe("PopoverWidget Toggle Components", () => {
     mockClose.mockReset();
   });
 
+  test("shows a system audio warning while loopback is disabled", () => {
+    render(<PopoverWidget />);
+
+    expect(screen.getByText("System audio is off. Calls playing through headphones or speakers need loopback to be captured.")).toBeInTheDocument();
+  });
   test("verifies that PopoverWidget is rendered and the system audio toggle can be clicked to update state", async () => {
     render(<PopoverWidget />);
 

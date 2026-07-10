@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 Igor Cassimiro Assunção
 import { useState, useMemo, useEffect, useRef } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { writeText } from "@tauri-apps/plugin-clipboard-manager";
@@ -14,6 +16,7 @@ import { detectOS } from "@shared/lib/detectOS";
 import { useSettings } from "@app/providers/SettingsProvider";
 import { useTheme } from "@app/providers/ThemeProvider";
 import { useRecording } from "@features/recording/hooks/useRecording";
+import { AudioInputMeter } from "@features/recording/components/AudioInputMeter";
 import { useTranscription } from "@features/transcription/hooks/useTranscription";
 import { useSummary } from "@features/summary/hooks/useSummary";
 import { useMeetings } from "@features/meetings/hooks/useMeetings";
@@ -34,7 +37,7 @@ export function ExpandedView({
 }) {
   const { settings } = useSettings();
   const { isLG, waveColor } = useTheme();
-  const { isRecording, recordingSeconds, status, toggleRecording } = useRecording();
+  const { isRecording, recordingSeconds, audioLevel, micLevel, systemLevel, status, toggleRecording } = useRecording();
   const { setTranscriptionText, segments, language, search, setSearch, filteredTranscript } = useTranscription();
   const { notes, setNotesText, tldr, actionItems, structuredSummary } = useSummary();
   const { meetingsHistory, selectedMeetingId, setSelectedMeetingId, sidebarSearch, setSidebarSearch, loadHistory } = useMeetings();
@@ -600,7 +603,12 @@ export function ExpandedView({
               </div>
             </div>
             <div className="meeting-header-right">
-              {isRecording && <Waveform width={60} height={14} color={waveColor} active bars={14} />}
+              {isRecording && (
+                <div className="recording-input-cluster">
+                  <Waveform width={60} height={14} color={waveColor} active bars={14} level={audioLevel} micLevel={micLevel} systemLevel={systemLevel} />
+                  <AudioInputMeter audioLevel={audioLevel} compact />
+                </div>
+              )}
               {selectedMeetingId !== null && !isRecording && (
                 <button
                   className="record-btn-expanded secondary"
@@ -634,6 +642,12 @@ export function ExpandedView({
               )}
             </div>
           </div>
+
+          {isRecording && !settings.systemAudio && (
+            <div className="system-audio-warning" role="status">
+              System audio is off. Remote meeting audio may not be captured.
+            </div>
+          )}
 
           <div className="tab-bar">
             <div className="tabs">
@@ -676,7 +690,7 @@ export function ExpandedView({
                   ? <pre className="transcript-text">{displayedTranscript}</pre>
                   : <div className="empty-state">
                     {isRecording
-                      ? <><Waveform width={60} height={14} color={waveColor} active bars={14} /><span>Transcribing…</span></>
+                      ? <><Waveform width={60} height={14} color={waveColor} active bars={14} level={audioLevel} micLevel={micLevel} systemLevel={systemLevel} /><span>Transcribing…</span></>
                       : <span>Start recording to see the transcript here.</span>}
                   </div>}
               </div>

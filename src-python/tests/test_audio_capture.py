@@ -1,4 +1,8 @@
+# SPDX-License-Identifier: Apache-2.0
+# Copyright 2026 Igor Cassimiro Assunção
 import sys
+from contextlib import nullcontext
+from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
 import numpy as np
@@ -12,6 +16,22 @@ pytestmark = pytest.mark.skipif(
 if sys.platform == "win32":
     import audio_capture
     from audio_capture import WindowsAudioCapture
+
+
+
+def test_build_telemetry_payload_combines_mic_and_system_levels():
+    payload = audio_capture.build_telemetry_payload(0.12, 0.36)
+
+    assert payload["level"] == 0.36
+    assert payload["micLevel"] == 0.12
+    assert payload["systemLevel"] == 0.36
+    assert payload["activeSources"] == ["mic", "system"]
+
+
+def test_calculate_rms_level_normalizes_int16_audio():
+    audio = np.ones(8, dtype=np.int16) * 16384
+
+    assert audio_capture.calculate_rms_level(audio) == pytest.approx(0.5, abs=0.001)
 
 def test_stream_alignment_mic_starts_later():
     """Verifies that if the microphone starts recording later, padding is prepended to it."""
@@ -117,8 +137,14 @@ def test_torchaudio_resample_fallback_on_exception():
     capture.loopback_start_time = 10.0
     capture.mic_frames = [np.arange(48000, dtype=np.int16)]
     
-    # Raise an exception when attempting torchaudio resampling
-    with patch("torchaudio.transforms.Resample", side_effect=ImportError("No torchaudio")), \
+    # Raise an exception when attempting torchaudio resampling. If torchaudio is
+    # absent in the test environment, the production fallback is exercised as-is.
+    resample_patch = (
+        patch.object(audio_capture.T, "Resample", side_effect=ImportError("No torchaudio"))
+        if audio_capture.T is not None
+        else nullcontext()
+    )
+    with resample_patch, \
          patch("wave.open") as mock_wave, \
          patch("vad_service.VADService") as mock_vad:
         mock_vad.return_value.trim_silence.side_effect = lambda x, sr: x
@@ -145,16 +171,17 @@ def test_windows_uses_selected_microphone_device():
     capture = WindowsAudioCapture()
     selected_device = {"index": 7, "maxInputChannels": 1}
 
-    with patch("audio_capture.pyaudio.PyAudio") as mock_pyaudio, \
+    fake_pyaudio = SimpleNamespace(paInt16=8, PyAudio=MagicMock())
+    with patch("audio_capture.pyaudio", fake_pyaudio), \
          patch("audio_capture.threading.Thread") as mock_thread:
-        instance = mock_pyaudio.return_value
+        instance = fake_pyaudio.PyAudio.return_value
         instance.get_device_info_by_index.return_value = selected_device
 
         capture.start_recording(device_id=7)
 
         instance.get_device_info_by_index.assert_called_once_with(7)
         instance.open.assert_called_once_with(
-            format=audio_capture.pyaudio.paInt16,
+            format=fake_pyaudio.paInt16,
             channels=1,
             rate=48000,
             input=True,

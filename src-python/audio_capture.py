@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+# Copyright 2026 Igor Cassimiro Assunção
 # src-python/audio_capture.py
 import sys
 import os
@@ -7,15 +9,47 @@ import threading
 import wave
 import numpy as np
 import torch
-import torchaudio.transforms as T
+try:
+    import torchaudio.transforms as T
+except ImportError:
+    T = None
 if sys.platform == "win32":
-    import pyaudiowpatch as pyaudio
+    try:
+        import pyaudiowpatch as pyaudio
+    except ImportError:
+        pyaudio = None
 elif sys.platform == "darwin":
-    import pyaudio
+    try:
+        import pyaudio
+    except ImportError:
+        pyaudio = None
 else:
     pyaudio = None
 from abc import ABC, abstractmethod
 from vad_service import VADService
+
+
+def calculate_rms_level(audio_data) -> float:
+    if audio_data is None or len(audio_data) == 0:
+        return 0.0
+    rms = float(np.sqrt(np.mean(audio_data.astype(np.float32) ** 2)))
+    return min(rms / 32768.0, 1.0)
+
+
+def build_telemetry_payload(mic_level: float = 0.0, system_level: float = 0.0) -> dict:
+    mic_level = max(0.0, min(float(mic_level or 0.0), 1.0))
+    system_level = max(0.0, min(float(system_level or 0.0), 1.0))
+    active_sources = []
+    if mic_level > 0.0:
+        active_sources.append("mic")
+    if system_level > 0.0:
+        active_sources.append("system")
+    return {
+        "level": max(mic_level, system_level),
+        "micLevel": mic_level,
+        "systemLevel": system_level,
+        "activeSources": active_sources,
+    }
 
 
 def list_audio_devices() -> list:
@@ -114,6 +148,9 @@ class WindowsAudioCapture(AudioCaptureStrategy):
         self.is_recording = False
         self.is_paused = False
         self.telemetry_callback = None
+        self.telemetry_lock = threading.Lock()
+        self.last_mic_level = 0.0
+        self.last_system_level = 0.0
 
         # Audio Engine references
         self.p = None
@@ -159,6 +196,8 @@ class WindowsAudioCapture(AudioCaptureStrategy):
         self.mic_frames = []
         self.mic_start_time = None
         self.loopback_start_time = None
+        self.last_mic_level = 0.0
+        self.last_system_level = 0.0
         
         # Defensive programming: delete previous session audio if it exists
         if os.path.exists(self.output_file):
@@ -227,6 +266,7 @@ class WindowsAudioCapture(AudioCaptureStrategy):
 
     def _record_loopback(self):
         """Continuously reads data from the loopback stream into memory."""
+        chunk_count = 0
         try:
             while self.is_recording and self.loopback_stream:
                 data = self.loopback_stream.read(1024, exception_on_overflow=False)
@@ -241,6 +281,10 @@ class WindowsAudioCapture(AudioCaptureStrategy):
                     audio_data = np.mean(audio_data, axis=1).astype(np.int16)
                     
                 self.loopback_frames.append(audio_data)
+
+                chunk_count += 1
+                if chunk_count % 5 == 0:
+                    self._emit_telemetry("system", audio_data)
         except Exception as e:
             print(f"DEBUG: [Windows Loopback Error] {str(e)}", file=sys.stderr)
 
@@ -264,12 +308,25 @@ class WindowsAudioCapture(AudioCaptureStrategy):
 
                 # Emit RMS telemetry every 5th chunk
                 chunk_count += 1
-                if chunk_count % 5 == 0 and self.telemetry_callback:
-                    rms = float(np.sqrt(np.mean(audio_data.astype(np.float32) ** 2)))
-                    level = min(rms / 32768.0, 1.0)
-                    self.telemetry_callback(level)
+                if chunk_count % 5 == 0:
+                    self._emit_telemetry("mic", audio_data)
         except Exception as e:
             print(f"DEBUG: [Windows Mic Error] {str(e)}", file=sys.stderr)
+
+    def _emit_telemetry(self, source: str, audio_data):
+        if not self.telemetry_callback:
+            return
+
+        level = calculate_rms_level(audio_data)
+        with self.telemetry_lock:
+            if source == "mic":
+                self.last_mic_level = level
+            elif source == "system":
+                self.last_system_level = level
+
+            payload = build_telemetry_payload(self.last_mic_level, self.last_system_level)
+
+        self.telemetry_callback(payload)
 
     def stop_recording(self) -> str:
         if not self.is_recording:
@@ -536,6 +593,9 @@ class LinuxAudioCapture(AudioCaptureStrategy):
         self.is_recording = False
         self.is_paused = False
         self.telemetry_callback = None
+        self.telemetry_lock = threading.Lock()
+        self.last_mic_level = 0.0
+        self.last_system_level = 0.0
 
         self.mic = None
         self.loopback = None
@@ -569,6 +629,8 @@ class LinuxAudioCapture(AudioCaptureStrategy):
         self.telemetry_callback = telemetry_callback
         self.mic_frames = []
         self.loopback_frames = []
+        self.last_mic_level = 0.0
+        self.last_system_level = 0.0
 
         # Defensive programming: delete previous session audio
         if os.path.exists(self.output_file):
@@ -640,10 +702,7 @@ class LinuxAudioCapture(AudioCaptureStrategy):
 
                     self.mic_frames.append(int_data)
 
-                    if self.telemetry_callback:
-                        rms = float(np.sqrt(np.mean(int_data.astype(np.float32) ** 2)))
-                        level = min(rms / 32768.0, 1.0)
-                        self.telemetry_callback(level)
+                    self._emit_telemetry("mic", int_data)
         except Exception as e:
             print(f"DEBUG: [Linux Mic Error] {e}", file=sys.stderr)
 
@@ -661,8 +720,24 @@ class LinuxAudioCapture(AudioCaptureStrategy):
                     else:
                         int_data = int_data.flatten()
                     self.loopback_frames.append(int_data)
+                    self._emit_telemetry("system", int_data)
         except Exception as e:
             print(f"DEBUG: [Linux Loopback Error] {e}", file=sys.stderr)
+
+    def _emit_telemetry(self, source: str, audio_data):
+        if not self.telemetry_callback:
+            return
+
+        level = calculate_rms_level(audio_data)
+        with self.telemetry_lock:
+            if source == "mic":
+                self.last_mic_level = level
+            elif source == "system":
+                self.last_system_level = level
+
+            payload = build_telemetry_payload(self.last_mic_level, self.last_system_level)
+
+        self.telemetry_callback(payload)
 
     def stop_recording(self) -> str:
         if not self.is_recording:

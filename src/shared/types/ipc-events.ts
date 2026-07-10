@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 Igor Cassimiro Assunção
 export interface AudioDevice {
   id: number;
   name: string;
@@ -7,9 +9,33 @@ export interface AudioDevice {
 export type PythonEvent =
   | { event: "SYSTEM_READY"; data: { status: string } }
   | { event: "DEVICE_LIST"; data: { devices: AudioDevice[] } }
-  | { event: "VAD_TELEMETRY"; data: { level: number } }
+  | { event: "VAD_TELEMETRY"; data: { level: number; micLevel?: number; systemLevel?: number; activeSources?: Array<"mic" | "system"> } }
   | { event: "RECORDING_STATUS"; data: { is_recording: boolean } }
   | { event: "PIPELINE_STATUS"; data: { step: string } }
+  | {
+      event: "REPROCESS_STATUS";
+      data: {
+        meeting_id: number;
+        stage:
+          | "queued"
+          | "preparing_context"
+          | "estimating_tokens"
+          | "calling_ai"
+          | "processing_chunk"
+          | "finalizing"
+          | "completed"
+          | "failed";
+        message: string;
+        progress?: number;
+        elapsed_ms?: number;
+        estimated_tokens?: number;
+        chunk_current?: number;
+        chunk_total?: number;
+        token_status: "estimated" | "local_no_billing" | "actual_unavailable" | "unavailable";
+        provider?: string;
+        model?: string;
+      };
+    }
   | { event: "TRANSCRIPTION_COMPLETED"; data: { text: string; segments: TranscriptSegment[]; diarized: boolean; language?: string | null; warnings?: string[]; schema_version: number } }
   | { event: "TRANSCRIPTION_FAILED"; data: { code: string; message: string } }
   | { event: "NOTES_GENERATED"; data: { markdown: string; structured: StructuredSummary; raw_transcript?: string; transcript_segments?: TranscriptSegment[]; schema_version?: number } }

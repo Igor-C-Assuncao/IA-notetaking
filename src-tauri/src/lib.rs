@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 Igor Cassimiro Assunção
 use keyring::Entry;
 use rusqlite::Connection;
 use sha2::{Digest, Sha256};
@@ -795,11 +797,11 @@ async fn set_wizard_mode(window: Window) -> Result<(), String> {
 #[tauri::command]
 async fn set_bootstrap_mode(window: Window) -> Result<(), String> {
     window
-        .set_size(LogicalSize::new(760.0, 640.0))
+        .set_size(LogicalSize::new(720.0, 540.0))
         .map_err(|e| e.to_string())?;
     window.set_decorations(false).map_err(|e| e.to_string())?;
     window.set_always_on_top(false).map_err(|e| e.to_string())?;
-    window.set_resizable(true).map_err(|e| e.to_string())?;
+    window.set_resizable(false).map_err(|e| e.to_string())?;
     window.center().map_err(|e| e.to_string())?;
     Ok(())
 }
