@@ -1,6 +1,6 @@
 [project]
 name = "ai-notetaking-engine"
-version = "0.1.0"
+version = "0.2.0"
 description = "Python AI engine (sidecar) for AI NoteTaking: audio capture, VAD, transcription, and meeting intelligence"
 license = "Apache-2.0"
 authors = [{ name = "Igor Cassimiro Assunção" }]
