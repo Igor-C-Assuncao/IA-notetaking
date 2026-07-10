@@ -83,9 +83,9 @@ struct AppState {
     supervisor_gen: Arc<AtomicU64>,
 }
 
-const ENGINE_VERSION: &str = "0.1.0";
+const ENGINE_VERSION: &str = "0.2.0";
 const ENGINE_RELEASE_BASE: &str =
-    "https://github.com/Igor-C-Assuncao/IA-notetaking/releases/download/v0.1.0";
+    "https://github.com/Igor-C-Assuncao/IA-notetaking/releases/download/v0.2.0";
 const ENGINE_MANIFEST_FILE: &str = "engines-manifest.json";
 
 #[derive(serde::Serialize)]

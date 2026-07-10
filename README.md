@@ -240,8 +240,12 @@ meeting fixtures, and larger LLM-generated QMSum runs are still required.
 | 4 — BYOK + Settings | ✅ Done | Multi-provider support, persistent settings, themes |
 | 5 — UI polish | ✅ Done | Compact widget, expanded view, meeting history |
 | 6 — Window UX | ✅ Done | Native drag region, window controls, popover window |
-| 7 — Testing | ✅ Active | Frontend, Python, Rust, benchmark, and packaged-sidecar validation |
-| 8 — v1.0 Release | 🚧 In progress | CI/CD, CPU sidecar packaging, signing, cross-platform release validation |
+| 7 — Evidence and quality gates | ✅ Active | Frontend, Python, Rust, benchmark fixtures, regression tests, and packaged-sidecar validation |
+| 8 — Meeting intelligence | ✅ Shipped in 0.2.0 | Briefing dashboard, cross-meeting continuity, follow-up drafts, chaptering, participation analytics |
+| 9 — Runtime observability | ✅ Shipped in 0.2.0 | `REPROCESS_STATUS`, per-source audio telemetry, token estimates, staged progress, quiet-audio rejection |
+| 10 — Engine distribution | 🚧 In progress | Windows CPU engine release asset, split GPU engine assets, release manifest, runtime download/install flow |
+| 11 — Release hardening | ⏳ Next | Code signing, installer validation, update flow, cross-platform release bundles, broader benchmark coverage |
+| 12 — v1.0 readiness | ⏳ Planned | Privacy/security review, model/provider compatibility matrix, documentation freeze, reproducible release process |
 
 ## Contributing
 
