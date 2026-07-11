@@ -915,6 +915,7 @@ class MacosSystemAudioMixer:
         name = f"audio-tap-{arch}-apple-darwin"
         # When running from Tauri: binary is next to the executable
         candidates = [
+            os.path.join(os.path.dirname(os.path.abspath(sys.executable)), name),
             os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", name),
             os.path.join(os.path.dirname(os.path.abspath(__file__)), name),
         ]

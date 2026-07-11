@@ -13,12 +13,19 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - os: ubuntu-22.04
-            platform: linux
-          - os: macos-latest
+          - os: macos-15
             platform: macos
+            rust_target: aarch64-apple-darwin
+            swift_target: arm64-apple-macos14.4
+            tauri_args: '--target aarch64-apple-darwin'
+          - os: macos-15-intel
+            platform: macos
+            rust_target: x86_64-apple-darwin
+            swift_target: x86_64-apple-macos14.4
+            tauri_args: '--target x86_64-apple-darwin'
           - os: windows-latest
             platform: windows
+            tauri_args: ''
 
     steps:
       - name: Checkout Repository
@@ -31,10 +38,10 @@ jobs:
           node-version: 20
           cache: 'npm'
 
-      - name: Setup Python (3.11)
+      - name: Setup Python (3.12)
         uses: actions/setup-python@v5
         with:
-          python-version: '3.11'
+          python-version: '3.12'
           cache: 'pip'
 
       - name: Setup Rust Stable
@@ -46,16 +53,15 @@ jobs:
           workspaces: src-tauri -> target
 
       # ── 2. Install Dependencies ────────────────────────────────────
-      - name: Install System Dependencies (Linux)
-        if: matrix.platform == 'linux'
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y libgtk-3-dev libwebkit2gtk-4.1-dev libsoup-3.0-dev libjavascriptcoregtk-4.1-dev build-essential curl wget file libssl-dev libayatana-appindicator3-dev librsvg2-dev
+      - name: Install Audio Dependencies (macOS)
+        if: matrix.platform == 'macos'
+        run: brew install portaudio
 
       - name: Install Frontend Dependencies
         run: npm ci
 
       - name: Install Python Dependencies
+        if: matrix.platform == 'macos'
         run: |
           python -m pip install --upgrade pip
           pip install -r src-python/requirements.txt -r src-python/requirements-dev.txt pyinstaller
@@ -65,10 +71,18 @@ jobs:
         if: matrix.platform == 'windows'
         shell: pwsh
         run: |
-          cd src-python
-          pyinstaller build.spec
-          New-Item -ItemType Directory -Force -Path ../src-tauri/binaries
-          Copy-Item -Path dist/ai-notetaking-engine.exe -Destination ../src-tauri/binaries/ai-notetaking-engine-x86_64-pc-windows-msvc.exe -Force
+          ./scripts/build-windows-sidecar.ps1 -Python python
+          ./scripts/build-windows-sidecar-gpu.ps1 -Python python
+
+      - name: Prepare Windows Engine Release Assets
+        if: matrix.platform == 'windows'
+        shell: bash
+        env:
+          ENGINE_VERSION: '0.2.1'
+          ENGINE_RELEASE_BASE: https://github.com/${{ github.repository }}/releases/download/${{ github.ref_name }}
+        run: |
+          node scripts/split-engine-release-asset.mjs src-tauri/binaries/ai-notetaking-engine-windows-x64-gpu.exe
+          npm run engine:manifest
 
       - name: Build Python Sidecar (macOS)
         if: matrix.platform == 'macos'
@@ -76,44 +90,69 @@ jobs:
           cd src-python
           pyinstaller build.spec
           mkdir -p ../src-tauri/binaries
-          cp dist/ai-notetaking-engine ../src-tauri/binaries/ai-notetaking-engine-x86_64-apple-darwin
-          cp dist/ai-notetaking-engine ../src-tauri/binaries/ai-notetaking-engine-aarch64-apple-darwin
+          cp dist/ai-notetaking-engine "../src-tauri/binaries/ai-notetaking-engine-${{ matrix.rust_target }}"
 
-      - name: Build Python Sidecar (Linux)
-        if: matrix.platform == 'linux'
+      - name: Build Core Audio Tap (macOS)
+        if: matrix.platform == 'macos'
         run: |
-          cd src-python
-          pyinstaller build.spec
-          mkdir -p ../src-tauri/binaries
-          cp dist/ai-notetaking-engine ../src-tauri/binaries/ai-notetaking-engine-x86_64-unknown-linux-gnu
+          swiftc src-tauri/binaries/audio-tap.swift \
+            -o "src-tauri/binaries/audio-tap-${{ matrix.rust_target }}" \
+            -framework AudioToolbox \
+            -framework AVFoundation \
+            -framework Foundation \
+            -target "${{ matrix.swift_target }}"
 
       # ── 4. Tauri Compilation and GitHub Release Upload ─────────────
       - name: Build Tauri Release Bundles
         env:
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
-        run: npm run tauri build
+        run: npm run tauri build -- ${{ matrix.tauri_args }}
 
       - name: Create Draft Release
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          gh release view "${{ github.ref_name }}" >/dev/null 2>&1 || gh release create "${{ github.ref_name }}" \
-            --draft \
-            --title "AI NoteTaking ${{ github.ref_name }}" \
-            --notes "Production release ${{ github.ref_name }} for AI Notetaker."
+          if ! gh release view "${{ github.ref_name }}" >/dev/null 2>&1; then
+            gh release create "${{ github.ref_name }}" \
+              --draft \
+              --title "AI NoteTaking ${{ github.ref_name }} Preview" \
+              --notes "Preview release ${{ github.ref_name }}. macOS builds use ad-hoc signing and may require manual Gatekeeper approval." \
+              || gh release view "${{ github.ref_name }}" >/dev/null
+          fi
 
       - name: Upload Tauri Release Bundles
         shell: bash
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          mapfile -d '' assets < <(find src-tauri/target/release/bundle -type f \
-            \( -name '*.AppImage' -o -name '*.deb' -o -name '*.rpm' -o -name '*.dmg' -o -name '*.msi' -o -name '*.exe' -o -name '*.json' \) \
-            -print0)
+          assets=()
+          while IFS= read -r -d '' asset; do
+            assets+=("${asset}")
+          done < <(find src-tauri/target -type f -path '*/release/bundle/*' \
+            \( -name '*.dmg' -o -name '*.msi' -o -name '*.exe' -o -name '*.json' \) -print0)
           if [ "${#assets[@]}" -eq 0 ]; then
             echo "No Tauri bundle assets found."
-            find src-tauri/target/release -maxdepth 4 -type f
+            find src-tauri/target -maxdepth 6 -type f
             exit 1
+          fi
+          gh release upload "${{ github.ref_name }}" "${assets[@]}" --clobber
+
+      - name: Upload Windows Engine Variants
+        if: matrix.platform == 'windows'
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          cpu=src-tauri/binaries/ai-notetaking-engine-windows-x64-cpu.exe
+          gpu=src-tauri/binaries/ai-notetaking-engine-windows-x64-gpu.exe
+          manifest=src-tauri/binaries/engines-manifest.json
+          shopt -s nullglob
+          gpu_parts=("${gpu}".part*)
+          assets=("${cpu}" "${manifest}")
+          if [ "${#gpu_parts[@]}" -gt 0 ]; then
+            assets+=("${gpu_parts[@]}")
+          else
+            assets+=("${gpu}")
           fi
           gh release upload "${{ github.ref_name }}" "${assets[@]}" --clobber

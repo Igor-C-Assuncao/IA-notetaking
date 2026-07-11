@@ -1,4 +1,5 @@
 pyaudiowpatch==0.2.12.8; sys_platform == "win32"
+pyaudio; sys_platform == "darwin"
 soundcard; sys_platform == "linux"
 numpy==2.4.4
 openai==2.31.0
