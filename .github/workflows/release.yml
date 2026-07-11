@@ -18,11 +18,6 @@ jobs:
             rust_target: aarch64-apple-darwin
             swift_target: arm64-apple-macos14.4
             tauri_args: '--target aarch64-apple-darwin'
-          - os: macos-15-intel
-            platform: macos
-            rust_target: x86_64-apple-darwin
-            swift_target: x86_64-apple-macos14.4
-            tauri_args: '--target x86_64-apple-darwin'
           - os: windows-latest
             platform: windows
             tauri_args: ''

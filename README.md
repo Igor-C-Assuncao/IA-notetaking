@@ -179,7 +179,7 @@ meeting fixtures, and larger LLM-generated QMSum runs are still required.
 
 ### 0.2.1 preview (current)
 
-- Preview DMGs for Apple Silicon and Intel Macs
+- Preview DMG for Apple Silicon Macs with CPU and Metal/MPS acceleration
 - Bundles the Python AI engine and native Core Audio Tap helper correctly
 - Windows installer offers verified CPU or NVIDIA/CUDA engine downloads during first-run setup
 - Ad-hoc signed distribution for early macOS testing; Gatekeeper may require manual approval
