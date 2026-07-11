@@ -96,6 +96,7 @@ struct EngineStatus {
     path: Option<String>,
     size_bytes: Option<u64>,
     dev_mode: bool,
+    download_supported: bool,
 }
 
 #[derive(serde::Deserialize)]
@@ -210,21 +211,29 @@ fn find_downloaded_engine(app: &AppHandle, kind: &str) -> Option<PathBuf> {
 
 fn find_bundled_engine(app: &AppHandle) -> Option<PathBuf> {
     let resource_dir = app.path().resource_dir().ok()?;
-    [resource_dir.clone(), resource_dir.join("binaries")]
-        .into_iter()
-        .filter_map(|directory| std::fs::read_dir(directory).ok())
-        .flat_map(|entries| entries.filter_map(Result::ok))
-        .map(|entry| entry.path())
-        .find(|path| {
-            path.file_name()
-                .and_then(|name| name.to_str())
-                .map(|name| name.starts_with("ai-notetaking-engine"))
+    let executable_dir = std::env::current_exe()
+        .ok()
+        .and_then(|path| path.parent().map(PathBuf::from));
+    [
+        Some(resource_dir.clone()),
+        Some(resource_dir.join("binaries")),
+        executable_dir,
+    ]
+    .into_iter()
+    .flatten()
+    .filter_map(|directory| std::fs::read_dir(directory).ok())
+    .flat_map(|entries| entries.filter_map(Result::ok))
+    .map(|entry| entry.path())
+    .find(|path| {
+        path.file_name()
+            .and_then(|name| name.to_str())
+            .map(|name| name.starts_with("ai-notetaking-engine"))
+            .unwrap_or(false)
+            && path
+                .metadata()
+                .map(|metadata| metadata.len() > 0)
                 .unwrap_or(false)
-                && path
-                    .metadata()
-                    .map(|metadata| metadata.len() > 0)
-                    .unwrap_or(false)
-        })
+    })
 }
 
 #[tauri::command]
@@ -239,6 +248,7 @@ fn get_engine_status(app: AppHandle, kind: Option<String>) -> Result<EngineStatu
             path: None,
             size_bytes: None,
             dev_mode: true,
+            download_supported: cfg!(target_os = "windows"),
         });
     }
 
@@ -254,6 +264,7 @@ fn get_engine_status(app: AppHandle, kind: Option<String>) -> Result<EngineStatu
         path: path.map(|p| p.to_string_lossy().to_string()),
         size_bytes,
         dev_mode: false,
+        download_supported: cfg!(target_os = "windows"),
     })
 }
 
@@ -263,9 +274,12 @@ fn download_engine(app: AppHandle, kind: String) -> Result<EngineStatus, String>
         return get_engine_status(app, Some(kind));
     }
     if !cfg!(target_os = "windows") {
-        return Err(
-            "This platform uses the transcription engine bundled with the installer.".to_string(),
-        );
+        let status = get_engine_status(app, Some(kind))?;
+        return if status.installed {
+            Ok(status)
+        } else {
+            Err("The transcription component included with this installation was not found. Reinstall the application and try again.".to_string())
+        };
     }
 
     let target_dir = engine_dir(&app, &kind)?;
