@@ -108,6 +108,7 @@ jobs:
         run: npm run tauri build -- ${{ matrix.tauri_args }}
 
       - name: Create Draft Release
+        shell: bash
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
