@@ -83,9 +83,9 @@ struct AppState {
     supervisor_gen: Arc<AtomicU64>,
 }
 
-const ENGINE_VERSION: &str = "0.1.0";
+const ENGINE_VERSION: &str = "0.2.1";
 const ENGINE_RELEASE_BASE: &str =
-    "https://github.com/Igor-C-Assuncao/IA-notetaking/releases/download/v0.1.0";
+    "https://github.com/Igor-C-Assuncao/IA-notetaking/releases/download/v0.2.1";
 const ENGINE_MANIFEST_FILE: &str = "engines-manifest.json";
 
 #[derive(serde::Serialize)]
@@ -208,6 +208,25 @@ fn find_downloaded_engine(app: &AppHandle, kind: &str) -> Option<PathBuf> {
     }
 }
 
+fn find_bundled_engine(app: &AppHandle) -> Option<PathBuf> {
+    let resource_dir = app.path().resource_dir().ok()?;
+    [resource_dir.clone(), resource_dir.join("binaries")]
+        .into_iter()
+        .filter_map(|directory| std::fs::read_dir(directory).ok())
+        .flat_map(|entries| entries.filter_map(Result::ok))
+        .map(|entry| entry.path())
+        .find(|path| {
+            path.file_name()
+                .and_then(|name| name.to_str())
+                .map(|name| name.starts_with("ai-notetaking-engine"))
+                .unwrap_or(false)
+                && path
+                    .metadata()
+                    .map(|metadata| metadata.len() > 0)
+                    .unwrap_or(false)
+        })
+}
+
 #[tauri::command]
 fn get_engine_status(app: AppHandle, kind: Option<String>) -> Result<EngineStatus, String> {
     let kind = kind.unwrap_or_else(|| "cpu".to_string());
@@ -223,7 +242,7 @@ fn get_engine_status(app: AppHandle, kind: Option<String>) -> Result<EngineStatu
         });
     }
 
-    let path = find_downloaded_engine(&app, &kind);
+    let path = find_downloaded_engine(&app, &kind).or_else(|| find_bundled_engine(&app));
     let size_bytes = path
         .as_ref()
         .and_then(|p| p.metadata().ok().map(|metadata| metadata.len()));
@@ -242,6 +261,11 @@ fn get_engine_status(app: AppHandle, kind: Option<String>) -> Result<EngineStatu
 fn download_engine(app: AppHandle, kind: String) -> Result<EngineStatus, String> {
     if cfg!(debug_assertions) {
         return get_engine_status(app, Some(kind));
+    }
+    if !cfg!(target_os = "windows") {
+        return Err(
+            "This platform uses the transcription engine bundled with the installer.".to_string(),
+        );
     }
 
     let target_dir = engine_dir(&app, &kind)?;
@@ -1648,6 +1672,7 @@ fn start_sidecar(
     } else {
         Some(
             find_downloaded_engine(&app, &kind)
+                .or_else(|| find_bundled_engine(&app))
                 .ok_or_else(|| format!("{} engine is not installed.", kind))?,
         )
     };

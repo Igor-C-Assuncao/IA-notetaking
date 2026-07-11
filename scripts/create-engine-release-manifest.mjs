@@ -7,7 +7,8 @@ import path from "node:path";
 const repoRoot = process.cwd();
 const binariesDir = path.resolve(repoRoot, "src-tauri", "binaries");
 const releaseBase = process.env.ENGINE_RELEASE_BASE ||
-  "https://github.com/Igor-C-Assuncao/IA-notetaking/releases/download/v0.1.0";
+  "https://github.com/Igor-C-Assuncao/IA-notetaking/releases/download/v0.2.1";
+const engineVersion = process.env.ENGINE_VERSION || "0.2.1";
 const maxSingleAssetBytes = Number(process.env.ENGINE_MAX_SINGLE_ASSET_BYTES || 2_000_000_000);
 
 const candidates = [
@@ -79,7 +80,7 @@ if (engines.length === 0) {
 }
 
 const manifest = {
-  version: "0.1.0",
+  version: engineVersion,
   platform: "windows-x64",
   engines,
 };

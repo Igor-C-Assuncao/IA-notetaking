@@ -5,7 +5,7 @@
 
   <p>An open-source, invisible, privacy-first AI notetaker for your meetings.</p>
 
-  [![Version](https://img.shields.io/badge/Version-0.2.0-informational.svg)](https://github.com/Igor-C-Assuncao/IA-notetaking/releases)
+  [![Version](https://img.shields.io/badge/Version-0.2.1_preview-informational.svg)](https://github.com/Igor-C-Assuncao/IA-notetaking/releases)
   [![License](https://img.shields.io/badge/License-Apache_2.0-blue.svg)](https://opensource.org/licenses/Apache-2.0)
   [![PRs Welcome](https://img.shields.io/badge/PRs-welcome-brightgreen.svg)](http://makeapullrequest.com)
   [![Tauri](https://img.shields.io/badge/Tauri_2-App-FFC131?logo=tauri&logoColor=white)](https://tauri.app/)
@@ -177,7 +177,14 @@ meeting fixtures, and larger LLM-generated QMSum runs are still required.
 
 ## Release history
 
-### 0.2.0 (current)
+### 0.2.1 preview (current)
+
+- Preview DMGs for Apple Silicon and Intel Macs
+- Bundles the Python AI engine and native Core Audio Tap helper correctly
+- Windows installer offers verified CPU or NVIDIA/CUDA engine downloads during first-run setup
+- Ad-hoc signed distribution for early macOS testing; Gatekeeper may require manual approval
+
+### 0.2.0
 
 - Meeting briefing intelligence pipeline and briefing dashboard UI
 - Cross-meeting continuity reports, follow-up drafts, chapters, participation signals, risks, open questions, and richer structured summaries
