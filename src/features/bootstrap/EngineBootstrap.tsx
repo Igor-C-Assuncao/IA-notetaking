@@ -19,6 +19,7 @@ interface EngineStatus {
   path?: string | null;
   size_bytes?: number | null;
   dev_mode: boolean;
+  download_supported: boolean;
 }
 
 interface ProgressPayload {
@@ -127,7 +128,9 @@ export function EngineBootstrap({ children }: { children: ReactNode }) {
     return Math.min(100, Math.round((progress.downloadedBytes / progress.totalBytes) * 100));
   }, [progress]);
 
-  const bootstrapVariant: BootstrapVariant = status?.installed === false || phase === "downloading" ? "setup" : "initializing";
+  const downloadSupported = status?.download_supported ?? true;
+  const bootstrapVariant: BootstrapVariant =
+    (status?.installed === false && downloadSupported) || phase === "downloading" ? "setup" : "initializing";
 
   const bootstrapTasks = useMemo(
     () => buildBootstrapTasks(bootstrapVariant, phase, progress?.stage, message, startupSlow, Boolean(error)),
@@ -149,7 +152,11 @@ export function EngineBootstrap({ children }: { children: ReactNode }) {
   });
 
   usePythonEvent("SIDECAR_FAILED", () => {
-    setError("The local transcription component could not start. Try again or switch to CPU.");
+    setError(
+      downloadSupported
+        ? "The local transcription component could not start. Try again or switch to CPU."
+        : "The transcription component included with this installation could not start. Try again or reinstall the application."
+    );
     setPhase("error");
   });
 
@@ -202,8 +209,13 @@ export function EngineBootstrap({ children }: { children: ReactNode }) {
         });
         await startSidecar(kind);
       } else {
-        setPhase("choose");
-        setMessage("Choose how local transcription should run on this computer.");
+        if (nextStatus.download_supported) {
+          setPhase("choose");
+          setMessage("Choose how local transcription should run on this computer.");
+        } else {
+          setError("The transcription component included with this installation was not found. Reinstall the application and try again.");
+          setPhase("error");
+        }
       }
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
