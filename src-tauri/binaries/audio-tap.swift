@@ -31,16 +31,16 @@ func writePCM(_ buffer: AVAudioPCMBuffer) {
     }
     interleaved.withUnsafeBytes { ptr in
         _ = ptr.baseAddress.map {
-            FileHandle.standardOutput.write(Data($0, count: ptr.count))
+            FileHandle.standardOutput.write(Data(bytes: $0, count: ptr.count))
         }
     }
 }
 
 if #available(macOS 14.4, *) {
     var tapDesc = CATapDescription(stereoGlobalTapButExcludeProcesses: [])
-    tapDesc.mutedWhenTapped = false
+    tapDesc.muteBehavior = .unmuted
 
-    var err = AudioHardwareCreateProcessTap(&tapDesc, &tapRef)
+    var err = AudioHardwareCreateProcessTap(tapDesc, &tapRef)
     guard err == noErr else {
         fputs("ERROR: AudioHardwareCreateProcessTap \(err)\n", stderr)
         exit(1)
