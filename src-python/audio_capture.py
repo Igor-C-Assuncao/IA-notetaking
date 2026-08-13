@@ -1,13 +1,15 @@
 # SPDX-License-Identifier: Apache-2.0
 # Copyright 2026 Igor Cassimiro Assunção
 # src-python/audio_capture.py
-import sys
 import os
-import time
 import subprocess
+import sys
 import threading
+import time
 import wave
+
 import numpy as np
+from abc import ABC, abstractmethod
 
 # Kept as a module-level seam for the audio fallback tests. It is deliberately
 # populated only after a recording completes, so importing this module remains
@@ -25,7 +27,6 @@ elif sys.platform == "darwin":
         pyaudio = None
 else:
     pyaudio = None
-from abc import ABC, abstractmethod
 
 
 def resample_to_16khz(audio_data: np.ndarray, sample_rate: int) -> np.ndarray:
@@ -34,7 +35,7 @@ def resample_to_16khz(audio_data: np.ndarray, sample_rate: int) -> np.ndarray:
         import torch
         global T
         if T is None:
-            import torchaudio.transforms as transforms
+            from torchaudio import transforms
             T = transforms
 
         audio_tensor = torch.from_numpy(audio_data).float() / 32768.0
@@ -45,7 +46,7 @@ def resample_to_16khz(audio_data: np.ndarray, sample_rate: int) -> np.ndarray:
         )
         output = resampler(audio_tensor).numpy()
         return (output * 32767.0).clip(-32768, 32767).astype(np.int16)
-    except Exception as error:
+    except Exception as error:  # noqa: BLE001 - preserve recording with a safe resampling fallback.
         print(f"DEBUG: [AI Resample Fallback] {error}. Slicing instead.", file=sys.stderr)
         return audio_data[::max(1, int(sample_rate / 16000))]
 
@@ -56,7 +57,7 @@ def trim_silence(audio_data: np.ndarray, sample_rate: int) -> np.ndarray:
         from vad_service import VADService
 
         return VADService().trim_silence(audio_data, sample_rate)
-    except Exception as error:
+    except Exception as error:  # noqa: BLE001 - VAD must never discard a completed recording.
         print(f"DEBUG: [AI VAD Error] Falling back to raw audio: {error}", file=sys.stderr)
         return audio_data
 
