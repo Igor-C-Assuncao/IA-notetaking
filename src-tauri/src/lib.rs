@@ -84,8 +84,6 @@ struct AppState {
 }
 
 const ENGINE_VERSION: &str = env!("CARGO_PKG_VERSION");
-const ENGINE_RELEASE_TAG: &str =
-    option_env!("AI_NOTETAKING_ENGINE_RELEASE_TAG").unwrap_or("v0.3.0");
 const ENGINE_MANIFEST_FILE: &str = "engines-manifest.json";
 
 #[derive(serde::Serialize)]
@@ -149,7 +147,8 @@ fn engine_file_name(kind: &str) -> &'static str {
 fn engine_release_base() -> String {
     format!(
         "https://github.com/Igor-C-Assuncao/IA-notetaking/releases/download/{}",
-        ENGINE_RELEASE_TAG
+        option_env!("AI_NOTETAKING_ENGINE_RELEASE_TAG")
+            .unwrap_or(concat!("v", env!("CARGO_PKG_VERSION")))
     )
 }
 
