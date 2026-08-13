@@ -83,9 +83,9 @@ struct AppState {
     supervisor_gen: Arc<AtomicU64>,
 }
 
-const ENGINE_VERSION: &str = "0.2.1";
-const ENGINE_RELEASE_BASE: &str =
-    "https://github.com/Igor-C-Assuncao/IA-notetaking/releases/download/v0.2.1";
+const ENGINE_VERSION: &str = env!("CARGO_PKG_VERSION");
+const ENGINE_RELEASE_TAG: &str =
+    option_env!("AI_NOTETAKING_ENGINE_RELEASE_TAG").unwrap_or("v0.3.0");
 const ENGINE_MANIFEST_FILE: &str = "engines-manifest.json";
 
 #[derive(serde::Serialize)]
@@ -146,16 +146,23 @@ fn engine_file_name(kind: &str) -> &'static str {
     }
 }
 
+fn engine_release_base() -> String {
+    format!(
+        "https://github.com/Igor-C-Assuncao/IA-notetaking/releases/download/{}",
+        ENGINE_RELEASE_TAG
+    )
+}
+
 fn engine_download_url(kind: &str) -> String {
-    format!("{}/{}", ENGINE_RELEASE_BASE, engine_file_name(kind))
+    format!("{}/{}", engine_release_base(), engine_file_name(kind))
 }
 
 fn engine_asset_url(file_name: &str) -> String {
-    format!("{}/{}", ENGINE_RELEASE_BASE, file_name)
+    format!("{}/{}", engine_release_base(), file_name)
 }
 
 fn engine_manifest_url() -> String {
-    format!("{}/{}", ENGINE_RELEASE_BASE, ENGINE_MANIFEST_FILE)
+    format!("{}/{}", engine_release_base(), ENGINE_MANIFEST_FILE)
 }
 
 fn fetch_engine_manifest() -> Result<EngineManifest, String> {

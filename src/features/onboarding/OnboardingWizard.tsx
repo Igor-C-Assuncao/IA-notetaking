@@ -81,7 +81,7 @@ export function OnboardingWizard() {
         engineKind: wizardState.engineKind || "cpu",
         engineInstalled: Boolean(wizardState.engineInstalled),
         enginePath: wizardState.enginePath || "",
-        engineVersion: "0.2.1",
+        engineVersion: "0.3.0",
         onboarding_completed: true,
       });
 

@@ -8,11 +8,11 @@ import subprocess
 import threading
 import wave
 import numpy as np
-import torch
-try:
-    import torchaudio.transforms as T
-except ImportError:
-    T = None
+
+# Kept as a module-level seam for the audio fallback tests. It is deliberately
+# populated only after a recording completes, so importing this module remains
+# cheap during application startup.
+T = None
 if sys.platform == "win32":
     try:
         import pyaudiowpatch as pyaudio
@@ -26,7 +26,39 @@ elif sys.platform == "darwin":
 else:
     pyaudio = None
 from abc import ABC, abstractmethod
-from vad_service import VADService
+
+
+def resample_to_16khz(audio_data: np.ndarray, sample_rate: int) -> np.ndarray:
+    """Import Torch only after a recording has finished."""
+    try:
+        import torch
+        global T
+        if T is None:
+            import torchaudio.transforms as transforms
+            T = transforms
+
+        audio_tensor = torch.from_numpy(audio_data).float() / 32768.0
+        resampler = T.Resample(
+            orig_freq=sample_rate,
+            new_freq=16000,
+            resampling_method="sinc_interp_kaiser",
+        )
+        output = resampler(audio_tensor).numpy()
+        return (output * 32767.0).clip(-32768, 32767).astype(np.int16)
+    except Exception as error:
+        print(f"DEBUG: [AI Resample Fallback] {error}. Slicing instead.", file=sys.stderr)
+        return audio_data[::max(1, int(sample_rate / 16000))]
+
+
+def trim_silence(audio_data: np.ndarray, sample_rate: int) -> np.ndarray:
+    """Keep the VAD model outside the application startup path."""
+    try:
+        from vad_service import VADService
+
+        return VADService().trim_silence(audio_data, sample_rate)
+    except Exception as error:
+        print(f"DEBUG: [AI VAD Error] Falling back to raw audio: {error}", file=sys.stderr)
+        return audio_data
 
 
 def calculate_rms_level(audio_data) -> float:
@@ -401,37 +433,12 @@ class WindowsAudioCapture(AudioCaptureStrategy):
         if mixed_48k.size == 0:
             return self.output_file
 
-        # High-Quality Anti-Aliased Resampling using PyTorch/Torchaudio
-        try:
-            # Convert numpy array to float32 tensor in range [-1.0, 1.0] for PyTorch
-            audio_tensor = torch.from_numpy(mixed_48k).float() / 32768.0
-            
-            # Initialize Kaiser windowed sinc interpolation resampler
-            resampler = T.Resample(
-                orig_freq=self.master_sample_rate, 
-                new_freq=16000, 
-                resampling_method="sinc_interp_kaiser"
-            )
-            
-            resampled_tensor = resampler(audio_tensor)
-            
-            # Convert back to standard int16 numpy array
-            mixed_16k = (resampled_tensor.numpy() * 32767.0).clip(-32768, 32767).astype(np.int16)
-            print("DEBUG: [AI] Anti-aliased torchaudio resampling completed (48kHz -> 16kHz).", file=sys.stderr)
-        except Exception as resample_err:
-            # Robust fallback to naive decimation in case of PyTorch/torchaudio issues
-            print(f"DEBUG: [AI Resample Fallback] Error in torchaudio resample: {resample_err}. Slicing instead.", file=sys.stderr)
-            mixed_16k = mixed_48k[::3]
+        mixed_16k = resample_to_16khz(mixed_48k, self.master_sample_rate)
+        print("DEBUG: [AI] Audio resampling completed (48kHz -> 16kHz).", file=sys.stderr)
 
         # Apply VAD to remove silence before saving
         print("DEBUG: [AI] Running Silero VAD to trim silence...", file=sys.stderr)
-        try:
-            vad = VADService()
-            # The VAD will analyze the mono 16kHz signal and keep only speech segments
-            mono_trimmed = vad.trim_silence(mixed_16k, 16000)
-        except Exception as e:
-            print(f"DEBUG: [AI VAD Error] Falling back to raw audio: {str(e)}", file=sys.stderr)
-            mono_trimmed = mixed_16k
+        mono_trimmed = trim_silence(mixed_16k, 16000)
 
         # Save to WAV
         with wave.open(self.output_file, 'wb') as wf:
@@ -567,12 +574,7 @@ class MacosAudioCapture(AudioCaptureStrategy):
             audio_input = mic_full.reshape(-1, 1)
 
         print("DEBUG: [AI] Running Silero VAD to trim silence...", file=sys.stderr)
-        try:
-            vad = VADService()
-            audio_trimmed = vad.trim_silence(audio_input, self.sample_rate)
-        except Exception as e:
-            print(f"DEBUG: [AI VAD Error] Falling back to raw audio: {e}", file=sys.stderr)
-            audio_trimmed = audio_input
+        audio_trimmed = trim_silence(audio_input, self.sample_rate)
 
         with wave.open(self.output_file, "wb") as wf:
             wf.setnchannels(1)
@@ -770,12 +772,7 @@ class LinuxAudioCapture(AudioCaptureStrategy):
             audio_input = mic_full.reshape(-1, 1)
 
         print("DEBUG: [AI] Running Silero VAD to trim silence...", file=sys.stderr)
-        try:
-            vad = VADService()
-            audio_trimmed = vad.trim_silence(audio_input, self.sample_rate)
-        except Exception as e:
-            print(f"DEBUG: [AI VAD Error] Falling back to raw audio: {e}", file=sys.stderr)
-            audio_trimmed = audio_input
+        audio_trimmed = trim_silence(audio_input, self.sample_rate)
 
         with wave.open(self.output_file, "wb") as wf:
             wf.setnchannels(1)

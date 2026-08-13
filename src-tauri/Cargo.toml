@@ -1,6 +1,6 @@
 [package]
 name = "ai-notetaking"
-version = "0.2.2"
+version = "0.3.0"
 description = "Open-source, privacy-first AI notetaker for meetings (Tauri 2 + Rust + Python)"
 authors = ["Igor Cassimiro Assunção"]
 license = "Apache-2.0"

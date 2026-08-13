@@ -8,6 +8,16 @@ export interface AudioDevice {
 
 export type PythonEvent =
   | { event: "SYSTEM_READY"; data: { status: string } }
+  | {
+      event: "ENGINE_STATE";
+      data: {
+        phase: "process_ready" | "audio_ready" | "model_loading" | "transcription_ready" | "degraded" | "failed";
+        recording: boolean;
+        transcription: boolean;
+        system_audio: boolean;
+        message: string;
+      };
+    }
   | { event: "DEVICE_LIST"; data: { devices: AudioDevice[] } }
   | { event: "VAD_TELEMETRY"; data: { level: number; micLevel?: number; systemLevel?: number; activeSources?: Array<"mic" | "system"> } }
   | { event: "RECORDING_STATUS"; data: { is_recording: boolean } }
