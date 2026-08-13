@@ -5,7 +5,7 @@
 
   <p>An open-source, invisible, privacy-first AI notetaker for your meetings.</p>
 
-  [![Version](https://img.shields.io/badge/Version-0.2.1_preview-informational.svg)](https://github.com/Igor-C-Assuncao/IA-notetaking/releases)
+  [![Version](https://img.shields.io/badge/Version-0.3.0-informational.svg)](https://github.com/Igor-C-Assuncao/IA-notetaking/releases)
   [![License](https://img.shields.io/badge/License-Apache_2.0-blue.svg)](https://opensource.org/licenses/Apache-2.0)
   [![PRs Welcome](https://img.shields.io/badge/PRs-welcome-brightgreen.svg)](http://makeapullrequest.com)
   [![Tauri](https://img.shields.io/badge/Tauri_2-App-FFC131?logo=tauri&logoColor=white)](https://tauri.app/)
@@ -23,7 +23,8 @@ Built with a high-performance hybrid architecture: **Tauri 2 + Rust + Python**.
 
 - **Invisible meeting capture** - records microphone and system audio natively via loopback; no bots, meeting links, or host-side permissions.
 - **Local-first AI engine** - runs fully local with Ollama, with optional BYOK cloud providers for OpenAI, Google Gemini, and Anthropic Claude.
-- **Windows engine distribution** - v0.2.0 ships downloadable CPU and split GPU engine assets with a manifest-driven runtime install flow.
+- **Progressive startup** - audio capture becomes available while the transcription model loads in the background, with explicit engine state feedback.
+- **Windows engine distribution** - ships downloadable CPU and split GPU engine assets with a manifest-driven runtime install flow.
 - **Audio-to-intelligence pipeline** - Silero VAD, WhisperX, and LangGraph turn captured speech into transcripts, structured summaries, decisions, action items, and risks.
 - **Evidence-backed summaries** - key claims include confidence, inference labels, transcript quotes, and timestamped source segment references.
 - **Meeting briefing dashboard** - surfaces cross-meeting continuity, recurring topics, decision changes, follow-up drafts, chapters, and participation signals.
@@ -177,7 +178,14 @@ meeting fixtures, and larger LLM-generated QMSum runs are still required.
 
 ## Release history
 
-### 0.2.1 preview (current)
+### 0.3.0 (current)
+
+- Progressive engine startup: recording readiness is no longer held behind Whisper model initialization
+- Clear engine-state feedback while audio capture and transcription services come online
+- Version consistency checks for the desktop app, Python sidecar, and release tag
+- Release preparation focused on reliable Windows and macOS first-run behavior
+
+### 0.2.2
 
 - Preview DMG for Apple Silicon Macs with CPU and Metal/MPS acceleration
 - Bundles the Python AI engine and native Core Audio Tap helper correctly
@@ -207,7 +215,8 @@ meeting fixtures, and larger LLM-generated QMSum runs are still required.
 |---|---|---|
 | 0.1.0 | Released | Local desktop foundation: native capture, transcription, LangGraph summaries, BYOK providers, widget UI, local history |
 | 0.2.0 | Released | Meeting intelligence: briefing dashboard, continuity, follow-up drafts, runtime progress, per-source telemetry, CPU/GPU engine assets |
-| 0.3.x | Next | Reliability hardening: crash recovery, sidecar restart behavior, clearer error states, retry policy, offline/provider failure handling |
+| 0.3.0 | Current | Progressive startup, engine readiness feedback, and release-version consistency |
+| 0.3.x | Next | Crash recovery, sidecar restart behavior, retry policy, and offline/provider failure handling |
 | 0.4.x | Planned | Performance: startup time, sidecar size, memory use, long-meeting chunking, GPU/CPU selection, streaming responsiveness |
 | 0.5.x | Planned | Quality validation: larger AMI/QMSum/CORAA baselines, consented internal fixtures, regression thresholds, hallucination/evidence gates |
 | 0.6.x | Planned | Packaging and updates: signed Windows installer, update flow, release asset verification, install/repair UX |
