@@ -89,6 +89,10 @@ jobs:
       - name: Install Frontend Dependencies
         run: npm ci
 
+      - name: Validate release version
+        shell: bash
+        run: npm run release:check-version
+
       - name: Install Python Dependencies
         if: matrix.platform == 'macos'
         run: |
@@ -107,7 +111,6 @@ jobs:
         if: matrix.platform == 'windows'
         shell: bash
         env:
-          ENGINE_VERSION: '0.2.1'
           ENGINE_RELEASE_BASE: https://github.com/${{ github.repository }}/releases/download/${{ env.RELEASE_TAG }}
         run: |
           node scripts/split-engine-release-asset.mjs src-tauri/binaries/ai-notetaking-engine-windows-x64-gpu.exe
@@ -134,6 +137,7 @@ jobs:
       # ── 4. Tauri Compilation and GitHub Release Upload ─────────────
       - name: Build Tauri Release Bundles
         env:
+          AI_NOTETAKING_ENGINE_RELEASE_TAG: ${{ env.RELEASE_TAG }}
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
         run: npm run tauri build -- ${{ matrix.tauri_args }}
@@ -168,6 +172,19 @@ jobs:
             exit 1
           fi
           gh release upload "$RELEASE_TAG" "${assets[@]}" --clobber
+
+      - name: Smoke-check packaged artifacts
+        shell: bash
+        run: |
+          if [ "${{ matrix.platform }}" = "macos" ]; then
+            dmg=$(find src-tauri/target -type f -name '*.dmg' -print -quit)
+            test -n "$dmg"
+            hdiutil verify "$dmg"
+          else
+            installer=$(find src-tauri/target -type f \( -name '*.msi' -o -name '*-setup.exe' \) -print -quit)
+            test -n "$installer"
+            test -s "$installer"
+          fi
 
       - name: Upload Windows Engine Variants
         if: matrix.platform == 'windows'

@@ -47,7 +47,7 @@ def test_sidecar_ipc_handshake():
         # Let's inspect the first JSON event
         data = json.loads(json_events[0])
         assert "event" in data
-        assert data["event"] in ["DEVICE_LIST", "SYSTEM_READY", "AUDIO_DEVICES_LISTED", "PIPELINE_STATUS", "PREFLIGHT_RESULT"]
+        assert data["event"] in ["ENGINE_STATE", "DEVICE_LIST", "SYSTEM_READY", "AUDIO_DEVICES_LISTED", "PIPELINE_STATUS", "PREFLIGHT_RESULT"]
         
     finally:
         if proc.poll() is None:

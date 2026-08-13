@@ -11,13 +11,58 @@ import threading
 
 # Internal services
 from audio_capture import AudioCaptureFactory, list_audio_devices
-from transcription_service import TranscriptionService
 from llm_service import LLMFactory, MeetingWorkflowEngine, rank_previous_meetings
 from langchain_core.messages import SystemMessage, HumanMessage
 from rag_service import RAGService
 from config import DEFAULTS, get_app_data_dir
 
 preflight_lock = threading.Lock()
+
+
+def emit_engine_state(phase: str, **capabilities):
+    """Publish a stable readiness contract without blocking the desktop UI."""
+    send_event("ENGINE_STATE", {
+        "phase": phase,
+        "recording": capabilities.get("recording", False),
+        "transcription": capabilities.get("transcription", False),
+        "system_audio": capabilities.get("system_audio", False),
+        "message": capabilities.get("message", ""),
+    })
+
+
+def initialize_transcriber(runtime: dict):
+    """Load WhisperX after recording is available, not before the UI can open."""
+    emit_engine_state(
+        "model_loading",
+        recording=True,
+        system_audio=runtime.get("system_audio", False),
+        message="Loading transcription model in the background.",
+    )
+    try:
+        from transcription_service import TranscriptionService
+
+        transcriber = TranscriptionService()
+        if transcriber.model is None:
+            raise RuntimeError("WhisperX model could not be loaded")
+        runtime["transcriber"] = transcriber
+        emit_engine_state(
+            "transcription_ready",
+            recording=True,
+            transcription=True,
+            system_audio=runtime.get("system_audio", False),
+            message="Transcription is ready.",
+        )
+        threading.Thread(target=run_preflight_check, args=(transcriber,), daemon=True).start()
+    except Exception as error:
+        runtime["transcriber_error"] = str(error)
+        emit_engine_state(
+            "degraded",
+            recording=True,
+            system_audio=runtime.get("system_audio", False),
+            message="Recording is available, but the transcription model could not be loaded.",
+        )
+    finally:
+        runtime["transcriber_ready"].set()
 
 def setup_logging():
     app_data_dir = str(get_app_data_dir())
@@ -114,27 +159,36 @@ def run_preflight_check(transcriber, provider=None, model=None):
 def main():
     setup_logging()
     logging.info("Python Engine Booting up...")
-    
-    # Allow React time to mount and start listening to IPC events
-    time.sleep(2)
+    emit_engine_state("process_ready", message="Starting local services.")
     send_event("SYSTEM_READY", {"status": "Python engine is ready and listening."})
-    send_event("DEVICE_LIST", {"devices": list_audio_devices()})
 
     current_config = {}
+    runtime = {
+        "transcriber": None,
+        "transcriber_error": None,
+        "transcriber_ready": threading.Event(),
+        "system_audio": False,
+    }
 
     # 1. Initialize Audio Capture
     try:
         audio_capturer = AudioCaptureFactory.get_strategy()
+        devices = list_audio_devices()
+        send_event("DEVICE_LIST", {"devices": devices})
+        runtime["system_audio"] = sys.platform in ("win32", "darwin")
+        emit_engine_state(
+            "audio_ready",
+            recording=True,
+            system_audio=runtime["system_audio"],
+            message="Recording is ready; transcription is loading in the background.",
+        )
     except Exception as e:
         send_event("ERROR", {"message": f"Audio Error: {str(e)}"})
+        emit_engine_state("failed", message="Audio capture could not be initialized.")
         return
 
-    # 2. Initialize AI Transcriber (WhisperX)
-    try:
-        transcriber = TranscriptionService()
-    except Exception as e:
-        send_event("ERROR", {"message": f"Failed to initialize WhisperX: {str(e)}"})
-        transcriber = None
+    # 2. Initialize WhisperX asynchronously. Recording is intentionally ready first.
+    threading.Thread(target=initialize_transcriber, args=(runtime,), daemon=True).start()
 
     # 3. Initialize RAG Service
     try:
@@ -142,9 +196,6 @@ def main():
     except Exception as e:
         send_event("ERROR", {"message": f"Failed to initialize local RAG: {str(e)}"})
         rag_service = None
-
-    # Run initial preflight check on boot in a background thread
-    threading.Thread(target=run_preflight_check, args=(transcriber,), daemon=True).start()
 
     # Main loop listening for IPC commands from Rust
     for line in sys.stdin:
@@ -158,7 +209,11 @@ def main():
             elif action == "PREFLIGHT_CHECK":
                 provider = command.get("provider")
                 model = command.get("model")
-                threading.Thread(target=run_preflight_check, args=(transcriber, provider, model), daemon=True).start()
+                threading.Thread(
+                    target=run_preflight_check,
+                    args=(runtime.get("transcriber"), provider, model),
+                    daemon=True,
+                ).start()
 
             elif action == "INDEX_MEETING":
                 meeting_id = command.get("meeting_id")
@@ -744,7 +799,18 @@ def main():
                     send_event("PIPELINE_STATUS", {"step": "Done."})
                     continue
 
-                # STEP B: Transcribe audio
+                # STEP B: wait for the asynchronously loaded model. The audio
+                # is already safe on disk, so a slow first launch never loses a
+                # meeting recording.
+                if not runtime["transcriber_ready"].wait(timeout=120):
+                    send_event("TRANSCRIPTION_FAILED", {
+                        "code": "MODEL_STARTUP_TIMEOUT",
+                        "message": "The recording was saved, but the transcription model is still starting. Try transcribing again shortly.",
+                    })
+                    send_event("PIPELINE_STATUS", {"step": "Recording saved; transcription is still starting."})
+                    continue
+
+                transcriber = runtime.get("transcriber")
                 if transcriber:
                     send_event("PIPELINE_STATUS", {"step": "Transcribing with WhisperX..."})
                     lang = current_config.get("language", "auto")
@@ -821,7 +887,9 @@ def main():
                     except Exception as e:
                         send_event("ERROR", {"message": f"LLM Generation Error: {str(e)}"})
                 else:
-                    send_event("ERROR", {"message": "Transcriber is offline."})
+                    message = runtime.get("transcriber_error") or "Transcriber is offline."
+                    send_event("TRANSCRIPTION_FAILED", {"code": "MODEL_NOT_LOADED", "message": message})
+                    send_event("ERROR", {"message": message})
 
         except json.JSONDecodeError:
             send_event("ERROR", {"message": "Invalid JSON command received."})

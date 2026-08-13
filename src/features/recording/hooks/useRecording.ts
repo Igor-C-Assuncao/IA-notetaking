@@ -115,6 +115,11 @@ export function useRecording() {
     emitRecordingChange();
   });
 
+  usePythonEvent("ENGINE_STATE", (data) => {
+    globalStatus = data.message || data.phase;
+    emitRecordingChange();
+  });
+
   usePythonEvent("TRANSCRIPTION_FAILED", (data) => {
     if (data.code === "AUDIO_TOO_QUIET") {
       globalStatus = "Transcription failed: audio was too quiet. Select the correct microphone or turn on System Audio.";

@@ -140,7 +140,18 @@ export function EngineBootstrap({ children }: { children: ReactNode }) {
   const activeTaskDetail = bootstrapTasks.find((task) => task.state === "active" || task.state === "error")?.detail;
 
   usePythonEvent("SYSTEM_READY", () => {
-    setMessage("Transcription component started. Loading local models...");
+    setMessage("Local services started. Preparing audio capture...");
+  });
+
+  usePythonEvent("ENGINE_STATE", (data) => {
+    setMessage(data.message);
+    if (data.phase === "audio_ready" || data.phase === "model_loading" || data.phase === "transcription_ready") {
+      setPhase("ready");
+    }
+    if (data.phase === "failed") {
+      setError(data.message || "The local transcription component could not start.");
+      setPhase("error");
+    }
   });
 
   usePythonEvent("PREFLIGHT_RESULT", () => {
@@ -229,15 +240,8 @@ export function EngineBootstrap({ children }: { children: ReactNode }) {
     setMessage("Starting the local transcription component...");
     try {
       await invoke("start_sidecar", { kind });
-      window.setTimeout(() => {
-        setPhase((current) => {
-          if (current === "starting") {
-            setMessage("Still loading WhisperX and local services. The first launch can take a few minutes.");
-            setStartupSlow(true);
-          }
-          return current;
-        });
-      }, 12000);
+      // Do not hold the whole desktop shell behind WhisperX. The Python
+      // engine emits ENGINE_STATE once audio capture is ready.
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
       setPhase("error");
