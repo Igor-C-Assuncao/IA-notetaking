@@ -9,6 +9,7 @@ use std::path::PathBuf;
 use std::process::{Child, ChildStdin, Command, Stdio};
 use std::sync::atomic::{AtomicU64, Ordering as AtomicOrdering};
 use std::sync::{Arc, Mutex};
+use std::time::{Duration, Instant};
 use tauri::{AppHandle, Emitter, Manager, State, WebviewUrl, WebviewWindowBuilder};
 use tauri::{LogicalSize, Window};
 use tauri_plugin_global_shortcut::{Code, GlobalShortcutExt, Modifiers, Shortcut, ShortcutState};
@@ -453,6 +454,7 @@ fn download_engine_asset(
     let mut chunk_hasher = Sha256::new();
     let mut downloaded_asset = 0_u64;
     let mut buffer = [0_u8; 1024 * 256];
+    let mut last_progress_update = Instant::now() - Duration::from_millis(250);
 
     loop {
         let read = response.read(&mut buffer).map_err(|e| e.to_string())?;
@@ -467,17 +469,24 @@ fn download_engine_asset(
         downloaded_asset += read as u64;
         *downloaded_total += read as u64;
 
-        app.emit(
-            "engine-download-progress",
-            serde_json::json!({
-                "kind": asset.kind,
-                "stage": "downloading",
-                "downloadedBytes": *downloaded_total,
-                "totalBytes": asset.package_size,
-                "message": asset.message
-            }),
-        )
-        .ok();
+        // A GPU package can contain several gigabytes. Emitting one IPC event
+        // per read saturates the WebView event queue, especially while the
+        // window is in the background, and makes Windows report the app as
+        // unresponsive when it regains focus.
+        if last_progress_update.elapsed() >= Duration::from_millis(250) {
+            app.emit(
+                "engine-download-progress",
+                serde_json::json!({
+                    "kind": asset.kind,
+                    "stage": "downloading",
+                    "downloadedBytes": *downloaded_total,
+                    "totalBytes": asset.package_size,
+                    "message": asset.message
+                }),
+            )
+            .ok();
+            last_progress_update = Instant::now();
+        }
     }
 
     if downloaded_asset != asset.expected_size {

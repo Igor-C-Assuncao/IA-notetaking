@@ -58,7 +58,7 @@ const DEFAULT_SETTINGS: Settings = {
   ragHistorySynced: false,
   hf_token: "",
   engineKind: "cpu",
-  engineVersion: "0.3.0",
+  engineVersion: "0.3.1",
   engineInstalled: false,
   enginePath: "",
 };
