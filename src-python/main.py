@@ -6,6 +6,8 @@ import json
 import time
 import os
 import logging
+import platform
+import re
 from logging.handlers import TimedRotatingFileHandler
 import threading
 
@@ -18,6 +20,35 @@ from config import DEFAULTS, get_app_data_dir
 
 preflight_lock = threading.Lock()
 
+SENSITIVE_DIAGNOSTIC_PATTERN = re.compile(
+    r"(?i)(api[_ -]?key|authorization|bearer|token|raw[_ -]?transcript|prompt|markdown)\s*[:=]\s*\S+"
+)
+
+
+def sanitize_diagnostic_message(message: str) -> str:
+    """Keep operational context while removing meeting content and credentials."""
+    redacted = SENSITIVE_DIAGNOSTIC_PATTERN.sub(r"\1=[REDACTED]", str(message))
+    return redacted[:500]
+
+
+def emit_diagnostic(code: str, message: str, level: str = "info", **details):
+    send_event("DIAGNOSTIC_EVENT", {
+        "code": code,
+        "level": level,
+        "message": sanitize_diagnostic_message(message),
+        **{key: value for key, value in details.items() if key in {"attempt", "component"}},
+    })
+
+
+def emit_ai_runtime_status(state: str, provider: str = "local", model: str = "base", **details):
+    send_event("AI_RUNTIME_STATUS", {
+        "state": state,
+        "provider": provider,
+        "model": model,
+        "elapsed_ms": details.get("elapsed_ms", 0),
+        "message": sanitize_diagnostic_message(details.get("message", state.replace("_", " ").title())),
+    })
+
 
 def emit_engine_state(phase: str, **capabilities):
     """Publish a stable readiness contract without blocking the desktop UI."""
@@ -28,6 +59,11 @@ def emit_engine_state(phase: str, **capabilities):
         "system_audio": capabilities.get("system_audio", False),
         "message": capabilities.get("message", ""),
     })
+    emit_ai_runtime_status(
+        "failed" if phase in {"failed", "degraded"} else "ready" if phase == "transcription_ready" else "loading_model",
+        message=capabilities.get("message", ""),
+    )
+    emit_diagnostic(f"ENGINE_{phase.upper()}", capabilities.get("message", phase), "error" if phase in {"failed", "degraded"} else "info", component="engine")
 
 
 def initialize_transcriber(runtime: dict):
@@ -63,6 +99,52 @@ def initialize_transcriber(runtime: dict):
         )
     finally:
         runtime["transcriber_ready"].set()
+
+
+def ollama_runtime_status(timeout: float = 2.0) -> dict:
+    """Inspect both installed models and active runners without logging prompts."""
+    import urllib.request
+
+    try:
+        with urllib.request.urlopen("http://localhost:11434/api/tags", timeout=timeout) as response:
+            tags = json.loads(response.read().decode("utf-8"))
+        with urllib.request.urlopen("http://localhost:11434/api/ps", timeout=timeout) as response:
+            running = json.loads(response.read().decode("utf-8"))
+        active = [item.get("name", "") for item in running.get("models", [])]
+        return {
+            "state": "loading_model" if active else "ready",
+            "models": [item.get("name", "") for item in tags.get("models", [])],
+            "active_models": active,
+        }
+    except Exception:
+        return {"state": "offline", "models": [], "active_models": []}
+
+
+def run_self_test() -> int:
+    """Release smoke test: imports, architecture, bundled model, and real load."""
+    started = time.monotonic()
+    expected_arch = os.environ.get("AI_NOTETAKING_EXPECTED_ARCH", "")
+    actual_arch = platform.machine().lower()
+    if expected_arch and expected_arch.lower() not in actual_arch:
+        print(json.dumps({"ok": False, "check": "architecture", "expected": expected_arch, "actual": actual_arch}))
+        return 2
+    try:
+        os.environ["AI_NOTETAKING_REQUIRE_BUNDLED_MODEL"] = "1"
+        from transcription_service import TranscriptionService
+        transcriber = TranscriptionService()
+        if transcriber.model is None:
+            raise RuntimeError("Whisper base failed to load")
+        print(json.dumps({
+            "ok": True,
+            "architecture": actual_arch,
+            "model": transcriber.model_name,
+            "device": transcriber.device,
+            "elapsed_ms": round((time.monotonic() - started) * 1000),
+        }))
+        return 0
+    except Exception as error:
+        print(json.dumps({"ok": False, "check": "whisper_load", "error": sanitize_diagnostic_message(str(error))}))
+        return 3
 
 def setup_logging():
     app_data_dir = str(get_app_data_dir())
@@ -214,6 +296,10 @@ def main():
                     args=(runtime.get("transcriber"), provider, model),
                     daemon=True,
                 ).start()
+
+            elif action == "GET_AI_RUNTIME_STATUS":
+                status = ollama_runtime_status()
+                emit_ai_runtime_status(status["state"], provider="ollama", model=command.get("model", ""))
 
             elif action == "INDEX_MEETING":
                 meeting_id = command.get("meeting_id")
@@ -864,6 +950,8 @@ def main():
                     provider_name = current_config.get("llm_provider", "ollama")
                     model_name = current_config.get("llm_model", "llama3")
                     api_key = current_config.get("api_key", "")
+                    generation_started = time.monotonic()
+                    emit_ai_runtime_status("generating", provider_name, model_name, message="Generating meeting notes.")
                     
                     try:
                         llm = LLMFactory.get_provider(provider_name, model_name)
@@ -883,8 +971,18 @@ def main():
                             "transcript_segments": transcription_result.get("segments", []),
                             "schema_version": transcription_result.get("schema_version", 1),
                         })
+                        emit_ai_runtime_status(
+                            "completed", provider_name, model_name,
+                            elapsed_ms=round((time.monotonic() - generation_started) * 1000),
+                            message="Meeting notes completed.",
+                        )
                         send_event("PIPELINE_STATUS", {"step": "Done."})
                     except Exception as e:
+                        emit_ai_runtime_status(
+                            "failed", provider_name, model_name,
+                            elapsed_ms=round((time.monotonic() - generation_started) * 1000),
+                            message="Meeting note generation failed.",
+                        )
                         send_event("ERROR", {"message": f"LLM Generation Error: {str(e)}"})
                 else:
                     message = runtime.get("transcriber_error") or "Transcriber is offline."
@@ -897,4 +995,6 @@ def main():
             send_event("ERROR", {"message": f"Unexpected error: {str(e)}"})
 
 if __name__ == "__main__":
+    if "--self-test" in sys.argv:
+        raise SystemExit(run_self_test())
     main()

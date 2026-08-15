@@ -1,13 +1,14 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright 2026 Igor Cassimiro Assunção
+use fs2::available_space;
 use keyring::Entry;
 use rusqlite::Connection;
 use sha2::{Digest, Sha256};
-use std::fs::File;
-use std::io::{BufRead, BufReader, Read, Write};
-use std::path::PathBuf;
+use std::fs::{File, OpenOptions};
+use std::io::{BufRead, BufReader, Read, Seek, SeekFrom, Write};
+use std::path::{Path, PathBuf};
 use std::process::{Child, ChildStdin, Command, Stdio};
-use std::sync::atomic::{AtomicU64, Ordering as AtomicOrdering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering as AtomicOrdering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 use tauri::{AppHandle, Emitter, Manager, State, WebviewUrl, WebviewWindowBuilder};
@@ -82,6 +83,60 @@ struct AppState {
     // supervisors (e.g. React StrictMode double-invoking start_sidecar) from
     // endlessly overwriting each other's stdin and restarting each other.
     supervisor_gen: Arc<AtomicU64>,
+    engine_download: Arc<Mutex<Option<EngineDownloadControl>>>,
+    diagnostics: Arc<Mutex<Vec<DiagnosticEvent>>>,
+    runtime_status: Arc<Mutex<serde_json::Value>>,
+}
+
+#[derive(Clone)]
+struct EngineDownloadControl {
+    kind: String,
+    cancelled: Arc<AtomicBool>,
+}
+
+#[derive(serde::Serialize, Clone)]
+struct DiagnosticEvent {
+    timestamp: String,
+    source: String,
+    level: String,
+    code: String,
+    message: String,
+    attempt: Option<u32>,
+    exit_code: Option<i32>,
+}
+
+#[derive(serde::Serialize)]
+struct RuntimeDiagnostics {
+    status: serde_json::Value,
+    events: Vec<DiagnosticEvent>,
+}
+
+fn push_diagnostic(store: &Arc<Mutex<Vec<DiagnosticEvent>>>, event: DiagnosticEvent) {
+    if let Ok(mut events) = store.lock() {
+        events.push(event);
+        let excess = events.len().saturating_sub(200);
+        if excess > 0 {
+            events.drain(0..excess);
+        }
+    }
+}
+
+fn sanitized_diagnostic_message(message: &str) -> String {
+    let lowered = message.to_ascii_lowercase();
+    if [
+        "api_key",
+        "token",
+        "authorization",
+        "raw_transcript",
+        "markdown",
+        "prompt",
+    ]
+    .iter()
+    .any(|needle| lowered.contains(needle))
+    {
+        return "Sensitive diagnostic detail was redacted.".to_string();
+    }
+    message.chars().take(500).collect()
 }
 
 const ENGINE_VERSION: &str = env!("CARGO_PKG_VERSION");
@@ -100,17 +155,40 @@ struct EngineStatus {
 
 #[derive(serde::Deserialize)]
 struct EngineManifest {
+    #[serde(default)]
+    schema_version: u32,
+    #[serde(default)]
+    version: String,
     engines: Vec<EngineManifestEntry>,
 }
 
 #[derive(serde::Deserialize, Clone)]
 struct EngineManifestEntry {
     kind: String,
+    #[serde(default)]
+    architecture: String,
+    #[serde(default)]
+    archive: String,
     file_name: String,
+    #[serde(default)]
+    entrypoint: String,
     sha256: String,
-    size_bytes: u64,
+    #[serde(default, alias = "size_bytes")]
+    compressed_size: u64,
+    #[serde(default)]
+    unpacked_size: u64,
     url: Option<String>,
     chunks: Option<Vec<EngineManifestChunk>>,
+    #[serde(default)]
+    model: Option<EngineModelManifest>,
+}
+
+#[derive(serde::Deserialize, Clone)]
+struct EngineModelManifest {
+    name: String,
+    relative_path: String,
+    sha256: Option<String>,
+    size_bytes: u64,
 }
 
 #[derive(serde::Deserialize, Clone)]
@@ -131,17 +209,36 @@ struct EngineAssetDownload<'a> {
 }
 
 #[derive(serde::Serialize)]
+struct EngineCapabilities {
+    architecture: String,
+    nvidia_available: bool,
+    gpu_supported: bool,
+    recommended_kind: String,
+    reason: String,
+}
+
+#[derive(serde::Serialize)]
 struct OllamaStatus {
     installed: bool,
     running: bool,
     models: Vec<String>,
+    active_models: Vec<String>,
+    state: String,
     message: String,
 }
 
-fn engine_file_name(kind: &str) -> &'static str {
+fn engine_archive_file_name(kind: &str) -> &'static str {
     match kind {
-        "gpu" => "ai-notetaking-engine-windows-x64-gpu.exe",
-        _ => "ai-notetaking-engine-windows-x64-cpu.exe",
+        "gpu" => "ai-notetaking-engine-windows-x64-gpu.zip",
+        _ => "ai-notetaking-engine-windows-x64-cpu.zip",
+    }
+}
+
+fn default_engine_entrypoint() -> &'static str {
+    if cfg!(target_os = "windows") {
+        "ai-notetaking-engine.exe"
+    } else {
+        "ai-notetaking-engine"
     }
 }
 
@@ -154,7 +251,11 @@ fn engine_release_base() -> String {
 }
 
 fn engine_download_url(kind: &str) -> String {
-    format!("{}/{}", engine_release_base(), engine_file_name(kind))
+    format!(
+        "{}/{}",
+        engine_release_base(),
+        engine_archive_file_name(kind)
+    )
 }
 
 fn engine_asset_url(file_name: &str) -> String {
@@ -167,7 +268,8 @@ fn engine_manifest_url() -> String {
 
 fn fetch_engine_manifest() -> Result<EngineManifest, String> {
     let client = reqwest::blocking::Client::builder()
-        .timeout(std::time::Duration::from_secs(20))
+        .connect_timeout(Duration::from_secs(20))
+        .timeout(None)
         .build()
         .map_err(|e| e.to_string())?;
     let response = client
@@ -180,9 +282,22 @@ fn fetch_engine_manifest() -> Result<EngineManifest, String> {
             response.status()
         ));
     }
-    response
+    let manifest = response
         .json::<EngineManifest>()
-        .map_err(|e| format!("Invalid engine manifest: {}", e))
+        .map_err(|e| format!("Invalid engine manifest: {}", e))?;
+    if manifest.schema_version != 2 {
+        return Err(format!(
+            "Engine manifest v{} is no longer executable. Update to v0.3.2 or later to install the recoverable engine package.",
+            manifest.schema_version.max(1)
+        ));
+    }
+    if manifest.version != ENGINE_VERSION {
+        return Err(format!(
+            "Engine manifest version {} does not match application version {}.",
+            manifest.version, ENGINE_VERSION
+        ));
+    }
+    Ok(manifest)
 }
 
 fn manifest_entry_for(kind: &str) -> Result<EngineManifestEntry, String> {
@@ -199,17 +314,38 @@ fn engine_dir(app: &AppHandle, kind: &str) -> Result<PathBuf, String> {
     Ok(app_data_dir.join("engines").join(ENGINE_VERSION).join(kind))
 }
 
+fn engine_download_dir(app: &AppHandle, kind: &str) -> Result<PathBuf, String> {
+    let app_data_dir = app.path().app_data_dir().map_err(|e| e.to_string())?;
+    Ok(app_data_dir
+        .join("engines")
+        .join(ENGINE_VERSION)
+        .join(format!("{}.download", kind)))
+}
+
 fn engine_path(app: &AppHandle, kind: &str) -> Result<PathBuf, String> {
-    Ok(engine_dir(app, kind)?.join(engine_file_name(kind)))
+    let directory = engine_dir(app, kind)?;
+    let entrypoint = std::fs::read_to_string(directory.join("installation.json"))
+        .ok()
+        .and_then(|content| serde_json::from_str::<serde_json::Value>(&content).ok())
+        .and_then(|value| {
+            value
+                .get("entrypoint")
+                .and_then(|item| item.as_str())
+                .map(str::to_string)
+        })
+        .filter(|value| !value.contains("..") && !Path::new(value).is_absolute())
+        .unwrap_or_else(|| default_engine_entrypoint().to_string());
+    Ok(directory.join(entrypoint))
 }
 
 fn find_downloaded_engine(app: &AppHandle, kind: &str) -> Option<PathBuf> {
     let path = engine_path(app, kind).ok()?;
+    let marker = engine_dir(app, kind).ok()?.join("installation.json");
     let is_nonempty = path
         .metadata()
         .map(|metadata| metadata.len() > 0)
         .unwrap_or(false);
-    if is_nonempty {
+    if is_nonempty && marker.is_file() {
         Some(path)
     } else {
         None
@@ -221,25 +357,32 @@ fn find_bundled_engine(app: &AppHandle) -> Option<PathBuf> {
     let executable_dir = std::env::current_exe()
         .ok()
         .and_then(|path| path.parent().map(PathBuf::from));
+    let expected_names: &[&str] = if cfg!(target_os = "macos") {
+        &[
+            "ai-notetaking-engine-aarch64-apple-darwin",
+            "ai-notetaking-engine",
+        ]
+    } else if cfg!(target_os = "linux") {
+        &[
+            "ai-notetaking-engine-x86_64-unknown-linux-gnu",
+            "ai-notetaking-engine",
+        ]
+    } else {
+        &["ai-notetaking-engine-x86_64-pc-windows-msvc.exe"]
+    };
     [
         Some(resource_dir.clone()),
+        Some(resource_dir.join("engine")),
         Some(resource_dir.join("binaries")),
         executable_dir,
     ]
     .into_iter()
     .flatten()
-    .filter_map(|directory| std::fs::read_dir(directory).ok())
-    .flat_map(|entries| entries.filter_map(Result::ok))
-    .map(|entry| entry.path())
+    .flat_map(|directory| expected_names.iter().map(move |name| directory.join(name)))
     .find(|path| {
-        path.file_name()
-            .and_then(|name| name.to_str())
-            .map(|name| name.starts_with("ai-notetaking-engine"))
+        path.metadata()
+            .map(|metadata| metadata.len() > 0)
             .unwrap_or(false)
-            && path
-                .metadata()
-                .map(|metadata| metadata.len() > 0)
-                .unwrap_or(false)
     })
 }
 
@@ -276,241 +419,1015 @@ fn get_engine_status(app: AppHandle, kind: Option<String>) -> Result<EngineStatu
 }
 
 #[tauri::command]
-fn download_engine(app: AppHandle, kind: String) -> Result<EngineStatus, String> {
+async fn download_engine(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    kind: String,
+) -> Result<EngineStatus, String> {
+    if kind != "cpu" && kind != "gpu" {
+        return Err("Unknown engine kind. Choose CPU or GPU.".to_string());
+    }
     if cfg!(debug_assertions) {
         return get_engine_status(app, Some(kind));
     }
     if !cfg!(target_os = "windows") {
-        let status = get_engine_status(app, Some(kind))?;
-        return if status.installed {
-            Ok(status)
-        } else {
-            Err("The transcription component included with this installation was not found. Reinstall the application and try again.".to_string())
-        };
+        return get_engine_status(app, Some(kind)).and_then(|status| {
+            if status.installed {
+                Ok(status)
+            } else {
+                Err(
+                    "The bundled transcription component is missing. Reinstall the application."
+                        .to_string(),
+                )
+            }
+        });
     }
 
-    let target_dir = engine_dir(&app, &kind)?;
-    std::fs::create_dir_all(&target_dir).map_err(|e| e.to_string())?;
-    let manifest_entry = manifest_entry_for(&kind)?;
-    let target_path = engine_dir(&app, &kind)?.join(&manifest_entry.file_name);
-    let partial_path = target_path.with_extension("download");
-    let _ = std::fs::remove_file(&partial_path);
+    let cancelled = Arc::new(AtomicBool::new(false));
+    {
+        let mut active = state
+            .engine_download
+            .lock()
+            .map_err(|_| "Download state is unavailable.")?;
+        if let Some(existing) = active.as_ref() {
+            return Err(format!(
+                "A {} engine download is already running.",
+                existing.kind
+            ));
+        }
+        *active = Some(EngineDownloadControl {
+            kind: kind.clone(),
+            cancelled: Arc::clone(&cancelled),
+        });
+    }
 
-    app.emit(
-        "engine-download-progress",
-        serde_json::json!({
-            "kind": kind,
-            "stage": "downloading",
-            "downloadedBytes": 0,
-            "totalBytes": null,
-            "message": "Starting engine download"
-        }),
-    )
-    .ok();
+    let active_download = Arc::clone(&state.engine_download);
+    let worker_app = app.clone();
+    let worker_kind = kind.clone();
+    let result = match tauri::async_runtime::spawn_blocking(move || {
+        download_engine_blocking(worker_app, worker_kind, cancelled)
+    })
+    .await
+    {
+        Ok(result) => result,
+        Err(error) => Err(format!("Engine download worker failed: {error}")),
+    };
+    if let Ok(mut active) = active_download.lock() {
+        *active = None;
+    }
+    result
+}
+
+#[tauri::command]
+fn cancel_engine_download(state: State<'_, AppState>) -> Result<bool, String> {
+    let active = state
+        .engine_download
+        .lock()
+        .map_err(|_| "Download state is unavailable.")?;
+    if let Some(download) = active.as_ref() {
+        download.cancelled.store(true, AtomicOrdering::SeqCst);
+        Ok(true)
+    } else {
+        Ok(false)
+    }
+}
+
+#[tauri::command]
+fn get_engine_capabilities() -> EngineCapabilities {
+    let architecture = std::env::consts::ARCH.to_string();
+    let nvidia_available = cfg!(target_os = "windows")
+        && Command::new("nvidia-smi")
+            .args(["--query-gpu=name", "--format=csv,noheader"])
+            .output()
+            .map(|output| output.status.success() && !output.stdout.is_empty())
+            .unwrap_or(false);
+    let gpu_supported = nvidia_available && architecture == "x86_64";
+    EngineCapabilities {
+        architecture,
+        nvidia_available,
+        gpu_supported,
+        recommended_kind: if gpu_supported { "gpu" } else { "cpu" }.to_string(),
+        reason: if gpu_supported {
+            "A compatible NVIDIA GPU was detected.".to_string()
+        } else {
+            "No compatible NVIDIA CUDA device was detected; CPU is the reliable choice.".to_string()
+        },
+    }
+}
+
+fn download_engine_blocking(
+    app: AppHandle,
+    kind: String,
+    cancelled: Arc<AtomicBool>,
+) -> Result<EngineStatus, String> {
+    if find_downloaded_engine(&app, &kind).is_some() {
+        return get_engine_status(app, Some(kind));
+    }
+    let entry = manifest_entry_for(&kind)?;
+    validate_manifest_entry(&entry)?;
+    let download_dir = engine_download_dir(&app, &kind)?;
+    std::fs::create_dir_all(&download_dir).map_err(actionable_disk_error)?;
+
+    let cached_bytes = directory_size(&download_dir)
+        .unwrap_or(0)
+        .min(entry.compressed_size);
+    let required = entry
+        .compressed_size
+        .saturating_sub(cached_bytes)
+        .saturating_add(entry.unpacked_size)
+        .saturating_add(entry.unpacked_size / 10);
+    let free = available_space(&download_dir).map_err(actionable_disk_error)?;
+    if free < required {
+        return Err(format!("Not enough disk space. Free at least {} MB and retry; valid partial downloads were preserved.", (required - free).div_ceil(1024 * 1024)));
+    }
 
     let client = reqwest::blocking::Client::builder()
-        .connect_timeout(std::time::Duration::from_secs(20))
-        .timeout(std::time::Duration::from_secs(60 * 45))
+        .connect_timeout(Duration::from_secs(20))
+        .timeout(None)
         .build()
-        .map_err(|e| e.to_string())?;
-    let mut file = File::create(&partial_path).map_err(|e| e.to_string())?;
-    let mut hasher = Sha256::new();
-    let mut downloaded = 0_u64;
+        .map_err(|error| format!("Could not initialize the network client: {error}"))?;
+    let package_path = download_dir.join(&entry.file_name);
+    let chunks = entry.chunks.clone().unwrap_or_default();
 
-    if let Some(chunks) = manifest_entry.chunks.clone() {
-        let chunk_total = chunks
+    if chunks.is_empty() {
+        let url = entry
+            .url
+            .clone()
+            .unwrap_or_else(|| engine_download_url(&kind));
+        download_resumable_asset(
+            Some(&app),
+            &client,
+            &package_path,
+            &cancelled,
+            EngineAssetDownload {
+                kind: &kind,
+                url: &url,
+                expected_size: entry.compressed_size,
+                expected_sha256: Some(&entry.sha256),
+                package_size: entry.compressed_size,
+                message: "Downloading local engine",
+            },
+            1,
+            1,
+            0,
+        )?;
+    } else {
+        let total = chunks
             .iter()
             .try_fold(0_u64, |sum, chunk| sum.checked_add(chunk.size_bytes))
             .ok_or_else(|| "Engine chunk sizes overflowed.".to_string())?;
-        if chunk_total != manifest_entry.size_bytes {
-            let _ = std::fs::remove_file(&partial_path);
-            return Err(format!(
-                "Engine manifest chunk sizes do not match package size. Expected {} bytes, got {} bytes.",
-                manifest_entry.size_bytes, chunk_total
-            ));
+        if total != entry.compressed_size {
+            return Err(
+                "Invalid engine manifest: chunk sizes do not match compressed_size.".to_string(),
+            );
         }
-
+        let mut completed = 0_u64;
         for (index, chunk) in chunks.iter().enumerate() {
+            let part_path = download_dir.join(&chunk.file_name);
             let url = chunk
                 .url
                 .clone()
                 .unwrap_or_else(|| engine_asset_url(&chunk.file_name));
-            download_engine_asset(
-                &app,
+            download_resumable_asset(
+                Some(&app),
                 &client,
-                &mut file,
-                &mut hasher,
-                &mut downloaded,
+                &part_path,
+                &cancelled,
                 EngineAssetDownload {
                     kind: &kind,
                     url: &url,
                     expected_size: chunk.size_bytes,
                     expected_sha256: Some(&chunk.sha256),
-                    package_size: manifest_entry.size_bytes,
-                    message: &format!(
-                        "Downloading local engine part {} of {}",
-                        index + 1,
-                        chunks.len()
-                    ),
+                    package_size: entry.compressed_size,
+                    message: "Downloading local engine package",
                 },
+                index + 1,
+                chunks.len(),
+                completed,
             )?;
+            completed += chunk.size_bytes;
         }
-    } else {
-        let url = manifest_entry
-            .url
-            .clone()
-            .unwrap_or_else(|| engine_download_url(&kind));
-        download_engine_asset(
-            &app,
-            &client,
-            &mut file,
-            &mut hasher,
-            &mut downloaded,
-            EngineAssetDownload {
-                kind: &kind,
-                url: &url,
-                expected_size: manifest_entry.size_bytes,
-                expected_sha256: None,
-                package_size: manifest_entry.size_bytes,
-                message: "Downloading local engine",
-            },
-        )?;
+        combine_chunks(&chunks, &download_dir, &package_path)?;
     }
 
-    file.flush().map_err(|e| e.to_string())?;
-    let hash = hasher
-        .finalize()
-        .iter()
-        .map(|byte| format!("{:02x}", byte))
-        .collect::<String>();
-    if downloaded != manifest_entry.size_bytes {
-        let _ = std::fs::remove_file(&partial_path);
+    check_cancelled(&cancelled)?;
+    emit_download_progress(
+        Some(&app),
+        &kind,
+        "verifying",
+        entry.compressed_size,
+        entry.compressed_size,
+        0,
+        0,
+        None,
+        None,
+        "Verifying package checksum",
+    );
+    verify_file(&package_path, entry.compressed_size, &entry.sha256)
+        .map_err(|_| "Checksum verification failed. Retry the download; antivirus or a proxy may have modified the package.".to_string())?;
+
+    let target_dir = engine_dir(&app, &kind)?;
+    let staging_dir = target_dir.with_file_name(format!("{}.installing", kind));
+    if staging_dir.exists() {
+        std::fs::remove_dir_all(&staging_dir).map_err(actionable_disk_error)?;
+    }
+    std::fs::create_dir_all(&staging_dir).map_err(actionable_disk_error)?;
+    emit_download_progress(
+        Some(&app),
+        &kind,
+        "extracting",
+        entry.compressed_size,
+        entry.compressed_size,
+        0,
+        0,
+        None,
+        None,
+        "Installing verified engine package",
+    );
+    extract_zip(&package_path, &staging_dir, entry.unpacked_size, &cancelled)?;
+    let entrypoint = staging_dir.join(&entry.entrypoint);
+    if !entrypoint.is_file() {
         return Err(format!(
-            "Engine package size mismatch. Expected {} bytes, got {} bytes.",
-            manifest_entry.size_bytes, downloaded
+            "The verified archive is missing its entrypoint: {}",
+            entry.entrypoint
         ));
     }
+    verify_bundled_model(&staging_dir, entry.model.as_ref())?;
+    make_executable(&entrypoint)?;
+    std::fs::write(staging_dir.join("installation.json"), serde_json::to_vec_pretty(&serde_json::json!({
+        "schema_version": 2, "version": ENGINE_VERSION, "kind": kind, "entrypoint": entry.entrypoint,
+        "archive_sha256": entry.sha256, "installed_at": chrono::Utc::now().to_rfc3339()
+    })).map_err(|error| error.to_string())?).map_err(actionable_disk_error)?;
 
-    if hash.to_lowercase() != manifest_entry.sha256.to_lowercase() {
-        let _ = std::fs::remove_file(&partial_path);
-        return Err("Engine package integrity check failed. The downloaded file did not match the expected SHA-256.".to_string());
+    if target_dir.exists() {
+        let backup = target_dir.with_file_name(format!("{}.incomplete", kind));
+        if backup.exists() {
+            std::fs::remove_dir_all(&backup).map_err(actionable_disk_error)?;
+        }
+        std::fs::rename(&target_dir, &backup).map_err(actionable_disk_error)?;
     }
-
-    app.emit(
-        "engine-download-progress",
-        serde_json::json!({
-            "kind": kind,
-            "stage": "verifying",
-            "downloadedBytes": downloaded,
-            "totalBytes": manifest_entry.size_bytes,
-            "sha256": hash,
-            "message": "Verifying engine package"
-        }),
-    )
-    .ok();
-
-    std::fs::rename(&partial_path, &target_path).map_err(|e| e.to_string())?;
-
+    std::fs::rename(&staging_dir, &target_dir).map_err(|error| {
+        format!("Antivirus or disk policy blocked the final atomic install: {error}")
+    })?;
+    emit_download_progress(
+        Some(&app),
+        &kind,
+        "completed",
+        entry.compressed_size,
+        entry.compressed_size,
+        0,
+        0,
+        Some(0),
+        Some(0),
+        "Engine installed and ready",
+    );
     app.emit(
         "engine-download-completed",
         serde_json::json!({
-            "kind": kind,
-            "path": target_path.to_string_lossy(),
-            "sha256": hash,
-            "sizeBytes": downloaded
+            "kind": kind, "path": target_dir.join(&entry.entrypoint).to_string_lossy(),
+            "sha256": entry.sha256, "sizeBytes": entry.compressed_size
         }),
     )
     .ok();
-
     get_engine_status(app, Some(kind))
 }
 
-fn download_engine_asset(
-    app: &AppHandle,
-    client: &reqwest::blocking::Client,
-    output: &mut File,
-    package_hasher: &mut Sha256,
-    downloaded_total: &mut u64,
-    asset: EngineAssetDownload<'_>,
-) -> Result<(), String> {
-    let mut response = client.get(asset.url).send().map_err(|e| e.to_string())?;
-    if !response.status().is_success() {
-        return Err(format!(
-            "Engine download failed with HTTP {} from {}",
-            response.status(),
-            asset.url
-        ));
+fn validate_manifest_entry(entry: &EngineManifestEntry) -> Result<(), String> {
+    if entry.archive != "zip"
+        || entry.entrypoint.is_empty()
+        || entry.compressed_size == 0
+        || entry.unpacked_size == 0
+    {
+        return Err("Invalid EngineManifest v2: archive, entrypoint, compressed_size and unpacked_size are required.".to_string());
     }
+    if entry.architecture != "x86_64"
+        || Path::new(&entry.entrypoint).is_absolute()
+        || entry.entrypoint.contains("..")
+    {
+        return Err("This engine package has an invalid architecture or entrypoint.".to_string());
+    }
+    if entry
+        .model
+        .as_ref()
+        .and_then(|model| model.sha256.as_ref())
+        .is_none()
+    {
+        return Err(
+            "This engine package does not declare a bundled Whisper model checksum.".to_string(),
+        );
+    }
+    Ok(())
+}
 
-    if let Some(total) = response.content_length() {
-        if total != asset.expected_size {
-            return Err(format!(
-                "Engine asset size mismatch before download. Expected {} bytes, got {} bytes from {}.",
-                asset.expected_size, total, asset.url
-            ));
+#[allow(clippy::too_many_arguments)]
+fn download_resumable_asset(
+    app: Option<&AppHandle>,
+    client: &reqwest::blocking::Client,
+    path: &Path,
+    cancelled: &AtomicBool,
+    asset: EngineAssetDownload<'_>,
+    current_part: usize,
+    total_parts: usize,
+    completed_before: u64,
+) -> Result<(), String> {
+    if verify_file(
+        path,
+        asset.expected_size,
+        asset.expected_sha256.unwrap_or(""),
+    )
+    .is_ok()
+    {
+        return Ok(());
+    }
+    for attempt in 1..=5_u32 {
+        check_cancelled(cancelled)?;
+        let mut offset = path
+            .metadata()
+            .map(|meta| meta.len())
+            .unwrap_or(0)
+            .min(asset.expected_size);
+        let mut request = client.get(asset.url);
+        if offset > 0 {
+            request = request.header(reqwest::header::RANGE, format!("bytes={offset}-"));
+        }
+        match request.send() {
+            Ok(response) if response.status().is_success() => {
+                let resumed =
+                    offset > 0 && response.status() == reqwest::StatusCode::PARTIAL_CONTENT;
+                if offset > 0 && !resumed {
+                    offset = 0;
+                }
+                let mut output = OpenOptions::new()
+                    .create(true)
+                    .write(true)
+                    .read(true)
+                    .truncate(false)
+                    .open(path)
+                    .map_err(actionable_disk_error)?;
+                if resumed {
+                    output
+                        .seek(SeekFrom::End(0))
+                        .map_err(actionable_disk_error)?;
+                } else {
+                    output.set_len(0).map_err(actionable_disk_error)?;
+                }
+                let started = Instant::now();
+                let mut last_data = Instant::now();
+                let mut written = offset;
+                let mut last_emit = Instant::now() - Duration::from_secs(1);
+                let (sender, receiver) =
+                    std::sync::mpsc::sync_channel::<Result<Vec<u8>, String>>(2);
+                std::thread::spawn(move || {
+                    let mut response = response;
+                    let mut buffer = [0_u8; 256 * 1024];
+                    loop {
+                        match response.read(&mut buffer) {
+                            Ok(0) => {
+                                let _ = sender.send(Ok(Vec::new()));
+                                break;
+                            }
+                            Ok(read) => {
+                                if sender.send(Ok(buffer[..read].to_vec())).is_err() {
+                                    break;
+                                }
+                            }
+                            Err(error) => {
+                                let _ = sender.send(Err(error.to_string()));
+                                break;
+                            }
+                        }
+                    }
+                });
+                loop {
+                    check_cancelled(cancelled)?;
+                    match receiver.recv_timeout(Duration::from_millis(250)) {
+                        Ok(Ok(bytes)) if bytes.is_empty() => break,
+                        Ok(Ok(bytes)) => {
+                            last_data = Instant::now();
+                            output.write_all(&bytes).map_err(actionable_disk_error)?;
+                            written += bytes.len() as u64;
+                            if written > asset.expected_size {
+                                break;
+                            }
+                            if last_emit.elapsed() >= Duration::from_millis(250) {
+                                let elapsed = started.elapsed().as_secs_f64().max(0.001);
+                                let speed = ((written - offset) as f64 / elapsed) as u64;
+                                let total_downloaded = completed_before + written;
+                                let eta = asset
+                                    .package_size
+                                    .saturating_sub(total_downloaded)
+                                    .checked_div(speed);
+                                emit_download_progress(
+                                    app,
+                                    asset.kind,
+                                    "downloading",
+                                    total_downloaded,
+                                    asset.package_size,
+                                    current_part,
+                                    total_parts,
+                                    Some(speed),
+                                    eta,
+                                    asset.message,
+                                );
+                                last_emit = Instant::now();
+                            }
+                        }
+                        Ok(Err(error)) => {
+                            emit_download_progress(
+                                app,
+                                asset.kind,
+                                "retrying",
+                                completed_before + written,
+                                asset.package_size,
+                                current_part,
+                                total_parts,
+                                None,
+                                None,
+                                &format!("Network interrupted; retrying ({attempt}/5): {error}"),
+                            );
+                            break;
+                        }
+                        Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
+                            if last_data.elapsed() >= Duration::from_secs(60) {
+                                emit_download_progress(
+                                    app,
+                                    asset.kind,
+                                    "retrying",
+                                    completed_before + written,
+                                    asset.package_size,
+                                    current_part,
+                                    total_parts,
+                                    None,
+                                    None,
+                                    &format!(
+                                        "No data received for 60 seconds; retrying ({attempt}/5)"
+                                    ),
+                                );
+                                break;
+                            }
+                        }
+                        Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => break,
+                    }
+                }
+                output.flush().map_err(actionable_disk_error)?;
+                if verify_file(
+                    path,
+                    asset.expected_size,
+                    asset.expected_sha256.unwrap_or(""),
+                )
+                .is_ok()
+                {
+                    return Ok(());
+                }
+            }
+            Ok(response) => {
+                emit_download_progress(
+                    app,
+                    asset.kind,
+                    "retrying",
+                    completed_before + offset,
+                    asset.package_size,
+                    current_part,
+                    total_parts,
+                    None,
+                    None,
+                    &format!(
+                        "Server returned HTTP {}; retrying ({attempt}/5)",
+                        response.status()
+                    ),
+                );
+            }
+            Err(error) => {
+                emit_download_progress(
+                    app,
+                    asset.kind,
+                    "retrying",
+                    completed_before + offset,
+                    asset.package_size,
+                    current_part,
+                    total_parts,
+                    None,
+                    None,
+                    &format!("Network unavailable; retrying ({attempt}/5): {error}"),
+                );
+            }
+        }
+        if attempt < 5 {
+            for _ in 0..(1_u64 << (attempt - 1)) * 4 {
+                check_cancelled(cancelled)?;
+                std::thread::sleep(Duration::from_millis(250));
+            }
         }
     }
+    Err("Download failed after 5 attempts. Check your network, proxy, or antivirus and retry; valid partial data was preserved.".to_string())
+}
 
-    let mut chunk_hasher = Sha256::new();
-    let mut downloaded_asset = 0_u64;
-    let mut buffer = [0_u8; 1024 * 256];
-    let mut last_progress_update = Instant::now() - Duration::from_millis(250);
+#[allow(clippy::too_many_arguments)]
+fn emit_download_progress(
+    app: Option<&AppHandle>,
+    kind: &str,
+    stage: &str,
+    downloaded: u64,
+    total: u64,
+    current_part: usize,
+    total_parts: usize,
+    speed: Option<u64>,
+    eta: Option<u64>,
+    message: &str,
+) {
+    let attempt = if stage == "retrying" {
+        message
+            .split("retrying (")
+            .nth(1)
+            .and_then(|tail| tail.split('/').next())
+            .and_then(|value| value.parse::<u32>().ok())
+            .unwrap_or(1)
+    } else {
+        0
+    };
+    let Some(app) = app else { return };
+    app.emit(
+        "engine-download-progress",
+        serde_json::json!({
+            "kind": kind, "stage": stage, "currentPart": current_part, "totalParts": total_parts,
+            "attempt": attempt, "downloadedBytes": downloaded,
+            "totalBytes": total, "speedBytesPerSecond": speed, "etaSeconds": eta, "message": message
+        }),
+    )
+    .ok();
+}
 
+fn check_cancelled(cancelled: &AtomicBool) -> Result<(), String> {
+    if cancelled.load(AtomicOrdering::SeqCst) {
+        Err(
+            "Download cancelled. Valid partial data was preserved for the next attempt."
+                .to_string(),
+        )
+    } else {
+        Ok(())
+    }
+}
+
+fn sha256_file(path: &Path) -> Result<String, String> {
+    let mut file = File::open(path).map_err(|error| error.to_string())?;
+    let mut hasher = Sha256::new();
+    let mut buffer = [0_u8; 1024 * 1024];
     loop {
-        let read = response.read(&mut buffer).map_err(|e| e.to_string())?;
+        let read = file.read(&mut buffer).map_err(|error| error.to_string())?;
         if read == 0 {
             break;
         }
-        output
-            .write_all(&buffer[..read])
-            .map_err(|e| e.to_string())?;
-        package_hasher.update(&buffer[..read]);
-        chunk_hasher.update(&buffer[..read]);
-        downloaded_asset += read as u64;
-        *downloaded_total += read as u64;
+        hasher.update(&buffer[..read]);
+    }
+    Ok(format!("{:x}", hasher.finalize()))
+}
 
-        // A GPU package can contain several gigabytes. Emitting one IPC event
-        // per read saturates the WebView event queue, especially while the
-        // window is in the background, and makes Windows report the app as
-        // unresponsive when it regains focus.
-        if last_progress_update.elapsed() >= Duration::from_millis(250) {
-            app.emit(
-                "engine-download-progress",
-                serde_json::json!({
-                    "kind": asset.kind,
-                    "stage": "downloading",
-                    "downloadedBytes": *downloaded_total,
-                    "totalBytes": asset.package_size,
-                    "message": asset.message
-                }),
-            )
-            .ok();
-            last_progress_update = Instant::now();
+fn verify_file(path: &Path, size: u64, expected_hash: &str) -> Result<(), String> {
+    if path.metadata().map(|meta| meta.len()).unwrap_or(0) != size {
+        return Err("size mismatch".to_string());
+    }
+    let hash = sha256_file(path)?;
+    if !expected_hash.is_empty() && !hash.eq_ignore_ascii_case(expected_hash) {
+        return Err("checksum mismatch".to_string());
+    }
+    Ok(())
+}
+
+fn combine_chunks(
+    chunks: &[EngineManifestChunk],
+    dir: &Path,
+    package: &Path,
+) -> Result<(), String> {
+    let temp = package.with_extension("assembling");
+    let mut output = File::create(&temp).map_err(actionable_disk_error)?;
+    for chunk in chunks {
+        std::io::copy(
+            &mut File::open(dir.join(&chunk.file_name)).map_err(actionable_disk_error)?,
+            &mut output,
+        )
+        .map_err(actionable_disk_error)?;
+    }
+    output.flush().map_err(actionable_disk_error)?;
+    if package.exists() {
+        std::fs::remove_file(package).map_err(actionable_disk_error)?;
+    }
+    std::fs::rename(temp, package).map_err(actionable_disk_error)
+}
+
+fn extract_zip(
+    package: &Path,
+    destination: &Path,
+    expected_unpacked: u64,
+    cancelled: &AtomicBool,
+) -> Result<(), String> {
+    let file = File::open(package).map_err(actionable_disk_error)?;
+    let mut archive = zip::ZipArchive::new(file)
+        .map_err(|error| format!("Invalid engine ZIP archive: {error}"))?;
+    let mut unpacked = 0_u64;
+    for index in 0..archive.len() {
+        check_cancelled(cancelled)?;
+        let mut entry = archive.by_index(index).map_err(|error| error.to_string())?;
+        let relative = entry
+            .enclosed_name()
+            .ok_or_else(|| "Unsafe path in engine archive.".to_string())?;
+        let output_path = destination.join(relative);
+        if entry.is_dir() {
+            std::fs::create_dir_all(&output_path).map_err(actionable_disk_error)?;
+            continue;
+        }
+        if let Some(parent) = output_path.parent() {
+            std::fs::create_dir_all(parent).map_err(actionable_disk_error)?;
+        }
+        let mut output = File::create(&output_path).map_err(actionable_disk_error)?;
+        unpacked = unpacked
+            .checked_add(std::io::copy(&mut entry, &mut output).map_err(actionable_disk_error)?)
+            .ok_or_else(|| "Unpacked size overflow.".to_string())?;
+        if unpacked > expected_unpacked {
+            return Err("Archive expands beyond its declared unpacked_size.".to_string());
         }
     }
-
-    if downloaded_asset != asset.expected_size {
+    if unpacked != expected_unpacked {
         return Err(format!(
-            "Engine asset size mismatch. Expected {} bytes, got {} bytes from {}.",
-            asset.expected_size, downloaded_asset, asset.url
+            "Unpacked size mismatch: expected {expected_unpacked}, got {unpacked}."
         ));
     }
+    Ok(())
+}
 
-    if let Some(expected_hash) = asset.expected_sha256 {
-        let hash = chunk_hasher
-            .finalize()
-            .iter()
-            .map(|byte| format!("{:02x}", byte))
-            .collect::<String>();
-        if hash.to_lowercase() != expected_hash.to_lowercase() {
+fn directory_size(path: &Path) -> Result<u64, String> {
+    let mut total = 0_u64;
+    if !path.exists() {
+        return Ok(0);
+    }
+    for entry in std::fs::read_dir(path).map_err(actionable_disk_error)? {
+        let entry = entry.map_err(actionable_disk_error)?;
+        total = total.saturating_add(if entry.path().is_dir() {
+            directory_size(&entry.path())?
+        } else {
+            entry.metadata().map_err(actionable_disk_error)?.len()
+        });
+    }
+    Ok(total)
+}
+
+fn collect_files(root: &Path, current: &Path, files: &mut Vec<PathBuf>) -> Result<(), String> {
+    for entry in std::fs::read_dir(current).map_err(actionable_disk_error)? {
+        let entry = entry.map_err(actionable_disk_error)?;
+        if entry.path().is_dir() {
+            collect_files(root, &entry.path(), files)?;
+        } else {
+            files.push(
+                entry
+                    .path()
+                    .strip_prefix(root)
+                    .map_err(|error| error.to_string())?
+                    .to_path_buf(),
+            );
+        }
+    }
+    Ok(())
+}
+
+fn directory_sha256(root: &Path) -> Result<String, String> {
+    let mut files = Vec::new();
+    collect_files(root, root, &mut files)?;
+    files.sort();
+    let mut hasher = Sha256::new();
+    for relative in files {
+        hasher.update(relative.to_string_lossy().replace('\\', "/").as_bytes());
+        hasher.update([0]);
+        let mut file = File::open(root.join(relative)).map_err(actionable_disk_error)?;
+        let mut buffer = [0_u8; 1024 * 1024];
+        loop {
+            let read = file.read(&mut buffer).map_err(actionable_disk_error)?;
+            if read == 0 {
+                break;
+            }
+            hasher.update(&buffer[..read]);
+        }
+    }
+    Ok(format!("{:x}", hasher.finalize()))
+}
+
+fn verify_bundled_model(root: &Path, model: Option<&EngineModelManifest>) -> Result<(), String> {
+    let model = model
+        .ok_or_else(|| "The engine manifest does not include Whisper base metadata.".to_string())?;
+    if model.name != "base" || model.relative_path.contains("..") {
+        return Err("The engine contains invalid Whisper model metadata.".to_string());
+    }
+    let model_path = root.join(&model.relative_path);
+    let actual_size = directory_size(&model_path)?;
+    if !model_path.is_dir() || actual_size != model.size_bytes {
+        return Err("The bundled Whisper base model is missing or incomplete.".to_string());
+    }
+    // The archive checksum authenticates every model byte; the per-model checksum remains
+    // in the installation contract for independent release smoke tests.
+    let expected_hash = model.sha256.as_deref().unwrap_or("");
+    if expected_hash.len() != 64
+        || !directory_sha256(&model_path)?.eq_ignore_ascii_case(expected_hash)
+    {
+        return Err("The bundled model checksum is invalid.".to_string());
+    }
+    Ok(())
+}
+
+fn actionable_disk_error(error: impl std::fmt::Display) -> String {
+    format!("Disk operation failed: {error}. Check free space, permissions, and antivirus quarantine, then retry.")
+}
+
+#[cfg(unix)]
+fn make_executable(path: &Path) -> Result<(), String> {
+    use std::os::unix::fs::PermissionsExt;
+    let mut permissions = path
+        .metadata()
+        .map_err(actionable_disk_error)?
+        .permissions();
+    permissions.set_mode(permissions.mode() | 0o755);
+    std::fs::set_permissions(path, permissions).map_err(actionable_disk_error)
+}
+#[cfg(not(unix))]
+fn make_executable(_path: &Path) -> Result<(), String> {
+    Ok(())
+}
+
+fn validate_sidecar_architecture(path: &Path) -> Result<(), String> {
+    let mut file = File::open(path).map_err(actionable_disk_error)?;
+    let mut header = [0_u8; 4096];
+    let read = file.read(&mut header).map_err(actionable_disk_error)?;
+    if read < 8 {
+        return Err("The sidecar executable is empty or truncated.".to_string());
+    }
+    #[cfg(target_os = "macos")]
+    {
+        let is_macho64 = header[..4] == [0xcf, 0xfa, 0xed, 0xfe];
+        let expected_cpu = if cfg!(target_arch = "aarch64") {
+            [0x0c, 0x00, 0x00, 0x01]
+        } else {
+            [0x07, 0x00, 0x00, 0x01]
+        };
+        if !is_macho64 || header[4..8] != expected_cpu {
             return Err(format!(
-                "Engine asset integrity check failed for {}. The downloaded chunk did not match the expected SHA-256.",
-                asset.url
+                "The bundled sidecar architecture does not match {}.",
+                std::env::consts::ARCH
             ));
         }
     }
-
+    #[cfg(target_os = "windows")]
+    {
+        if read < 64 || &header[..2] != b"MZ" {
+            return Err("The engine is not a valid Windows executable.".to_string());
+        }
+        let pe_offset = u32::from_le_bytes(header[60..64].try_into().unwrap()) as usize;
+        if pe_offset + 6 > read
+            || &header[pe_offset..pe_offset + 4] != b"PE\0\0"
+            || header[pe_offset + 4..pe_offset + 6] != [0x64, 0x86]
+        {
+            return Err("The engine executable is not Windows x86_64.".to_string());
+        }
+    }
     Ok(())
+}
+
+#[cfg(test)]
+mod engine_download_tests {
+    use super::*;
+    use std::net::TcpListener;
+
+    fn temp_test_dir(name: &str) -> PathBuf {
+        let unique = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let path = std::env::temp_dir().join(format!("ai-notetaking-{name}-{unique}"));
+        std::fs::create_dir_all(&path).unwrap();
+        path
+    }
+
+    fn sha256_bytes(bytes: &[u8]) -> String {
+        let mut hasher = Sha256::new();
+        hasher.update(bytes);
+        format!("{:x}", hasher.finalize())
+    }
+
+    fn serve_once(
+        status: &'static str,
+        body: &'static [u8],
+        expected_header: Option<&'static str>,
+    ) -> (String, std::thread::JoinHandle<()>) {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let address = listener.local_addr().unwrap();
+        let handle = std::thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            let mut request = Vec::new();
+            let mut buffer = [0_u8; 1024];
+            while !request.windows(4).any(|window| window == b"\r\n\r\n") {
+                let read = stream.read(&mut buffer).unwrap();
+                if read == 0 {
+                    break;
+                }
+                request.extend_from_slice(&buffer[..read]);
+            }
+            if let Some(header) = expected_header {
+                assert!(String::from_utf8_lossy(&request)
+                    .to_ascii_lowercase()
+                    .contains(&header.to_ascii_lowercase()));
+            }
+            write!(
+                stream,
+                "HTTP/1.1 {status}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                body.len()
+            )
+            .unwrap();
+            stream.write_all(body).unwrap();
+        });
+        (format!("http://{address}/engine"), handle)
+    }
+
+    fn test_client() -> reqwest::blocking::Client {
+        reqwest::blocking::Client::builder()
+            .connect_timeout(Duration::from_secs(2))
+            .timeout(None)
+            .build()
+            .unwrap()
+    }
+
+    #[test]
+    fn v1_manifest_is_read_only_compatibility() {
+        let manifest: EngineManifest = serde_json::from_str(
+            r#"{"version":"0.3.1","engines":[{"kind":"cpu","file_name":"engine.exe","sha256":"00","size_bytes":12}]}"#,
+        ).unwrap();
+        assert_eq!(manifest.schema_version, 0);
+        assert_eq!(manifest.engines[0].compressed_size, 12);
+    }
+
+    #[test]
+    fn v2_manifest_rejects_missing_archive_contract() {
+        let entry: EngineManifestEntry = serde_json::from_str(
+            r#"{"kind":"cpu","file_name":"engine.zip","sha256":"00","compressed_size":12,"unpacked_size":30}"#,
+        ).unwrap();
+        assert!(validate_manifest_entry(&entry)
+            .unwrap_err()
+            .contains("EngineManifest v2"));
+    }
+
+    #[test]
+    fn checksum_and_size_must_both_match() {
+        let dir = temp_test_dir("checksum");
+        let file = dir.join("asset.bin");
+        std::fs::write(&file, b"recoverable").unwrap();
+        let hash = sha256_file(&file).unwrap();
+        assert!(verify_file(&file, 11, &hash).is_ok());
+        assert!(verify_file(&file, 10, &hash).is_err());
+        assert!(verify_file(&file, 11, &"0".repeat(64)).is_err());
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn controlled_http_download_completes_and_verifies() {
+        let body = b"complete engine archive";
+        let (url, server) = serve_once("200 OK", body, None);
+        let dir = temp_test_dir("http-normal");
+        let path = dir.join("engine.zip");
+        let hash = sha256_bytes(body);
+        download_resumable_asset(
+            None,
+            &test_client(),
+            &path,
+            &AtomicBool::new(false),
+            EngineAssetDownload {
+                kind: "cpu",
+                url: &url,
+                expected_size: body.len() as u64,
+                expected_sha256: Some(&hash),
+                package_size: body.len() as u64,
+                message: "test",
+            },
+            1,
+            1,
+            0,
+        )
+        .unwrap();
+        assert_eq!(std::fs::read(&path).unwrap(), body);
+        server.join().unwrap();
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn controlled_http_range_resumes_partial_file() {
+        let full = b"hello world";
+        let (url, server) = serve_once("206 Partial Content", b" world", Some("Range: bytes=5-"));
+        let dir = temp_test_dir("http-range");
+        let path = dir.join("engine.zip");
+        std::fs::write(&path, b"hello").unwrap();
+        let hash = sha256_bytes(full);
+        download_resumable_asset(
+            None,
+            &test_client(),
+            &path,
+            &AtomicBool::new(false),
+            EngineAssetDownload {
+                kind: "cpu",
+                url: &url,
+                expected_size: full.len() as u64,
+                expected_sha256: Some(&hash),
+                package_size: full.len() as u64,
+                message: "test",
+            },
+            1,
+            1,
+            0,
+        )
+        .unwrap();
+        assert_eq!(std::fs::read(&path).unwrap(), full);
+        server.join().unwrap();
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn server_without_range_restarts_file_instead_of_appending() {
+        let full = b"fresh complete archive";
+        let (url, server) = serve_once("200 OK", full, Some("Range: bytes=5-"));
+        let dir = temp_test_dir("http-no-range");
+        let path = dir.join("engine.zip");
+        std::fs::write(&path, b"stale").unwrap();
+        let hash = sha256_bytes(full);
+        download_resumable_asset(
+            None,
+            &test_client(),
+            &path,
+            &AtomicBool::new(false),
+            EngineAssetDownload {
+                kind: "cpu",
+                url: &url,
+                expected_size: full.len() as u64,
+                expected_sha256: Some(&hash),
+                package_size: full.len() as u64,
+                message: "test",
+            },
+            1,
+            1,
+            0,
+        )
+        .unwrap();
+        assert_eq!(std::fs::read(&path).unwrap(), full);
+        server.join().unwrap();
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn cancelled_download_does_not_discard_partial_data() {
+        let dir = temp_test_dir("http-cancel");
+        let path = dir.join("engine.zip");
+        std::fs::write(&path, b"valid partial bytes").unwrap();
+        let cancelled = AtomicBool::new(true);
+        let result = download_resumable_asset(
+            None,
+            &test_client(),
+            &path,
+            &cancelled,
+            EngineAssetDownload {
+                kind: "cpu",
+                url: "http://127.0.0.1:1/unused",
+                expected_size: 100,
+                expected_sha256: Some(&"0".repeat(64)),
+                package_size: 100,
+                message: "test",
+            },
+            1,
+            1,
+            0,
+        );
+        assert!(result.unwrap_err().contains("cancelled"));
+        assert_eq!(std::fs::read(&path).unwrap(), b"valid partial bytes");
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn zip_extraction_rejects_declared_size_mismatch_and_honors_cancel() {
+        let dir = temp_test_dir("zip");
+        let archive_path = dir.join("engine.zip");
+        let file = File::create(&archive_path).unwrap();
+        let mut archive = zip::ZipWriter::new(file);
+        archive
+            .start_file(
+                "ai-notetaking-engine.exe",
+                zip::write::SimpleFileOptions::default(),
+            )
+            .unwrap();
+        archive.write_all(b"binary").unwrap();
+        archive.finish().unwrap();
+
+        let cancelled = AtomicBool::new(false);
+        assert!(extract_zip(&archive_path, &dir.join("ok"), 6, &cancelled).is_ok());
+        assert!(extract_zip(&archive_path, &dir.join("bad-size"), 7, &cancelled).is_err());
+        cancelled.store(true, AtomicOrdering::SeqCst);
+        assert!(
+            extract_zip(&archive_path, &dir.join("cancelled"), 6, &cancelled)
+                .unwrap_err()
+                .contains("cancelled")
+        );
+        std::fs::remove_dir_all(dir).unwrap();
+    }
 }
 
 #[tauri::command]
@@ -551,17 +1468,54 @@ fn check_ollama() -> Result<OllamaStatus, String> {
                         .collect::<Vec<_>>()
                 })
                 .unwrap_or_default();
+            let active_models = reqwest::blocking::Client::builder()
+                .timeout(Duration::from_secs(2))
+                .build()
+                .ok()
+                .and_then(|client| client.get("http://localhost:11434/api/ps").send().ok())
+                .and_then(|response| response.json::<serde_json::Value>().ok())
+                .and_then(|value| {
+                    value
+                        .get("models")
+                        .and_then(|items| items.as_array())
+                        .cloned()
+                })
+                .map(|items| {
+                    items
+                        .into_iter()
+                        .filter_map(|item| {
+                            item.get("name")
+                                .and_then(|name| name.as_str())
+                                .map(str::to_string)
+                        })
+                        .collect::<Vec<_>>()
+                })
+                .unwrap_or_default();
             Ok(OllamaStatus {
                 installed: true,
                 running: true,
                 models,
-                message: "Ollama is running.".to_string(),
+                state: if active_models.is_empty() {
+                    "ready"
+                } else {
+                    "loading_model"
+                }
+                .to_string(),
+                message: if active_models.is_empty() {
+                    "Ollama is ready."
+                } else {
+                    "Ollama has an active model."
+                }
+                .to_string(),
+                active_models,
             })
         }
         _ => Ok(OllamaStatus {
             installed,
             running: false,
             models: Vec::new(),
+            active_models: Vec::new(),
+            state: "offline".to_string(),
             message: if !winget_available {
                 "Windows Package Manager (winget) is not available. Install Ollama manually from ollama.com/download, then open Ollama and re-check.".to_string()
             } else if installed {
@@ -1065,6 +2019,21 @@ fn open_logs_folder(app: AppHandle) -> Result<(), String> {
     Ok(())
 }
 
+#[tauri::command]
+fn get_runtime_diagnostics(state: State<'_, AppState>) -> Result<RuntimeDiagnostics, String> {
+    let status = state
+        .runtime_status
+        .lock()
+        .map_err(|_| "Runtime status is unavailable.")?
+        .clone();
+    let events = state
+        .diagnostics
+        .lock()
+        .map_err(|_| "Diagnostics are unavailable.")?
+        .clone();
+    Ok(RuntimeDiagnostics { status, events })
+}
+
 // ── 7. Settings popover window ────────────────────────────────
 // The popover is a separate frameless OS window (label: "popover"),
 // positioned above the compact widget by Rust. Toggled on each call.
@@ -1204,6 +2173,7 @@ fn migrate_settings_to_keychain(app: &tauri::App) {
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn spawn_and_supervise_python(
     app_handle: AppHandle,
     db: Arc<Mutex<Connection>>,
@@ -1211,6 +2181,8 @@ fn spawn_and_supervise_python(
     python_child: Arc<Mutex<Option<Child>>>,
     requested_engine_path: Option<PathBuf>,
     supervisor_gen: Arc<AtomicU64>,
+    diagnostics: Arc<Mutex<Vec<DiagnosticEvent>>>,
+    runtime_status: Arc<Mutex<serde_json::Value>>,
     my_gen: u64,
 ) {
     std::thread::spawn(move || {
@@ -1304,7 +2276,7 @@ fn spawn_and_supervise_python(
                         .env("AI_NOTETAKING_DATA_DIR", &app_data_dir)
                         .stdin(Stdio::piped())
                         .stdout(Stdio::piped())
-                        .stderr(Stdio::inherit())
+                        .stderr(Stdio::piped())
                         .spawn()
                 } else {
                     Command::new("bash")
@@ -1313,17 +2285,36 @@ fn spawn_and_supervise_python(
                         .env("AI_NOTETAKING_DATA_DIR", &app_data_dir)
                         .stdin(Stdio::piped())
                         .stdout(Stdio::piped())
-                        .stderr(Stdio::inherit())
+                        .stderr(Stdio::piped())
                         .spawn()
                 }
             } else if let Some(path) = sidecar_path {
                 println!("[Supervisor] Spawning production sidecar: {:?}", path);
-                Command::new(path)
-                    .env("AI_NOTETAKING_DATA_DIR", &app_data_dir)
-                    .stdin(Stdio::piped())
-                    .stdout(Stdio::piped())
-                    .stderr(Stdio::inherit())
-                    .spawn()
+                let audio_tap_name = if cfg!(target_arch = "aarch64") {
+                    "audio-tap-aarch64-apple-darwin"
+                } else {
+                    "audio-tap-x86_64-apple-darwin"
+                };
+                let audio_tap = std::env::current_exe()
+                    .ok()
+                    .and_then(|executable| {
+                        executable
+                            .parent()
+                            .map(|directory| directory.join(audio_tap_name))
+                    })
+                    .filter(|candidate| candidate.is_file())
+                    .unwrap_or_else(|| project_dir.join(audio_tap_name));
+                match validate_sidecar_architecture(&path).and_then(|_| make_executable(&path)) {
+                    Ok(()) => Command::new(path)
+                        .env("AI_NOTETAKING_DATA_DIR", &app_data_dir)
+                        .env("AI_NOTETAKING_REQUIRE_BUNDLED_MODEL", "1")
+                        .env("AI_NOTETAKING_AUDIO_TAP_PATH", audio_tap)
+                        .stdin(Stdio::piped())
+                        .stdout(Stdio::piped())
+                        .stderr(Stdio::piped())
+                        .spawn(),
+                    Err(error) => Err(std::io::Error::new(std::io::ErrorKind::InvalidData, error)),
+                }
             } else {
                 Err(std::io::Error::new(
                     std::io::ErrorKind::NotFound,
@@ -1331,6 +2322,8 @@ fn spawn_and_supervise_python(
                 ))
             };
 
+            let mut failure_cause = "spawn_failed".to_string();
+            let mut failure_exit_code = None;
             match child_res {
                 Ok(mut child) => {
                     // Re-check before touching shared state: if another
@@ -1347,6 +2340,10 @@ fn spawn_and_supervise_python(
 
                     let stdin = child.stdin.take().expect("Failed to open Python stdin");
                     let stdout = child.stdout.take().expect("Failed to open Python stdout");
+                    let stderr = child.stderr.take();
+                    let healthy = Arc::new(AtomicBool::new(false));
+                    let model_settled = Arc::new(AtomicBool::new(false));
+                    let started_at = Instant::now();
 
                     // Update global AppState
                     {
@@ -1358,33 +2355,154 @@ fn spawn_and_supervise_python(
                         *child_lock = Some(child);
                     }
 
-                    // Reset restart attempts on successful startup
-                    restart_attempts = 0;
-                    app_handle
-                        .emit(
-                            "python-event",
-                            serde_json::json!({
-                                "event": "SIDECAR_UP",
-                                "data": {}
-                            })
-                            .to_string(),
-                        )
-                        .ok();
+                    if let Ok(mut status) = runtime_status.lock() {
+                        status["sidecar"] = serde_json::json!("starting");
+                        status["operationStartedAt"] =
+                            serde_json::json!(chrono::Utc::now().to_rfc3339());
+                    }
+
+                    if let Some(stderr) = stderr {
+                        let diagnostics_for_stderr = Arc::clone(&diagnostics);
+                        std::thread::spawn(move || {
+                            for line in BufReader::new(stderr).lines().map_while(Result::ok) {
+                                let message = sanitized_diagnostic_message(&line);
+                                tracing::warn!(target: "sidecar", "{}", message);
+                                push_diagnostic(
+                                    &diagnostics_for_stderr,
+                                    DiagnosticEvent {
+                                        timestamp: chrono::Utc::now().to_rfc3339(),
+                                        source: "sidecar".to_string(),
+                                        level: "warning".to_string(),
+                                        code: "SIDECAR_STDERR".to_string(),
+                                        message,
+                                        attempt: None,
+                                        exit_code: None,
+                                    },
+                                );
+                            }
+                        });
+                    }
 
                     // Start the stdout reader thread for this child
                     let app_handle_clone = app_handle.clone();
                     let db_clone = Arc::clone(&db);
                     let python_child_clone = Arc::clone(&python_child);
+                    let healthy_for_reader = Arc::clone(&healthy);
+                    let model_settled_for_reader = Arc::clone(&model_settled);
+                    let runtime_for_reader = Arc::clone(&runtime_status);
+                    let diagnostics_for_reader = Arc::clone(&diagnostics);
                     std::thread::spawn(move || {
                         let reader = BufReader::new(stdout);
                         for content in reader.lines().map_while(Result::ok) {
-                            if !content.contains("VAD_TELEMETRY") {
-                                println!("[PYTHON STDOUT] {}", content);
-                            }
-
                             // Parse JSON to check for DB-persisted events
                             if let Ok(json) = serde_json::from_str::<serde_json::Value>(&content) {
                                 let event_name = json["event"].as_str().unwrap_or("");
+                                if event_name != "VAD_TELEMETRY" {
+                                    tracing::info!(target: "sidecar", event = event_name, "sidecar event");
+                                }
+                                if event_name == "ENGINE_STATE" || event_name == "AI_RUNTIME_STATUS"
+                                {
+                                    if let Some(data) = json.get("data") {
+                                        if let Ok(mut status) = runtime_for_reader.lock() {
+                                            status["sidecar"] = serde_json::json!("running");
+                                            status["engine"] = data.clone();
+                                            if event_name == "AI_RUNTIME_STATUS" {
+                                                status["provider"] = data
+                                                    .get("provider")
+                                                    .cloned()
+                                                    .unwrap_or(serde_json::Value::Null);
+                                                status["model"] = data
+                                                    .get("model")
+                                                    .cloned()
+                                                    .unwrap_or(serde_json::Value::Null);
+                                                status["elapsedMs"] = data
+                                                    .get("elapsed_ms")
+                                                    .cloned()
+                                                    .unwrap_or(serde_json::json!(0));
+                                                if data
+                                                    .get("provider")
+                                                    .and_then(|value| value.as_str())
+                                                    == Some("ollama")
+                                                {
+                                                    status["ollama"] = data
+                                                        .get("state")
+                                                        .cloned()
+                                                        .unwrap_or(serde_json::json!("offline"));
+                                                }
+                                            }
+                                            if let Some(phase) =
+                                                data.get("phase").and_then(|value| value.as_str())
+                                            {
+                                                status["audio"] = serde_json::json!(if phase
+                                                    == "audio_ready"
+                                                    || phase == "model_loading"
+                                                    || phase == "transcription_ready"
+                                                {
+                                                    "ready"
+                                                } else if phase == "failed" {
+                                                    "failed"
+                                                } else {
+                                                    "pending"
+                                                });
+                                                status["whisper"] = serde_json::json!(if phase
+                                                    == "transcription_ready"
+                                                {
+                                                    "ready"
+                                                } else if phase == "degraded" || phase == "failed" {
+                                                    "failed"
+                                                } else {
+                                                    "loading"
+                                                });
+                                                if phase == "audio_ready"
+                                                    && !healthy_for_reader
+                                                        .swap(true, AtomicOrdering::SeqCst)
+                                                {
+                                                    app_handle_clone.emit("python-event", serde_json::json!({"event":"SIDECAR_UP","data":{"readiness":"audio_ready"}}).to_string()).ok();
+                                                }
+                                                if phase == "transcription_ready"
+                                                    || phase == "degraded"
+                                                    || phase == "failed"
+                                                {
+                                                    model_settled_for_reader
+                                                        .store(true, AtomicOrdering::SeqCst);
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+                                if event_name == "DIAGNOSTIC_EVENT" {
+                                    let data = json
+                                        .get("data")
+                                        .cloned()
+                                        .unwrap_or_else(|| serde_json::json!({}));
+                                    push_diagnostic(
+                                        &diagnostics_for_reader,
+                                        DiagnosticEvent {
+                                            timestamp: chrono::Utc::now().to_rfc3339(),
+                                            source: "python".to_string(),
+                                            level: data
+                                                .get("level")
+                                                .and_then(|v| v.as_str())
+                                                .unwrap_or("info")
+                                                .to_string(),
+                                            code: data
+                                                .get("code")
+                                                .and_then(|v| v.as_str())
+                                                .unwrap_or("RUNTIME_EVENT")
+                                                .to_string(),
+                                            message: sanitized_diagnostic_message(
+                                                data.get("message")
+                                                    .and_then(|v| v.as_str())
+                                                    .unwrap_or("Runtime state changed."),
+                                            ),
+                                            attempt: data
+                                                .get("attempt")
+                                                .and_then(|v| v.as_u64())
+                                                .map(|v| v as u32),
+                                            exit_code: None,
+                                        },
+                                    );
+                                }
 
                                 // Save newly generated meeting notes directly to DB
                                 // (bypasses fragile frontend roundtrip that can lose data
@@ -1580,6 +2698,41 @@ fn spawn_and_supervise_python(
                         }
                     });
 
+                    let app_for_model_watchdog = app_handle.clone();
+                    let runtime_for_model_watchdog = Arc::clone(&runtime_status);
+                    let diagnostics_for_model_watchdog = Arc::clone(&diagnostics);
+                    let generation_for_model_watchdog = Arc::clone(&supervisor_gen);
+                    std::thread::spawn(move || {
+                        for _ in 0..180 {
+                            if model_settled.load(AtomicOrdering::SeqCst)
+                                || generation_for_model_watchdog.load(AtomicOrdering::SeqCst)
+                                    != my_gen
+                            {
+                                return;
+                            }
+                            std::thread::sleep(Duration::from_secs(1));
+                        }
+                        if let Ok(mut status) = runtime_for_model_watchdog.lock() {
+                            status["whisper"] = serde_json::json!("failed");
+                        }
+                        push_diagnostic(
+                            &diagnostics_for_model_watchdog,
+                            DiagnosticEvent {
+                                timestamp: chrono::Utc::now().to_rfc3339(),
+                                source: "watchdog".to_string(),
+                                level: "error".to_string(),
+                                code: "MODEL_READINESS_TIMEOUT".to_string(),
+                                message: "Whisper did not report readiness within 180 seconds."
+                                    .to_string(),
+                                attempt: None,
+                                exit_code: None,
+                            },
+                        );
+                        app_for_model_watchdog.emit("python-event", serde_json::json!({
+                            "event":"AI_RUNTIME_STATUS", "data": {"state":"failed", "provider":"local", "model":"base", "elapsed_ms":180000, "message":"Whisper readiness timed out. Retry the service."}
+                        }).to_string()).ok();
+                    });
+
                     // Wait for the child to exit
                     let mut child_to_wait = None;
                     {
@@ -1590,21 +2743,60 @@ fn spawn_and_supervise_python(
                         }
                     }
                     if let Some(mut c) = child_to_wait {
-                        match c.wait() {
-                            Ok(status) => {
-                                println!(
-                                    "[Supervisor] Python process exited with status: {}",
-                                    status
-                                );
-                            }
-                            Err(e) => {
-                                eprintln!(
-                                    "[Supervisor Error] Failed to wait on child process: {}",
-                                    e
-                                );
+                        loop {
+                            match c.try_wait() {
+                                Ok(Some(status)) => {
+                                    failure_cause = "process_exit".to_string();
+                                    failure_exit_code = status.code();
+                                    println!(
+                                        "[Supervisor] Python process exited with status: {}",
+                                        status
+                                    );
+                                    break;
+                                }
+                                Ok(None)
+                                    if !healthy.load(AtomicOrdering::SeqCst)
+                                        && started_at.elapsed() >= Duration::from_secs(45) =>
+                                {
+                                    failure_cause = "audio_readiness_timeout".to_string();
+                                    let _ = c.kill();
+                                    failure_exit_code =
+                                        c.wait().ok().and_then(|status| status.code());
+                                    break;
+                                }
+                                Ok(None) => std::thread::sleep(Duration::from_millis(200)),
+                                Err(error) => {
+                                    failure_cause = "process_wait_failed".to_string();
+                                    eprintln!(
+                                        "[Supervisor Error] Failed to wait on child process: {}",
+                                        error
+                                    );
+                                    break;
+                                }
                             }
                         }
                     }
+
+                    if healthy.load(AtomicOrdering::SeqCst)
+                        && started_at.elapsed() >= Duration::from_secs(30)
+                    {
+                        restart_attempts = 0;
+                    }
+                    if let Ok(mut status) = runtime_status.lock() {
+                        status["sidecar"] = serde_json::json!("down");
+                    }
+                    push_diagnostic(
+                        &diagnostics,
+                        DiagnosticEvent {
+                            timestamp: chrono::Utc::now().to_rfc3339(),
+                            source: "supervisor".to_string(),
+                            level: "error".to_string(),
+                            code: "SIDECAR_EXIT".to_string(),
+                            message: "The transcription service exited unexpectedly.".to_string(),
+                            attempt: Some(restart_attempts + 1),
+                            exit_code: failure_exit_code,
+                        },
+                    );
 
                     // Ensure the stdin handle is cleared
                     {
@@ -1628,13 +2820,17 @@ fn spawn_and_supervise_python(
                             "python-event",
                             serde_json::json!({
                                 "event": "SIDECAR_DOWN",
-                                "data": {}
+                                "data": { "cause": failure_cause, "exitCode": failure_exit_code, "attempt": restart_attempts + 1 }
                             })
                             .to_string(),
                         )
                         .ok();
                 }
                 Err(e) => {
+                    failure_cause = format!(
+                        "spawn_failed: {}",
+                        sanitized_diagnostic_message(&e.to_string())
+                    );
                     eprintln!("[Supervisor Error] Failed to spawn Python sidecar: {}", e);
                     app_handle
                         .emit(
@@ -1660,7 +2856,7 @@ fn spawn_and_supervise_python(
                         "python-event",
                         serde_json::json!({
                             "event": "SIDECAR_FAILED",
-                            "data": {}
+                            "data": { "cause": failure_cause, "exitCode": failure_exit_code, "attempt": restart_attempts }
                         })
                         .to_string(),
                     )
@@ -1720,13 +2916,19 @@ fn start_sidecar(
         Arc::clone(&state.python_child),
         engine_path,
         Arc::clone(&state.supervisor_gen),
+        Arc::clone(&state.diagnostics),
+        Arc::clone(&state.runtime_status),
         my_gen,
     );
     Ok(())
 }
 
 #[tauri::command]
-fn reconnect_sidecar(app: AppHandle, state: State<'_, AppState>) -> Result<(), String> {
+fn reconnect_sidecar(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    kind: Option<String>,
+) -> Result<(), String> {
     println!("[RUST INFO] Manual sidecar reconnection triggered.");
     // Clear any existing child just in case
     {
@@ -1740,6 +2942,22 @@ fn reconnect_sidecar(app: AppHandle, state: State<'_, AppState>) -> Result<(), S
         *stdin_lock = None;
     }
 
+    let engine_path = if cfg!(debug_assertions) {
+        None
+    } else {
+        let preferred = kind.unwrap_or_else(|| "cpu".to_string());
+        Some(
+            find_downloaded_engine(&app, &preferred)
+                .or_else(|| {
+                    find_downloaded_engine(&app, if preferred == "cpu" { "gpu" } else { "cpu" })
+                })
+                .or_else(|| find_bundled_engine(&app))
+                .ok_or_else(|| {
+                    "No complete engine installation is available to retry.".to_string()
+                })?,
+        )
+    };
+
     // Spawn supervisor thread under a fresh generation (retires the old one)
     let my_gen = state.supervisor_gen.fetch_add(1, AtomicOrdering::SeqCst) + 1;
     spawn_and_supervise_python(
@@ -1747,8 +2965,10 @@ fn reconnect_sidecar(app: AppHandle, state: State<'_, AppState>) -> Result<(), S
         Arc::clone(&state.db),
         Arc::clone(&state.python_stdin),
         Arc::clone(&state.python_child),
-        None,
+        engine_path,
         Arc::clone(&state.supervisor_gen),
+        Arc::clone(&state.diagnostics),
+        Arc::clone(&state.runtime_status),
         my_gen,
     );
     Ok(())
@@ -1857,6 +3077,12 @@ pub fn run() {
                 python_stdin: Arc::new(Mutex::new(None)),
                 python_child: Arc::new(Mutex::new(None)),
                 supervisor_gen: Arc::new(AtomicU64::new(0)),
+                engine_download: Arc::new(Mutex::new(None)),
+                diagnostics: Arc::new(Mutex::new(Vec::new())),
+                runtime_status: Arc::new(Mutex::new(serde_json::json!({
+                    "sidecar": "stopped", "audio": "pending", "whisper": "pending",
+                    "ollama": "offline", "operationStartedAt": chrono::Utc::now().to_rfc3339()
+                }))),
             });
 
             // 2. Initialize Daily Rotating Logs
@@ -1949,6 +3175,8 @@ pub fn run() {
             trigger_index_backfill,
             get_engine_status,
             download_engine,
+            cancel_engine_download,
+            get_engine_capabilities,
             check_ollama,
             install_ollama_winget,
             pull_ollama_model,
@@ -1958,6 +3186,7 @@ pub fn run() {
             start_sidecar,
             reconnect_sidecar,
             open_logs_folder,
+            get_runtime_diagnostics,
         ]);
 
     let app = builder

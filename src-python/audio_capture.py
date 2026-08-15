@@ -911,13 +911,15 @@ class MacosSystemAudioMixer:
         import platform as _platform
         arch = _platform.machine()  # arm64 or x86_64
         name = f"audio-tap-{arch}-apple-darwin"
+        configured = os.environ.get("AI_NOTETAKING_AUDIO_TAP_PATH")
         # When running from Tauri: binary is next to the executable
         candidates = [
+            configured,
             os.path.join(os.path.dirname(os.path.abspath(sys.executable)), name),
             os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", name),
             os.path.join(os.path.dirname(os.path.abspath(__file__)), name),
         ]
         for p in candidates:
-            if os.path.exists(p):
+            if p and os.path.exists(p):
                 return os.path.abspath(p)
         return None

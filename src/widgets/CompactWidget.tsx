@@ -20,7 +20,7 @@ export function CompactWidget({
 }) {
   const { settings } = useSettings();
   const { isLG, waveColor } = useTheme();
-  const { isRecording, recordingSeconds, audioLevel, micLevel, systemLevel, toggleRecording } = useRecording();
+  const { isRecording, recordingSeconds, audioLevel, micLevel, systemLevel, transcriptionReady, toggleRecording } = useRecording();
   
   const isWin = detectOS() === "win";
 
@@ -59,7 +59,8 @@ export function CompactWidget({
           <button
             className={`record-btn-pill ${isRecording ? "recording" : ""}`}
             onClick={toggleRecording}
-            title={isRecording ? "Stop Recording" : "Start Recording"}
+            disabled={!isRecording && !transcriptionReady}
+            title={isRecording ? "Stop Recording" : transcriptionReady ? "Start Recording" : "Whisper is still loading"}
             style={isRecording ? { transform: `scale(${1 + audioLevel * 0.12})`, transition: "transform 80ms ease-out" } : undefined}
           >
             {isRecording ? <span className="stop-square" /> : <span className="record-circle" />}

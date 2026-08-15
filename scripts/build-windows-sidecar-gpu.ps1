@@ -10,8 +10,8 @@ $repoRoot = Split-Path -Parent $PSScriptRoot
 $pythonRoot = Join-Path $repoRoot "src-python"
 $venv = Join-Path $pythonRoot ".venv-sidecar-gpu"
 $venvPython = Join-Path $venv "Scripts\python.exe"
-$artifact = Join-Path $pythonRoot "dist\ai-notetaking-engine.exe"
-$destination = Join-Path $repoRoot "src-tauri\binaries\ai-notetaking-engine-windows-x64-gpu.exe"
+$artifact = Join-Path $pythonRoot "dist\ai-notetaking-engine"
+$destination = Join-Path $repoRoot "src-tauri\binaries\ai-notetaking-engine-windows-x64-gpu.zip"
 
 if (-not $Python) {
     $candidates = @(
@@ -43,6 +43,10 @@ if (-not (Test-Path -LiteralPath $venvPython)) {
 & $venvPython -m pip install -r (Join-Path $pythonRoot "requirements.txt")
 & $venvPython -m pip install pyinstaller==6.16.0
 
+$modelRoot = Join-Path $pythonRoot "models\whisper"
+New-Item -ItemType Directory -Force -Path $modelRoot | Out-Null
+& $venvPython -c "import whisperx; whisperx.load_model('base', 'cpu', compute_type='int8', download_root=r'$modelRoot')"
+
 $cudaVersion = & $venvPython -c "import torch; print(torch.version.cuda or '')"
 if (-not $cudaVersion.Trim()) {
     throw "GPU sidecar build does not contain CUDA Torch. Delete $venv and rebuild."
@@ -55,14 +59,20 @@ try {
     Pop-Location
 }
 
-if (-not (Test-Path -LiteralPath $artifact)) {
+if (-not (Test-Path -LiteralPath (Join-Path $artifact "ai-notetaking-engine.exe"))) {
     throw "PyInstaller did not produce $artifact"
 }
 
-$sizeMiB = [math]::Round((Get-Item -LiteralPath $artifact).Length / 1MB, 1)
+& (Join-Path $artifact "ai-notetaking-engine.exe") --self-test
+if ($LASTEXITCODE -ne 0) { throw "GPU engine self-test failed with exit code $LASTEXITCODE" }
+
+$unpackedBytes = (Get-ChildItem -LiteralPath $artifact -File -Recurse | Measure-Object -Property Length -Sum).Sum
+$sizeMiB = [math]::Round($unpackedBytes / 1MB, 1)
 if ($sizeMiB -gt $MaxSizeMiB) {
     throw "Sidecar is $sizeMiB MiB; release budget is $MaxSizeMiB MiB."
 }
 
-Copy-Item -LiteralPath $artifact -Destination $destination -Force
-Write-Host "Built GPU sidecar: $destination ($sizeMiB MiB, CUDA $cudaVersion)"
+if (Test-Path -LiteralPath $destination) { Remove-Item -LiteralPath $destination -Force }
+Compress-Archive -Path (Join-Path $artifact "*") -DestinationPath $destination -CompressionLevel Optimal
+$compressedMiB = [math]::Round((Get-Item -LiteralPath $destination).Length / 1MB, 1)
+Write-Host "Built GPU sidecar: $destination ($compressedMiB MiB compressed, $sizeMiB MiB unpacked, CUDA $cudaVersion)"

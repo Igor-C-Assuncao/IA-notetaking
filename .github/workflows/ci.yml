@@ -17,19 +17,19 @@ jobs:
 
     steps:
       - name: Checkout Repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
 
       # ── 1. Environments Setup ──────────────────────────────────────
-      - name: Setup Node.js (v20)
-        uses: actions/setup-node@v4
+      - name: Setup Node.js (v24)
+        uses: actions/setup-node@v5
         with:
-          node-version: 20
+          node-version: 24
           cache: 'npm'
 
-      - name: Setup Python (3.11)
-        uses: actions/setup-python@v5
+      - name: Setup Python (3.12)
+        uses: actions/setup-python@v6
         with:
-          python-version: '3.11'
+          python-version: '3.12'
           cache: 'pip'
 
       - name: Setup Rust Stable

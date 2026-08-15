@@ -7,7 +7,7 @@ authors:
     given-names: "Igor"
 repository-code: "https://github.com/Igor-C-Assuncao/IA-notetaking"
 license: Apache-2.0
-version: 0.3.1
+version: 0.3.2
 abstract: "An open-source, invisible, privacy-first AI notetaker for meetings. Captures microphone and system (loopback) audio, then generates transcripts and structured summaries locally."
 keywords:
   - meeting-notes

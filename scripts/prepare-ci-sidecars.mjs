@@ -23,6 +23,16 @@ if (!targetTriple) {
 const binariesDir = path.resolve("src-tauri", "binaries");
 fs.mkdirSync(binariesDir, { recursive: true });
 
+if (process.platform === "darwin") {
+  const engineDir = path.resolve("src-python", "dist", "ai-notetaking-engine");
+  fs.mkdirSync(engineDir, { recursive: true });
+  const enginePath = path.join(engineDir, "ai-notetaking-engine");
+  if (!fs.existsSync(enginePath)) {
+    fs.writeFileSync(enginePath, "#!/bin/sh\nexit 0\n", { mode: 0o755 });
+    console.log(`[sidecar-ci] Created onedir smoke placeholder ${enginePath}`);
+  }
+}
+
 for (const baseName of ["audio-tap", "ai-notetaking-engine"]) {
   const filePath = path.join(binariesDir, `${baseName}-${targetTriple}`);
   if (!fs.existsSync(filePath)) {

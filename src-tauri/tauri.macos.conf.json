@@ -2,8 +2,10 @@
   "$schema": "https://schema.tauri.app/config/2",
   "bundle": {
     "externalBin": [
-      "binaries/ai-notetaking-engine",
       "binaries/audio-tap"
-    ]
+    ],
+    "resources": {
+      "../src-python/dist/ai-notetaking-engine/": "engine/"
+    }
   }
 }

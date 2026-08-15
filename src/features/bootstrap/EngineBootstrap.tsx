@@ -28,6 +28,19 @@ interface ProgressPayload {
   downloadedBytes: number;
   totalBytes?: number | null;
   message: string;
+  currentPart?: number;
+  totalParts?: number;
+  attempt?: number;
+  speedBytesPerSecond?: number | null;
+  etaSeconds?: number | null;
+}
+
+interface EngineCapabilities {
+  architecture: string;
+  nvidia_available: boolean;
+  gpu_supported: boolean;
+  recommended_kind: EngineKind;
+  reason: string;
 }
 
 const ENGINE_COPY: Record<EngineKind, { title: string; body: string; details: string }> = {
@@ -47,9 +60,9 @@ const ENGINE_COPY: Record<EngineKind, { title: string; body: string; details: st
 // effect would invoke start_sidecar twice and spawn duplicate supervisors.
 let bootstrapEffectRan = false;
 
-function formatBytes(bytes?: number | null) {
-  if (!bytes) return "";
-  const units = ["B", "MB", "GB"];
+export function formatBytes(bytes?: number | null) {
+  if (bytes == null) return "";
+  const units = ["B", "KB", "MB", "GB"];
   let value = bytes;
   let unit = 0;
   while (value >= 1024 && unit < units.length - 1) {
@@ -122,6 +135,7 @@ export function EngineBootstrap({ children }: { children: ReactNode }) {
   const [message, setMessage] = useState("Checking the local transcription component...");
   const [error, setError] = useState("");
   const [startupSlow, setStartupSlow] = useState(false);
+  const [capabilities, setCapabilities] = useState<EngineCapabilities | null>(null);
 
   const progressPct = useMemo(() => {
     if (!progress?.totalBytes) return 0;
@@ -182,9 +196,20 @@ export function EngineBootstrap({ children }: { children: ReactNode }) {
   }, []);
 
   useEffect(() => {
+    if (phase !== "starting") return;
+    const timer = window.setTimeout(() => {
+      setStartupSlow(true);
+      setError("Audio did not become ready in time. Retry the service or open diagnostics for the exit cause.");
+      setPhase("error");
+    }, 45_000);
+    return () => window.clearTimeout(timer);
+  }, [phase]);
+
+  useEffect(() => {
     if (bootstrapEffectRan) return;
     bootstrapEffectRan = true;
     invoke("set_bootstrap_mode").catch(console.error);
+    invoke<EngineCapabilities>("get_engine_capabilities").then(setCapabilities).catch(console.error);
     checkEngine(engineKind);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
@@ -249,6 +274,13 @@ export function EngineBootstrap({ children }: { children: ReactNode }) {
   };
 
   const downloadSelectedEngine = async () => {
+    if (engineKind === "gpu" && capabilities && !capabilities.gpu_supported) {
+      const confirmed = window.confirm(`${capabilities.reason}\n\nGPU may fail on this computer. Download it anyway?`);
+      if (!confirmed) {
+        setEngineKind("cpu");
+        return;
+      }
+    }
     setPhase("downloading");
     setStartupSlow(false);
     setError("");
@@ -268,6 +300,11 @@ export function EngineBootstrap({ children }: { children: ReactNode }) {
       setError(err instanceof Error ? err.message : String(err));
       setPhase("error");
     }
+  };
+
+  const cancelDownload = async () => {
+    await invoke("cancel_engine_download").catch(console.error);
+    setMessage("Cancelling safely; downloaded parts will be preserved...");
   };
 
   if (phase === "ready") {
@@ -305,6 +342,7 @@ export function EngineBootstrap({ children }: { children: ReactNode }) {
                 <strong>{ENGINE_COPY[kind].title}</strong>
                 <span>{ENGINE_COPY[kind].body}</span>
                 <small>{ENGINE_COPY[kind].details}</small>
+                <small>{kind === "cpu" ? "About 405 MB" : "About 3.0 GB"}{capabilities?.recommended_kind === kind ? " · Recommended" : ""}</small>
               </button>
             ))}
           </div>
@@ -314,7 +352,7 @@ export function EngineBootstrap({ children }: { children: ReactNode }) {
           {bootstrapTasks.map((task) => (
             <div key={task.id} className={`bootstrap-task ${task.state}`}>
               <span className="bootstrap-task-marker" aria-hidden="true">
-                {task.state === "done" ? "✓" : task.state === "error" ? "!" : task.state === "active" ? "..." : ""}
+                {task.state === "done" ? "✓" : task.state === "error" ? "!" : task.state === "active" ? <span className="bootstrap-dots"><i /><i /><i /></span> : ""}
               </span>
               <div>
                 <strong>{task.label}</strong>
@@ -353,6 +391,9 @@ export function EngineBootstrap({ children }: { children: ReactNode }) {
               {formatBytes(progress?.downloadedBytes)}
               {progress?.totalBytes ? ` / ${formatBytes(progress.totalBytes)}` : ""} {progressPct ? `(${progressPct}%)` : ""}
             </p>
+            {progress?.speedBytesPerSecond ? <p>{formatBytes(progress.speedBytesPerSecond)}/s{progress.etaSeconds != null ? ` · about ${Math.ceil(progress.etaSeconds / 60)} min remaining` : ""}</p> : null}
+            {progress?.totalParts ? <p>Part {progress.currentPart} of {progress.totalParts}{progress.stage === "retrying" ? ` · retry ${progress.attempt || 1}/5` : ""}</p> : null}
+            <button className="btn-secondary" type="button" onClick={cancelDownload}>Cancel download</button>
           </div>
         )}
 
