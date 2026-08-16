@@ -37,7 +37,7 @@ export function ExpandedView({
 }) {
   const { settings } = useSettings();
   const { isLG, waveColor } = useTheme();
-  const { isRecording, recordingSeconds, audioLevel, micLevel, systemLevel, status, toggleRecording } = useRecording();
+  const { isRecording, recordingSeconds, audioLevel, micLevel, systemLevel, status, transcriptionReady, toggleRecording } = useRecording();
   const { setTranscriptionText, segments, language, search, setSearch, filteredTranscript } = useTranscription();
   const { notes, setNotesText, tldr, actionItems, structuredSummary } = useSummary();
   const { meetingsHistory, selectedMeetingId, setSelectedMeetingId, sidebarSearch, setSidebarSearch, loadHistory } = useMeetings();
@@ -506,7 +506,7 @@ export function ExpandedView({
       if (setTranscriptionText) setTranscriptionText("");
       if (setNotesText) setNotesText("");
     }
-    toggleRecording();
+    if (isRecording || transcriptionReady) toggleRecording();
   };
 
   return (
@@ -621,6 +621,8 @@ export function ExpandedView({
               <button
                 className={`record-btn-expanded ${isRecording ? "recording" : ""}`}
                 onClick={handleRecordClick}
+                disabled={!isRecording && !transcriptionReady}
+                title={!isRecording && !transcriptionReady ? "Whisper is still loading" : undefined}
               >
                 {isRecording ? <span className="stop-square-sm" /> : <span className="record-circle-sm" />}
                 {isRecording ? "Stop" : selectedMeetingId ? "New Session" : "Record"}

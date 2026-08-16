@@ -1,15 +1,13 @@
 name: Production Release Pipeline
 
 on:
-  push:
-    tags:
-      - 'v*'
   workflow_dispatch:
     inputs:
       release_tag:
         description: Release tag to create or update
         required: true
         type: string
+        default: v0.3.2
       platform:
         description: Platform assets to build
         required: true
@@ -19,11 +17,37 @@ on:
           - all
           - macos
           - windows
+      manual_checklist_complete:
+        description: Confirm the clean-machine checklist is attached to the draft release
+        required: true
+        default: false
+        type: boolean
+      promote_after_approval:
+        description: Publish after all jobs pass and the GitHub Environment approves
+        required: true
+        default: false
+        type: boolean
 
 permissions:
   contents: write
 
 jobs:
+  annotate-v031:
+    name: Mark v0.3.1 known issues
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - name: Preserve release notes and append the warning once
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh release view v0.3.1 --repo "${{ github.repository }}" --json body --jq .body > /tmp/v031-notes.md
+          if ! grep -q "v0.3.1 known issues" /tmp/v031-notes.md; then
+            printf '\n\n' >> /tmp/v031-notes.md
+            cat docs/KNOWN_ISSUES_v0.3.1.md >> /tmp/v031-notes.md
+            gh release edit v0.3.1 --repo "${{ github.repository }}" --prerelease --notes-file /tmp/v031-notes.md
+          fi
+
   select-platforms:
     name: Select release platforms
     runs-on: ubuntu-latest
@@ -48,7 +72,7 @@ jobs:
 
   publish:
     name: Build & Publish Release (${{ matrix.platform }})
-    needs: select-platforms
+    needs: [select-platforms, annotate-v031]
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
@@ -58,17 +82,17 @@ jobs:
 
     steps:
       - name: Checkout Repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
 
       # ── 1. Environments Setup ──────────────────────────────────────
-      - name: Setup Node.js (v20)
-        uses: actions/setup-node@v4
+      - name: Setup Node.js (v24)
+        uses: actions/setup-node@v5
         with:
-          node-version: 20
+          node-version: 24
           cache: 'npm'
 
       - name: Setup Python (3.12)
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@v6
         with:
           python-version: '3.12'
           cache: 'pip'
@@ -113,16 +137,17 @@ jobs:
         env:
           ENGINE_RELEASE_BASE: https://github.com/${{ github.repository }}/releases/download/${{ env.RELEASE_TAG }}
         run: |
-          node scripts/split-engine-release-asset.mjs src-tauri/binaries/ai-notetaking-engine-windows-x64-gpu.exe
+          node scripts/split-engine-release-asset.mjs src-tauri/binaries/ai-notetaking-engine-windows-x64-gpu.zip
           npm run engine:manifest
 
       - name: Build Python Sidecar (macOS)
         if: matrix.platform == 'macos'
         run: |
           cd src-python
-          pyinstaller build.spec
-          mkdir -p ../src-tauri/binaries
-          cp dist/ai-notetaking-engine "../src-tauri/binaries/ai-notetaking-engine-${{ matrix.rust_target }}"
+          mkdir -p models/whisper
+          python -c "import whisperx; whisperx.load_model('base', 'cpu', compute_type='int8', download_root='models/whisper')"
+          pyinstaller --clean --noconfirm build.spec
+          AI_NOTETAKING_EXPECTED_ARCH=arm64 dist/ai-notetaking-engine/ai-notetaking-engine --self-test
 
       - name: Build Core Audio Tap (macOS)
         if: matrix.platform == 'macos'
@@ -177,7 +202,12 @@ jobs:
         shell: bash
         run: |
           if [ "${{ matrix.platform }}" = "macos" ]; then
+            app=$(find src-tauri/target -type d -name '*.app' -print -quit)
             dmg=$(find src-tauri/target -type f -name '*.dmg' -print -quit)
+            test -x "$app/Contents/Resources/engine/ai-notetaking-engine"
+            test -x "$app/Contents/MacOS/audio-tap-aarch64-apple-darwin"
+            file "$app/Contents/Resources/engine/ai-notetaking-engine" | grep -q arm64
+            codesign --verify --deep --strict "$app"
             test -n "$dmg"
             hdiutil verify "$dmg"
           else
@@ -186,14 +216,25 @@ jobs:
             test -s "$installer"
           fi
 
+      - name: Silent-install Windows MSI and validate payload
+        if: matrix.platform == 'windows'
+        shell: pwsh
+        run: |
+          $msi = Get-ChildItem -Path src-tauri/target -Recurse -Filter *.msi | Select-Object -First 1
+          if (-not $msi) { throw "MSI bundle not found" }
+          $process = Start-Process msiexec.exe -ArgumentList @('/i', $msi.FullName, '/qn', '/norestart') -Wait -PassThru
+          if ($process.ExitCode -ne 0) { throw "Silent MSI install failed with $($process.ExitCode)" }
+          $installed = Join-Path $env:ProgramFiles 'ai-notetaking\ai-notetaking.exe'
+          if (-not (Test-Path -LiteralPath $installed)) { throw "Installed application payload not found at $installed" }
+
       - name: Upload Windows Engine Variants
         if: matrix.platform == 'windows'
         shell: bash
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          cpu=src-tauri/binaries/ai-notetaking-engine-windows-x64-cpu.exe
-          gpu=src-tauri/binaries/ai-notetaking-engine-windows-x64-gpu.exe
+          cpu=src-tauri/binaries/ai-notetaking-engine-windows-x64-cpu.zip
+          gpu=src-tauri/binaries/ai-notetaking-engine-windows-x64-gpu.zip
           manifest=src-tauri/binaries/engines-manifest.json
           shopt -s nullglob
           gpu_parts=("${gpu}".part*)
@@ -206,12 +247,14 @@ jobs:
           gh release upload "$RELEASE_TAG" "${assets[@]}" --clobber
 
   finalize:
-    name: Publish release
+    name: Promote complete draft
+    if: ${{ inputs.platform == 'all' && inputs.manual_checklist_complete && inputs.promote_after_approval }}
     needs: publish
     runs-on: ubuntu-latest
+    environment: v0.3.2-production
     env:
       GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-      RELEASE_TAG: ${{ inputs.release_tag || github.ref_name }}
+      RELEASE_TAG: ${{ inputs.release_tag }}
     steps:
-      - name: Publish pre-release
+      - name: Publish approved release
         run: gh release edit "$RELEASE_TAG" --repo "${{ github.repository }}" --draft=false --prerelease

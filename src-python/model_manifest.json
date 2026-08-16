@@ -5,8 +5,8 @@
       "name": "base",
       "engine": "whisperx",
       "purpose": "default local speech-to-text model",
-      "artifact_policy": "download_or_bundle",
-      "checksum": null
+      "artifact_policy": "bundled_required",
+      "checksum": "recorded-per-engine-in-engines-manifest-v2"
     }
   },
   "diarization": {

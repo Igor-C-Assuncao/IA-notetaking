@@ -141,6 +141,15 @@ describe("useRecording Hook", () => {
 
   test("dispatches START_RECORDING command on toggle when idle", async () => {
     const { result } = renderHook(() => useRecording());
+    act(() => {
+      eventHandlers["ENGINE_STATE"]({
+        phase: "transcription_ready",
+        recording: true,
+        transcription: true,
+        system_audio: true,
+        message: "Transcription is ready.",
+      });
+    });
     
     await act(async () => {
       await result.current.toggleRecording();
@@ -161,6 +170,17 @@ describe("useRecording Hook", () => {
         hf_token: "hf_tok",
       }),
     });
+  });
+
+  test("blocks START_RECORDING until transcription is ready", async () => {
+    const { result } = renderHook(() => useRecording());
+
+    await act(async () => {
+      await result.current.toggleRecording();
+    });
+
+    expect(invoke).not.toHaveBeenCalledWith("send_command_to_python", expect.anything());
+    expect(result.current.status).toContain("still loading");
   });
 
   test("dispatches STOP_RECORDING command on toggle when active", async () => {

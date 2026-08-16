@@ -1,6 +1,6 @@
 [package]
 name = "ai-notetaking"
-version = "0.3.1"
+version = "0.3.2"
 description = "Open-source, privacy-first AI notetaker for meetings (Tauri 2 + Rust + Python)"
 authors = ["Igor Cassimiro Assunção"]
 license = "Apache-2.0"
@@ -38,3 +38,5 @@ tracing-appender = "0.2"
 chrono = "0.4"
 reqwest = { version = "0.12", default-features = false, features = ["blocking", "json", "rustls-tls"] }
 sha2 = "0.10"
+fs2 = "0.4"
+zip = { version = "2", default-features = false, features = ["deflate"] }

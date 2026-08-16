@@ -12,6 +12,7 @@ let globalAudioLevel = 0;
 let globalMicLevel = 0;
 let globalSystemLevel = 0;
 let globalStatus = "Ready";
+let globalTranscriptionReady = false;
 
 const recordingListeners = new Set<() => void>();
 
@@ -67,6 +68,7 @@ export function resetGlobalRecordingState() {
   globalMicLevel = 0;
   globalSystemLevel = 0;
   globalStatus = "Ready";
+  globalTranscriptionReady = false;
   if (globalTimerInterval) {
     clearInterval(globalTimerInterval);
     globalTimerInterval = null;
@@ -82,6 +84,7 @@ export function useRecording() {
   const [micLevel, setMicLevelState] = useState(globalMicLevel);
   const [systemLevel, setSystemLevelState] = useState(globalSystemLevel);
   const [status, setStatusState] = useState(globalStatus);
+  const [transcriptionReady, setTranscriptionReady] = useState(globalTranscriptionReady);
 
   useEffect(() => {
     const handleChange = () => {
@@ -91,6 +94,7 @@ export function useRecording() {
       setMicLevelState(globalMicLevel);
       setSystemLevelState(globalSystemLevel);
       setStatusState(globalStatus);
+      setTranscriptionReady(globalTranscriptionReady);
     };
     recordingListeners.add(handleChange);
     return () => {
@@ -117,6 +121,7 @@ export function useRecording() {
 
   usePythonEvent("ENGINE_STATE", (data) => {
     globalStatus = data.message || data.phase;
+    globalTranscriptionReady = data.phase === "transcription_ready";
     emitRecordingChange();
   });
 
@@ -136,6 +141,11 @@ export function useRecording() {
           payload: JSON.stringify({ action: "STOP_RECORDING" })
         });
       } else {
+        if (!globalTranscriptionReady) {
+          globalStatus = "Transcription is still loading. Recording will unlock when Whisper is ready.";
+          emitRecordingChange();
+          return;
+        }
         await invoke("send_command_to_python", {
           payload: JSON.stringify({
             action: "START_RECORDING",
@@ -159,5 +169,5 @@ export function useRecording() {
 
   const inputState = getAudioInputState(audioLevel);
 
-  return { isRecording, recordingSeconds, audioLevel, micLevel, systemLevel, inputState, status, toggleRecording };
+  return { isRecording, recordingSeconds, audioLevel, micLevel, systemLevel, inputState, status, transcriptionReady, toggleRecording };
 }

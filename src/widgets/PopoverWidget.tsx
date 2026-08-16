@@ -11,6 +11,21 @@ import { usePythonEvent } from "@app/providers/IpcProvider";
 import { AudioDevice } from "@shared/types/ipc-events";
 import { AudioInputMeter } from "@features/recording/components/AudioInputMeter";
 
+interface RuntimeDiagnostics {
+  status: {
+    sidecar?: string;
+    audio?: string;
+    whisper?: string;
+    ollama?: string;
+    engine?: { phase?: string; message?: string };
+    operationStartedAt?: string;
+    provider?: string;
+    model?: string;
+    elapsedMs?: number;
+  };
+  events: Array<{ timestamp: string; source: string; level: string; code: string; message: string; attempt?: number; exit_code?: number }>;
+}
+
 export function PopoverWidget() {
   const { settings, updateSettings, getProviderApiKey, loading } = useSettings();
   const { isLG } = useTheme();
@@ -19,7 +34,9 @@ export function PopoverWidget() {
   const [devices, setDevices] = useState<AudioDevice[]>([]);
   const [audioLevel, setAudioLevel] = useState(0);
   const [showShortcuts, setShowShortcuts] = useState(false);
-  const [activeTab, setActiveTab] = useState<"audio" | "ai" | "behavior" | "copilot">("audio");
+  const [activeTab, setActiveTab] = useState<"audio" | "ai" | "behavior" | "copilot" | "diagnostics">("audio");
+  const [diagnostics, setDiagnostics] = useState<RuntimeDiagnostics | null>(null);
+  const [diagnosticsCopied, setDiagnosticsCopied] = useState(false);
   const [isSyncing, setIsSyncing] = useState(false);
   const [syncStatus, setSyncStatus] = useState("");
   const [copiedPrompt, setCopiedPrompt] = useState(false);
@@ -90,6 +107,27 @@ export function PopoverWidget() {
     const timer = setTimeout(triggerPreflight, 500);
     return () => clearTimeout(timer);
   }, [settings.provider, settings.modelName, loading]);
+
+  useEffect(() => {
+    if (activeTab !== "diagnostics") return;
+    let disposed = false;
+    const refresh = () => Promise.all([
+      invoke<RuntimeDiagnostics>("get_runtime_diagnostics"),
+      invoke<{ state: string }>("check_ollama").catch(() => ({ state: "offline" })),
+    ])
+      .then(([value, ollama]) => { if (!disposed) setDiagnostics({ ...value, status: { ...value.status, ollama: ollama.state } }); })
+      .catch(console.error);
+    refresh();
+    const timer = window.setInterval(refresh, 2000);
+    return () => { disposed = true; window.clearInterval(timer); };
+  }, [activeTab]);
+
+  const copyDiagnostics = async () => {
+    if (!diagnostics) return;
+    await navigator.clipboard.writeText(JSON.stringify(diagnostics, null, 2));
+    setDiagnosticsCopied(true);
+    window.setTimeout(() => setDiagnosticsCopied(false), 1500);
+  };
 
   const [showNotionSettings, setShowNotionSettings] = useState(false);
   const [isValidatingNotion, setIsValidatingNotion] = useState(false);
@@ -367,7 +405,7 @@ Your task is to analyze this transcript and generate a premium-grade executive s
       {sidecarState === "failed" && (
         <div className="sidecar-status-banner error">
           <span>❌ AI Engine Offline.</span>
-          <button className="reconnect-btn" onClick={() => invoke("reconnect_sidecar")}>
+          <button className="reconnect-btn" onClick={() => invoke("reconnect_sidecar", { kind: settings.engineKind })}>
             Reconnect
           </button>
         </div>
@@ -408,6 +446,12 @@ Your task is to analyze this transcript and generate a premium-grade executive s
           onClick={() => setActiveTab("copilot")}
         >
           Copilot
+        </button>
+        <button
+          className={`popover-tab-btn ${activeTab === "diagnostics" ? "active" : ""}`}
+          onClick={() => setActiveTab("diagnostics")}
+        >
+          Activity
         </button>
       </div>
 
@@ -751,6 +795,48 @@ Your task is to analyze this transcript and generate a premium-grade executive s
                 </div>
               </>
             )}
+          </div>
+        )}
+
+        {activeTab === "diagnostics" && (
+          <div className="popover-tab-content" aria-label="Activity & Diagnostics">
+            <div className="popover-section">
+              <label className="popover-label">Activity & Diagnostics</label>
+              <div className="diagnostics-grid">
+                {[
+                  ["Sidecar", diagnostics?.status.sidecar || sidecarState],
+                  ["Audio", diagnostics?.status.audio || "pending"],
+                  ["Whisper", diagnostics?.status.whisper || "pending"],
+                  ["Ollama", diagnostics?.status.ollama || "offline"],
+                  ["Provider", diagnostics?.status.provider || settings.provider],
+                  ["Model", diagnostics?.status.model || settings.modelName || "base"],
+                  ["Elapsed", diagnostics?.status.elapsedMs
+                    ? `${Math.round(diagnostics.status.elapsedMs / 1000)}s`
+                    : diagnostics?.status.operationStartedAt
+                      ? `${Math.max(0, Math.round((Date.now() - new Date(diagnostics.status.operationStartedAt).getTime()) / 1000))}s`
+                      : "0s"],
+                ].map(([label, value]) => <div key={label}><span>{label}</span><strong>{value}</strong></div>)}
+              </div>
+              {diagnostics?.status.operationStartedAt && (
+                <p className="popover-toggle-hint">Current operation started {new Date(diagnostics.status.operationStartedAt).toLocaleTimeString()}.</p>
+              )}
+            </div>
+            <div className="popover-section">
+              <div className="diagnostics-actions">
+                <button className="popover-btn secondary" onClick={copyDiagnostics}>{diagnosticsCopied ? "Copied" : "Copy diagnostics"}</button>
+                <button className="popover-btn secondary" onClick={() => invoke("open_logs_folder")}>Open logs folder</button>
+                <button className="popover-btn secondary" onClick={() => invoke("reconnect_sidecar", { kind: settings.engineKind })}>Retry service</button>
+              </div>
+            </div>
+            <div className="diagnostics-events" aria-live="polite">
+              {(diagnostics?.events || []).slice().reverse().map((event, index) => (
+                <div className={`diagnostic-event ${event.level}`} key={`${event.timestamp}-${index}`}>
+                  <div><strong>{event.code}</strong><time>{new Date(event.timestamp).toLocaleTimeString()}</time></div>
+                  <p>{event.message}</p>
+                </div>
+              ))}
+              {diagnostics && diagnostics.events.length === 0 && <p className="popover-toggle-hint">No diagnostic events yet.</p>}
+            </div>
           </div>
         )}
       </div>

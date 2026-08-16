@@ -4,7 +4,7 @@ import fs from "node:fs";
 import path from "node:path";
 
 const targetTriple = {
-  win32: "windows-x64-cpu.exe",
+  win32: "windows-x64-cpu.zip",
   darwin: process.arch === "arm64"
     ? "aarch64-apple-darwin"
     : "x86_64-apple-darwin",
@@ -15,11 +15,9 @@ if (!targetTriple) {
   throw new Error(`Unsupported packaging platform: ${process.platform}`);
 }
 
-const sidecarPath = path.resolve(
-  "src-tauri",
-  "binaries",
-  `ai-notetaking-engine-${targetTriple}`,
-);
+const sidecarPath = process.platform === "darwin"
+  ? path.resolve("src-python", "dist", "ai-notetaking-engine", "ai-notetaking-engine")
+  : path.resolve("src-tauri", "binaries", `ai-notetaking-engine-${targetTriple}`);
 const maxSizeMiB = Number(process.env.SIDECAR_MAX_MIB || 1536);
 const allowMissing = process.env.SIDECAR_CHECK_ALLOW_MISSING === "1" ||
   process.env.SIDECAR_DOWNLOAD_AT_RUNTIME === "1";
@@ -41,7 +39,7 @@ if (size === 0) {
 
   console.error(
     `[sidecar-check] Missing or empty Python sidecar: ${sidecarPath}\n` +
-    "Build it with PyInstaller and copy the artifact before running a Tauri package build.",
+    "Build the PyInstaller onedir artifact before running a Tauri package build.",
   );
   process.exit(1);
 }

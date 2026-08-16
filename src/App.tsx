@@ -109,6 +109,10 @@ function MainApp() {
   });
 
   useEffect(() => {
+    invoke("set_compact_mode").catch(console.error);
+  }, []);
+
+  useEffect(() => {
     win.setAlwaysOnTop(settings.alwaysOnTop).catch(console.error);
   }, [settings.alwaysOnTop, win]);
 

@@ -53,10 +53,12 @@ export type PythonEvent =
   | { event: "PREFLIGHT_RESULT"; data: any }
   | { event: "SIDECAR_DOWN"; data: null }
   | { event: "SIDECAR_RESTARTING"; data: { attempt: number } }
-  | { event: "SIDECAR_UP"; data: null }
-  | { event: "SIDECAR_FAILED"; data: null }
+  | { event: "SIDECAR_UP"; data: { readiness: "audio_ready" } }
+  | { event: "SIDECAR_FAILED"; data: { cause: string; exitCode?: number | null; attempt: number } }
+  | { event: "AI_RUNTIME_STATUS"; data: { state: "offline" | "ready" | "loading_model" | "generating" | "completed" | "failed"; provider: string; model: string; elapsed_ms: number; message: string } }
+  | { event: "DIAGNOSTIC_EVENT"; data: { code: string; level: "info" | "warning" | "error"; message: string; component?: string; attempt?: number } }
   | { event: "sidecar-starting"; data: { kind: "cpu" | "gpu" } }
-  | { event: "engine-download-progress"; data: { kind: "cpu" | "gpu"; stage: string; downloadedBytes: number; totalBytes?: number | null; message: string; sha256?: string } }
+  | { event: "engine-download-progress"; data: { kind: "cpu" | "gpu"; stage: string; currentPart?: number; totalParts?: number; attempt?: number; downloadedBytes: number; totalBytes?: number | null; speedBytesPerSecond?: number | null; etaSeconds?: number | null; message: string; sha256?: string } }
   | { event: "engine-download-completed"; data: { kind: "cpu" | "gpu"; path: string; sha256: string; sizeBytes: number } }
   | { event: "ollama-install-progress"; data: { stage: string; message: string } }
   | { event: "REPROCESS_COMPLETED"; data: { meeting_id: number; markdown: string; structured: any } }

@@ -33,6 +33,7 @@ class TranscriptionService:
             print("DEBUG: [AI] Mocking WhisperX model for testing.", file=sys.stderr)
             self.device = "cpu"
             self.compute_type = "int8"
+            self.model_name = os.environ.get("AI_NOTETAKING_WHISPER_MODEL") or DEFAULTS["whisper_model"]
             self.model = MagicMock()
             self.model.transcribe.return_value = {"segments": [{"text": "Mocked test transcription text."}]}
             return
@@ -60,13 +61,20 @@ class TranscriptionService:
             file=sys.stderr,
         )
 
-        # Determine download root for PyInstaller bundling
+        # Determine the bundled model root. Production builds must never fall
+        # back to a silent network download during "Start services".
         download_root = None
         if hasattr(sys, '_MEIPASS'):
             bundled_dir = os.path.join(sys._MEIPASS, 'models', 'whisper')
             if os.path.exists(bundled_dir):
                 download_root = bundled_dir
                 print(f"DEBUG: [AI] Using bundled Whisper model from {download_root}", file=sys.stderr)
+        require_bundled = os.environ.get("AI_NOTETAKING_REQUIRE_BUNDLED_MODEL") == "1"
+        if require_bundled and (not download_root or not os.listdir(download_root)):
+            raise RuntimeError("Bundled Whisper base model is missing or empty")
+        if require_bundled:
+            os.environ["HF_HUB_OFFLINE"] = "1"
+            os.environ["TRANSFORMERS_OFFLINE"] = "1"
 
         try:
             self.model = whisperx.load_model(

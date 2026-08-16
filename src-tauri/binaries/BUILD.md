@@ -49,8 +49,11 @@ You should see `READY` on stderr if the build succeeded and the system allows it
 
 ## Notes
 
-- The binary is listed in `tauri.conf.json` under `bundle.externalBin` so Tauri
+- The binary is listed in `tauri.macos.conf.json` under `bundle.externalBin` so Tauri
   includes it in the app bundle automatically.
+- The PyInstaller `onedir` engine is declared separately under `bundle.resources`
+  and installed as `Contents/Resources/engine`; Rust launches its deterministic
+  `ai-notetaking-engine` entrypoint from there.
 - Tauri expects the binary at `src-tauri/binaries/audio-tap-{arch}-apple-darwin`.
   The arch string must match the output of `uname -m` on the build machine.
 - No code signing is required for development (`npm run tauri dev`).
