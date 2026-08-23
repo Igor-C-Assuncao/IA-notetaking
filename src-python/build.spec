@@ -36,6 +36,11 @@ if os.path.exists(models_dir):
 hiddenimports = []
 hiddenimports += collect_submodules('whisperx')
 hiddenimports += collect_submodules('transformers.pipelines')
+# scipy._external is a namespace package (no __init__.py); collect_submodules('scipy')
+# silently fails to recurse into it, dropping scipy._external.array_api_compat.numpy.fft
+# which transformers.pipelines needs at import time.
+hiddenimports += collect_submodules('scipy')
+hiddenimports += collect_submodules('scipy._external.array_api_compat')
 hiddenimports += collect_submodules('pyannote.audio')
 hiddenimports += collect_submodules('langgraph')
 hiddenimports += collect_submodules('langchain_core')

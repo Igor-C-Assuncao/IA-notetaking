@@ -28,7 +28,7 @@ export function OllamaSetup({ state, setState, onNext, onPrev }: Props) {
   const checkOllama = async () => {
     setStatus("checking");
     try {
-      const data = await invoke<{ installed: boolean; running: boolean; models: string[]; message: string }>("check_ollama");
+      const data = await invoke<{ installed: boolean; running: boolean; models: string[]; message: string }>("check_ollama", { refresh: true });
       if (!data.running) {
         setInstallMessage(data.message);
         setStatus("not-found");

@@ -15,6 +15,7 @@ import { PopoverWidget } from "@widgets/PopoverWidget";
 
 import { EngineBootstrap } from "@features/bootstrap/EngineBootstrap";
 import { useWindowMode } from "@features/window-chrome/hooks/useWindowMode";
+import { WindowModeProvider } from "@features/window-chrome/WindowModeProvider";
 import { useRecording } from "@features/recording/hooks/useRecording";
 import { OnboardingWizard } from "@features/onboarding/OnboardingWizard";
 import { useTranscription } from "@features/transcription/hooks/useTranscription";
@@ -24,7 +25,7 @@ import "./App.css";
 
 // App logic using hooks. Needs to be inside providers.
 function MainApp() {
-  const { isExpanded, isTransitioning, toggleWindowMode } = useWindowMode();
+  const { isExpanded, isTransitioning, toggleWindowMode, setMode } = useWindowMode();
   const { settings } = useSettings();
   const { isRecording, toggleRecording } = useRecording();
   const { transcription } = useTranscription();
@@ -109,8 +110,8 @@ function MainApp() {
   });
 
   useEffect(() => {
-    invoke("set_compact_mode").catch(console.error);
-  }, []);
+    void setMode("compact");
+  }, [setMode]);
 
   useEffect(() => {
     win.setAlwaysOnTop(settings.alwaysOnTop).catch(console.error);
@@ -169,9 +170,11 @@ function InnerRoot() {
   if (loading) return null;
   
   return (
-    <EngineBootstrap>
-      {!settings.onboarding_completed ? <OnboardingWizard /> : <MainApp />}
-    </EngineBootstrap>
+    <WindowModeProvider>
+      <EngineBootstrap>
+        {!settings.onboarding_completed ? <OnboardingWizard /> : <MainApp />}
+      </EngineBootstrap>
+    </WindowModeProvider>
   );
 }
 

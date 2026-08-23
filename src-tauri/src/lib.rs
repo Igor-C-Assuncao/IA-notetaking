@@ -15,6 +15,20 @@ use tauri::{AppHandle, Emitter, Manager, State, WebviewUrl, WebviewWindowBuilder
 use tauri::{LogicalSize, Window};
 use tauri_plugin_global_shortcut::{Code, GlobalShortcutExt, Modifiers, Shortcut, ShortcutState};
 
+#[cfg(windows)]
+use std::os::windows::process::CommandExt;
+#[cfg(windows)]
+const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+
+// Detection probes must never flash a console window. Long, user-visible
+// operations (`winget install`, `winget upgrade`) intentionally keep theirs.
+fn quiet_command(program: &str) -> Command {
+    let mut command = Command::new(program);
+    #[cfg(windows)]
+    command.creation_flags(CREATE_NO_WINDOW);
+    command
+}
+
 // Parses a stored structured_summary JSON blob, falling back to an empty
 // object so read-modify-write persistence never loses the rest of the summary.
 fn parse_structured_summary(raw: Option<&str>) -> serde_json::Value {
@@ -86,12 +100,119 @@ struct AppState {
     engine_download: Arc<Mutex<Option<EngineDownloadControl>>>,
     diagnostics: Arc<Mutex<Vec<DiagnosticEvent>>>,
     runtime_status: Arc<Mutex<serde_json::Value>>,
+    // TTL + in-flight caches for the detection probes that shell out or block.
+    ollama_service: Arc<Mutex<ProbeCell<OllamaService>>>,
+    ollama_install: Arc<Mutex<ProbeCell<OllamaInstall>>>,
+    gpu_caps: Arc<Mutex<ProbeCell<EngineCapabilities>>>,
 }
 
 #[derive(Clone)]
 struct EngineDownloadControl {
     kind: String,
     cancelled: Arc<AtomicBool>,
+}
+
+// ── Probe cache ───────────────────────────────────────────────
+// Detection probes that shell out (winget, nvidia-smi) or block on the network
+// are far too expensive to run on every poll. `ProbeCell` gives them a TTL plus
+// an in-flight guard so a UI that refreshes every few seconds can never stack
+// concurrent probes — the failure mode that froze Windows when the Activity tab
+// polled `check_ollama` every 2s and each call spawned two winget processes.
+struct ProbeCell<T: Clone> {
+    value: Option<T>,
+    captured_at: Option<Instant>,
+    // `Some(started_at)` while a probe runs. Timestamped rather than a bool so a
+    // probe wedged inside WindowsPackageManagerServer.exe cannot poison the cell
+    // forever; see PROBE_STUCK_AFTER.
+    in_flight_since: Option<Instant>,
+}
+
+impl<T: Clone> Default for ProbeCell<T> {
+    fn default() -> Self {
+        Self {
+            value: None,
+            captured_at: None,
+            in_flight_since: None,
+        }
+    }
+}
+
+#[derive(Clone, Default)]
+struct OllamaService {
+    running: bool,
+    models: Vec<String>,
+    active_models: Vec<String>,
+}
+
+#[derive(Clone, Default)]
+struct OllamaInstall {
+    winget_available: bool,
+    installed: bool,
+}
+
+// Cheap localhost probe: may track the UI's refresh cadence closely.
+const OLLAMA_SERVICE_TTL: Duration = Duration::from_secs(3);
+// Spawns winget. Only consulted when the service is already known to be down,
+// and then at most once every ten minutes unless the user asks explicitly.
+const OLLAMA_INSTALL_TTL: Duration = Duration::from_secs(600);
+const GPU_CAPS_TTL: Duration = Duration::from_secs(600);
+const PROBE_STUCK_AFTER: Duration = Duration::from_secs(60);
+
+// Runs `probe` at most once per TTL and at most once at a time.
+// `Ok(Some(v))` is a fresh or freshly probed value; `Ok(None)` means another
+// probe is in flight and nothing has been cached yet, so the caller should
+// render a "checking" state rather than a wrong one.
+async fn probe_cached<T, F>(
+    cell: &Arc<Mutex<ProbeCell<T>>>,
+    ttl: Duration,
+    force: bool,
+    probe: F,
+) -> Result<Option<T>, String>
+where
+    T: Clone + Send + 'static,
+    F: FnOnce() -> T + Send + 'static,
+{
+    {
+        let mut guard = cell
+            .lock()
+            .map_err(|_| "Probe cache poisoned.".to_string())?;
+        if !force {
+            if let (Some(value), Some(captured_at)) = (guard.value.clone(), guard.captured_at) {
+                if captured_at.elapsed() < ttl {
+                    return Ok(Some(value));
+                }
+            }
+        }
+        if let Some(started_at) = guard.in_flight_since {
+            if started_at.elapsed() < PROBE_STUCK_AFTER {
+                // Serve whatever we have rather than starting a second probe.
+                return Ok(guard.value.clone());
+            }
+        }
+        guard.in_flight_since = Some(Instant::now());
+    }
+
+    let result = tauri::async_runtime::spawn_blocking(probe).await;
+
+    let mut guard = cell
+        .lock()
+        .map_err(|_| "Probe cache poisoned.".to_string())?;
+    guard.in_flight_since = None;
+    match result {
+        Ok(value) => {
+            guard.value = Some(value.clone());
+            guard.captured_at = Some(Instant::now());
+            Ok(Some(value))
+        }
+        Err(error) => Err(format!("Probe worker failed: {error}")),
+    }
+}
+
+// Forces the next `probe_cached` call on this cell to re-probe.
+fn invalidate_probe<T: Clone>(cell: &Arc<Mutex<ProbeCell<T>>>) {
+    if let Ok(mut guard) = cell.lock() {
+        guard.captured_at = None;
+    }
 }
 
 #[derive(serde::Serialize, Clone)]
@@ -199,6 +320,73 @@ struct EngineManifestChunk {
     url: Option<String>,
 }
 
+// Two in tests so the terminal-message cases do not sit through the real
+// exponential backoff; five in the shipped binary.
+#[cfg(test)]
+const DOWNLOAD_ATTEMPTS: u32 = 2;
+#[cfg(not(test))]
+const DOWNLOAD_ATTEMPTS: u32 = 5;
+
+/// Why a download attempt failed.
+///
+/// Every terminal failure used to collapse into one "check your network"
+/// string, so a corrupted cache or a 404 sent users hunting a connection
+/// problem that did not exist. Only `Transport` and `Stalled` may blame the
+/// network.
+enum DownloadFailure {
+    Transport(String),
+    HttpStatus(u16),
+    Integrity(String),
+    Stalled,
+}
+
+impl DownloadFailure {
+    fn retry_label(&self, attempt: u32) -> String {
+        let total = DOWNLOAD_ATTEMPTS;
+        match self {
+            DownloadFailure::Transport(error) => {
+                format!("Network interrupted; retrying ({attempt}/{total}): {error}")
+            }
+            DownloadFailure::HttpStatus(code) => {
+                format!("Server returned HTTP {code}; retrying ({attempt}/{total})")
+            }
+            DownloadFailure::Integrity(reason) => {
+                format!("Downloaded data failed verification ({reason}); restarting this part ({attempt}/{total})")
+            }
+            DownloadFailure::Stalled => {
+                format!("No data received for 60 seconds; retrying ({attempt}/{total})")
+            }
+        }
+    }
+
+    fn terminal_message(&self) -> String {
+        let total = DOWNLOAD_ATTEMPTS;
+        match self {
+            DownloadFailure::Transport(error) => format!(
+                "Download failed after {total} attempts: the connection kept dropping ({error}). Check your network, proxy, or VPN and retry; verified parts were kept."
+            ),
+            DownloadFailure::Stalled => format!(
+                "Download failed after {total} attempts: the transfer stalled with no data. Check your network, proxy, or VPN and retry; verified parts were kept."
+            ),
+            DownloadFailure::HttpStatus(416) => format!(
+                "Download failed after {total} attempts: the server rejected the resume request (HTTP 416). The partial file was reset, so retrying now downloads it from the start."
+            ),
+            DownloadFailure::HttpStatus(404) => format!(
+                "Download failed after {total} attempts: the engine package for this version is not available at its download URL (HTTP 404). Update or reinstall the application."
+            ),
+            DownloadFailure::HttpStatus(403) | DownloadFailure::HttpStatus(429) => format!(
+                "Download failed after {total} attempts: the download server refused or rate-limited the request. Wait a few minutes and retry, or try another network."
+            ),
+            DownloadFailure::HttpStatus(code) => format!(
+                "Download failed after {total} attempts: the download server returned HTTP {code}. Retry later or reinstall the application."
+            ),
+            DownloadFailure::Integrity(reason) => format!(
+                "Download failed after {total} attempts: the downloaded data did not match the expected checksum ({reason}). Antivirus, a captive portal, or a proxy is most likely modifying the file. Add an exclusion for the application data folder or try another network."
+            ),
+        }
+    }
+}
+
 struct EngineAssetDownload<'a> {
     kind: &'a str,
     url: &'a str,
@@ -208,7 +396,7 @@ struct EngineAssetDownload<'a> {
     message: &'a str,
 }
 
-#[derive(serde::Serialize)]
+#[derive(serde::Serialize, Clone)]
 struct EngineCapabilities {
     architecture: String,
     nvidia_available: bool,
@@ -492,11 +680,10 @@ fn cancel_engine_download(state: State<'_, AppState>) -> Result<bool, String> {
     }
 }
 
-#[tauri::command]
-fn get_engine_capabilities() -> EngineCapabilities {
+fn probe_engine_capabilities() -> EngineCapabilities {
     let architecture = std::env::consts::ARCH.to_string();
     let nvidia_available = cfg!(target_os = "windows")
-        && Command::new("nvidia-smi")
+        && quiet_command("nvidia-smi")
             .args(["--query-gpu=name", "--format=csv,noheader"])
             .output()
             .map(|output| output.status.success() && !output.stdout.is_empty())
@@ -515,6 +702,69 @@ fn get_engine_capabilities() -> EngineCapabilities {
     }
 }
 
+#[tauri::command]
+async fn get_engine_capabilities(state: State<'_, AppState>) -> Result<EngineCapabilities, String> {
+    // Spawns nvidia-smi, so it goes through the same guard as the Ollama probes.
+    // Hardware does not change mid-session; a long TTL is safe.
+    let capabilities = probe_cached(
+        &state.gpu_caps,
+        GPU_CAPS_TTL,
+        false,
+        probe_engine_capabilities,
+    )
+    .await?;
+    Ok(capabilities.unwrap_or_else(|| EngineCapabilities {
+        architecture: std::env::consts::ARCH.to_string(),
+        nvidia_available: false,
+        gpu_supported: false,
+        recommended_kind: "cpu".to_string(),
+        reason: "Detecting GPU support...".to_string(),
+    }))
+}
+
+/// Bytes of the expected payload files already on disk.
+fn cached_payload_bytes(entry: &EngineManifestEntry, download_dir: &Path) -> u64 {
+    let names: Vec<&str> = match entry.chunks.as_ref() {
+        Some(chunks) if !chunks.is_empty() => chunks
+            .iter()
+            .map(|chunk| chunk.file_name.as_str())
+            .collect(),
+        _ => vec![entry.file_name.as_str()],
+    };
+    names
+        .into_iter()
+        .map(|name| {
+            download_dir
+                .join(name)
+                .metadata()
+                .map(|meta| meta.len())
+                .unwrap_or(0)
+        })
+        .fold(0_u64, |sum, size| sum.saturating_add(size))
+}
+
+/// Free space an install needs, in bytes.
+///
+/// A chunked package exists on disk twice: the `.partNN` files plus the package
+/// `combine_chunks` assembles from them. Counting the payload once let the GPU
+/// engine pass a ~9.7 GB check and then run out of space needing ~13.3 GB.
+fn required_free_space(entry: &EngineManifestEntry, cached_bytes: u64) -> u64 {
+    let chunked = entry
+        .chunks
+        .as_ref()
+        .map(|chunks| !chunks.is_empty())
+        .unwrap_or(false);
+    let compressed = if chunked {
+        entry.compressed_size.saturating_mul(2)
+    } else {
+        entry.compressed_size
+    };
+    compressed
+        .saturating_sub(cached_bytes)
+        .saturating_add(entry.unpacked_size)
+        .saturating_add(entry.unpacked_size / 10)
+}
+
 fn download_engine_blocking(
     app: AppHandle,
     kind: String,
@@ -528,17 +778,18 @@ fn download_engine_blocking(
     let download_dir = engine_download_dir(&app, &kind)?;
     std::fs::create_dir_all(&download_dir).map_err(actionable_disk_error)?;
 
-    let cached_bytes = directory_size(&download_dir)
-        .unwrap_or(0)
-        .min(entry.compressed_size);
-    let required = entry
-        .compressed_size
-        .saturating_sub(cached_bytes)
-        .saturating_add(entry.unpacked_size)
-        .saturating_add(entry.unpacked_size / 10);
+    // Count only the payload files, not the whole directory: an already
+    // assembled package would otherwise be counted as cached progress and
+    // shrink the requirement below what the install actually needs.
+    let cached_bytes = cached_payload_bytes(&entry, &download_dir).min(entry.compressed_size);
+    let required = required_free_space(&entry, cached_bytes);
     let free = available_space(&download_dir).map_err(actionable_disk_error)?;
     if free < required {
-        return Err(format!("Not enough disk space. Free at least {} MB and retry; valid partial downloads were preserved.", (required - free).div_ceil(1024 * 1024)));
+        return Err(format!(
+            "Not enough disk space. This install needs about {} MB free and {} MB more than you have; free some space and retry, valid partial downloads were preserved.",
+            required.div_ceil(1024 * 1024),
+            (required - free).div_ceil(1024 * 1024)
+        ));
     }
 
     let client = reqwest::blocking::Client::builder()
@@ -621,10 +872,18 @@ fn download_engine_blocking(
         0,
         None,
         None,
+        0,
         "Verifying package checksum",
     );
-    verify_file(&package_path, entry.compressed_size, &entry.sha256)
-        .map_err(|_| "Checksum verification failed. Retry the download; antivirus or a proxy may have modified the package.".to_string())?;
+    if let Err(reason) = verify_file(&package_path, entry.compressed_size, &entry.sha256) {
+        // Leaving a bad assembled package behind made every later run fail
+        // identically: the parts verify, reassemble into the same bad bytes,
+        // and fail again. Discard it so the next attempt can rebuild.
+        let _ = std::fs::remove_file(&package_path);
+        return Err(format!(
+            "Checksum verification failed ({reason}). The assembled package was discarded; retry the download. Antivirus or a proxy may be modifying it."
+        ));
+    }
 
     let target_dir = engine_dir(&app, &kind)?;
     let staging_dir = target_dir.with_file_name(format!("{}.installing", kind));
@@ -642,8 +901,14 @@ fn download_engine_blocking(
         0,
         None,
         None,
+        0,
         "Installing verified engine package",
     );
+    // The package is checksum-verified, so the parts are now redundant. Freeing
+    // them here halves the peak disk usage of a chunked install.
+    for chunk in &chunks {
+        let _ = std::fs::remove_file(download_dir.join(&chunk.file_name));
+    }
     extract_zip(&package_path, &staging_dir, entry.unpacked_size, &cancelled)?;
     let entrypoint = staging_dir.join(&entry.entrypoint);
     if !entrypoint.is_file() {
@@ -679,6 +944,7 @@ fn download_engine_blocking(
         0,
         Some(0),
         Some(0),
+        0,
         "Engine installed and ready",
     );
     app.emit(
@@ -719,6 +985,18 @@ fn validate_manifest_entry(entry: &EngineManifestEntry) -> Result<(), String> {
     Ok(())
 }
 
+/// Discards a partial download that can never converge.
+///
+/// Truncating in place keeps the path stable for the next attempt; deleting is
+/// only the fallback when the file cannot be opened for writing.
+fn reset_partial_file(path: &Path) -> Result<(), String> {
+    match OpenOptions::new().write(true).open(path) {
+        Ok(file) => file.set_len(0).map_err(actionable_disk_error),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(_) => std::fs::remove_file(path).map_err(actionable_disk_error),
+    }
+}
+
 #[allow(clippy::too_many_arguments)]
 fn download_resumable_asset(
     app: Option<&AppHandle>,
@@ -739,13 +1017,39 @@ fn download_resumable_asset(
     {
         return Ok(());
     }
-    for attempt in 1..=5_u32 {
+
+    let mut last_failure: Option<DownloadFailure> = None;
+    let mut integrity_failures = 0_u32;
+
+    for attempt in 1..=DOWNLOAD_ATTEMPTS {
         check_cancelled(cancelled)?;
-        let mut offset = path
-            .metadata()
-            .map(|meta| meta.len())
-            .unwrap_or(0)
-            .min(asset.expected_size);
+
+        // The verified fast path above already returned, so a file that is
+        // complete-or-longer here holds wrong bytes, not a short prefix.
+        // Resuming it would send `Range: bytes=<expected_size>-`, which the
+        // server answers with 416 forever - the dead end that reported itself
+        // as a network failure.
+        let on_disk = path.metadata().map(|meta| meta.len()).unwrap_or(0);
+        let mut offset = if on_disk > 0 && on_disk >= asset.expected_size {
+            reset_partial_file(path)?;
+            emit_download_progress(
+                app,
+                asset.kind,
+                "retrying",
+                completed_before,
+                asset.package_size,
+                current_part,
+                total_parts,
+                None,
+                None,
+                attempt,
+                "A cached part failed verification and is being downloaded again",
+            );
+            0
+        } else {
+            on_disk
+        };
+
         let mut request = client.get(asset.url);
         if offset > 0 {
             request = request.header(reqwest::header::RANGE, format!("bytes={offset}-"));
@@ -765,8 +1069,11 @@ fn download_resumable_asset(
                     .open(path)
                     .map_err(actionable_disk_error)?;
                 if resumed {
+                    // Seek to the offset actually requested, not to the end: any
+                    // mismatch between the two writes bytes at the wrong
+                    // position and silently corrupts the file.
                     output
-                        .seek(SeekFrom::End(0))
+                        .seek(SeekFrom::Start(offset))
                         .map_err(actionable_disk_error)?;
                 } else {
                     output.set_len(0).map_err(actionable_disk_error)?;
@@ -775,6 +1082,7 @@ fn download_resumable_asset(
                 let mut last_data = Instant::now();
                 let mut written = offset;
                 let mut last_emit = Instant::now() - Duration::from_secs(1);
+                let mut stream_failure: Option<DownloadFailure> = None;
                 let (sender, receiver) =
                     std::sync::mpsc::sync_channel::<Result<Vec<u8>, String>>(2);
                 std::thread::spawn(move || {
@@ -804,9 +1112,18 @@ fn download_resumable_asset(
                         Ok(Ok(bytes)) if bytes.is_empty() => break,
                         Ok(Ok(bytes)) => {
                             last_data = Instant::now();
-                            output.write_all(&bytes).map_err(actionable_disk_error)?;
-                            written += bytes.len() as u64;
-                            if written > asset.expected_size {
+                            // Clamp rather than write-then-check: an
+                            // overshooting server must not be able to leave a
+                            // file longer than expected on disk.
+                            let take =
+                                (bytes.len() as u64).min(asset.expected_size - written) as usize;
+                            if take > 0 {
+                                output
+                                    .write_all(&bytes[..take])
+                                    .map_err(actionable_disk_error)?;
+                                written += take as u64;
+                            }
+                            if written >= asset.expected_size {
                                 break;
                             }
                             if last_emit.elapsed() >= Duration::from_millis(250) {
@@ -827,12 +1144,14 @@ fn download_resumable_asset(
                                     total_parts,
                                     Some(speed),
                                     eta,
+                                    0,
                                     asset.message,
                                 );
                                 last_emit = Instant::now();
                             }
                         }
                         Ok(Err(error)) => {
+                            let failure = DownloadFailure::Transport(error);
                             emit_download_progress(
                                 app,
                                 asset.kind,
@@ -843,12 +1162,15 @@ fn download_resumable_asset(
                                 total_parts,
                                 None,
                                 None,
-                                &format!("Network interrupted; retrying ({attempt}/5): {error}"),
+                                attempt,
+                                &failure.retry_label(attempt),
                             );
+                            stream_failure = Some(failure);
                             break;
                         }
                         Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
                             if last_data.elapsed() >= Duration::from_secs(60) {
+                                let failure = DownloadFailure::Stalled;
                                 emit_download_progress(
                                     app,
                                     asset.kind,
@@ -859,28 +1181,77 @@ fn download_resumable_asset(
                                     total_parts,
                                     None,
                                     None,
-                                    &format!(
-                                        "No data received for 60 seconds; retrying ({attempt}/5)"
-                                    ),
+                                    attempt,
+                                    &failure.retry_label(attempt),
                                 );
+                                stream_failure = Some(failure);
                                 break;
                             }
                         }
-                        Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => break,
+                        Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => {
+                            // The reader thread went away without a sentinel.
+                            // Harmless on the happy path (verification below
+                            // succeeds and returns early), but it must not be
+                            // silent when the transfer really was cut short.
+                            stream_failure = Some(DownloadFailure::Transport(
+                                "the connection closed before the transfer finished".to_string(),
+                            ));
+                            break;
+                        }
                     }
                 }
                 output.flush().map_err(actionable_disk_error)?;
-                if verify_file(
+                // Release the handle before verification and truncation touch
+                // the same path; Windows will not allow it otherwise.
+                drop(output);
+                match verify_file(
                     path,
                     asset.expected_size,
                     asset.expected_sha256.unwrap_or(""),
-                )
-                .is_ok()
-                {
-                    return Ok(());
+                ) {
+                    Ok(()) => return Ok(()),
+                    Err(reason) => {
+                        if let Some(failure) = stream_failure {
+                            // A truncated transfer leaves a valid prefix; keep
+                            // it so the next attempt can resume from there.
+                            last_failure = Some(failure);
+                        } else {
+                            integrity_failures += 1;
+                            let failure = DownloadFailure::Integrity(reason);
+                            emit_download_progress(
+                                app,
+                                asset.kind,
+                                "retrying",
+                                completed_before,
+                                asset.package_size,
+                                current_part,
+                                total_parts,
+                                None,
+                                None,
+                                attempt,
+                                &failure.retry_label(attempt),
+                            );
+                            // Only wipe a complete-length file; a short one is
+                            // still a resumable prefix. Escalate after two
+                            // failures to bound a corrupt-prefix loop.
+                            let length = path.metadata().map(|meta| meta.len()).unwrap_or(0);
+                            if length >= asset.expected_size || integrity_failures >= 2 {
+                                reset_partial_file(path)?;
+                            }
+                            last_failure = Some(failure);
+                        }
+                    }
                 }
             }
             Ok(response) => {
+                let code = response.status().as_u16();
+                if code == reqwest::StatusCode::RANGE_NOT_SATISFIABLE.as_u16() {
+                    // The server cannot serve the range we asked for, so the
+                    // bytes on disk are unusable. Without this the next attempt
+                    // sends the identical Range and 416s again, forever.
+                    reset_partial_file(path)?;
+                }
+                let failure = DownloadFailure::HttpStatus(code);
                 emit_download_progress(
                     app,
                     asset.kind,
@@ -891,13 +1262,13 @@ fn download_resumable_asset(
                     total_parts,
                     None,
                     None,
-                    &format!(
-                        "Server returned HTTP {}; retrying ({attempt}/5)",
-                        response.status()
-                    ),
+                    attempt,
+                    &failure.retry_label(attempt),
                 );
+                last_failure = Some(failure);
             }
             Err(error) => {
+                let failure = DownloadFailure::Transport(error.to_string());
                 emit_download_progress(
                     app,
                     asset.kind,
@@ -908,18 +1279,24 @@ fn download_resumable_asset(
                     total_parts,
                     None,
                     None,
-                    &format!("Network unavailable; retrying ({attempt}/5): {error}"),
+                    attempt,
+                    &failure.retry_label(attempt),
                 );
+                last_failure = Some(failure);
             }
         }
-        if attempt < 5 {
+        if attempt < DOWNLOAD_ATTEMPTS {
             for _ in 0..(1_u64 << (attempt - 1)) * 4 {
                 check_cancelled(cancelled)?;
                 std::thread::sleep(Duration::from_millis(250));
             }
         }
     }
-    Err("Download failed after 5 attempts. Check your network, proxy, or antivirus and retry; valid partial data was preserved.".to_string())
+    Err(last_failure
+        .map(|failure| failure.terminal_message())
+        .unwrap_or_else(|| {
+            format!("Download failed after {DOWNLOAD_ATTEMPTS} attempts. Retry; valid partial data was preserved.")
+        }))
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -933,18 +1310,11 @@ fn emit_download_progress(
     total_parts: usize,
     speed: Option<u64>,
     eta: Option<u64>,
+    // Passed explicitly rather than parsed back out of `message`, which coupled
+    // the payload to the exact wording of every retry string.
+    attempt: u32,
     message: &str,
 ) {
-    let attempt = if stage == "retrying" {
-        message
-            .split("retrying (")
-            .nth(1)
-            .and_then(|tail| tail.split('/').next())
-            .and_then(|value| value.parse::<u32>().ok())
-            .unwrap_or(1)
-    } else {
-        0
-    };
     let Some(app) = app else { return };
     app.emit(
         "engine-download-progress",
@@ -1243,6 +1613,61 @@ mod engine_download_tests {
         (format!("http://{address}/engine"), handle)
     }
 
+    /// Answers `responses` in order, one connection each, and returns every raw
+    /// request so a test can assert on the Range headers actually sent.
+    #[allow(clippy::type_complexity)]
+    fn serve_sequence(
+        responses: Vec<(&'static str, Vec<u8>)>,
+    ) -> (String, std::thread::JoinHandle<Vec<String>>) {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let address = listener.local_addr().unwrap();
+        let handle = std::thread::spawn(move || {
+            let mut seen = Vec::new();
+            for (status, body) in responses {
+                let Ok((mut stream, _)) = listener.accept() else {
+                    break;
+                };
+                let mut request = Vec::new();
+                let mut buffer = [0_u8; 1024];
+                while !request.windows(4).any(|window| window == b"\r\n\r\n") {
+                    let read = stream.read(&mut buffer).unwrap();
+                    if read == 0 {
+                        break;
+                    }
+                    request.extend_from_slice(&buffer[..read]);
+                }
+                seen.push(String::from_utf8_lossy(&request).to_string());
+                write!(
+                    stream,
+                    "HTTP/1.1 {status}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                    body.len()
+                )
+                .unwrap();
+                stream.write_all(&body).unwrap();
+            }
+            seen
+        });
+        (format!("http://{address}/engine"), handle)
+    }
+
+    fn asset<'a>(url: &'a str, size: u64, hash: &'a str) -> EngineAssetDownload<'a> {
+        EngineAssetDownload {
+            kind: "gpu",
+            url,
+            expected_size: size,
+            expected_sha256: Some(hash),
+            package_size: size,
+            message: "test",
+        }
+    }
+
+    fn sent_range(request: &str) -> Option<String> {
+        request
+            .lines()
+            .find(|line| line.to_ascii_lowercase().starts_with("range:"))
+            .map(|line| line.trim().to_string())
+    }
+
     fn test_client() -> reqwest::blocking::Client {
         reqwest::blocking::Client::builder()
             .connect_timeout(Duration::from_secs(2))
@@ -1428,108 +1853,512 @@ mod engine_download_tests {
         );
         std::fs::remove_dir_all(dir).unwrap();
     }
+
+    // Reproduces the reported GPU failure exactly: part01 on disk had the right
+    // length and the wrong bytes, so the resume offset landed on expected_size,
+    // the server answered 416 five times, and the user was told to check a
+    // working internet connection.
+    #[test]
+    fn complete_but_corrupt_file_is_reset_and_redownloaded() {
+        let body = b"the real engine payload".to_vec();
+        let hash = sha256_bytes(&body);
+        let (url, server) = serve_sequence(vec![("200 OK", body.clone())]);
+        let dir = temp_test_dir("corrupt-complete");
+        let path = dir.join("engine.zip.part01");
+        std::fs::write(&path, vec![b'x'; body.len()]).unwrap();
+
+        let cancelled = AtomicBool::new(false);
+        download_resumable_asset(
+            None,
+            &test_client(),
+            &path,
+            &cancelled,
+            asset(&url, body.len() as u64, &hash),
+            1,
+            1,
+            0,
+        )
+        .unwrap();
+
+        let requests = server.join().unwrap();
+        assert_eq!(requests.len(), 1, "should succeed on the first attempt");
+        assert_eq!(sent_range(&requests[0]), None, "must not resume a bad file");
+        assert_eq!(std::fs::read(&path).unwrap(), body);
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    // The part02 case on the same machine: 653 bytes longer than the manifest
+    // declared. The old loop clamped the offset to expected_size and appended
+    // past the end, so the file could only ever grow.
+    #[test]
+    fn over_long_file_recovers_and_never_exceeds_expected_size() {
+        let body = b"exact engine payload".to_vec();
+        let hash = sha256_bytes(&body);
+        let (url, server) = serve_sequence(vec![("200 OK", body.clone())]);
+        let dir = temp_test_dir("over-long");
+        let path = dir.join("engine.zip.part02");
+        std::fs::write(&path, vec![b'x'; body.len() + 10]).unwrap();
+
+        let cancelled = AtomicBool::new(false);
+        download_resumable_asset(
+            None,
+            &test_client(),
+            &path,
+            &cancelled,
+            asset(&url, body.len() as u64, &hash),
+            1,
+            1,
+            0,
+        )
+        .unwrap();
+
+        let requests = server.join().unwrap();
+        assert_eq!(sent_range(&requests[0]), None);
+        assert_eq!(path.metadata().unwrap().len(), body.len() as u64);
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    // A short-but-corrupt prefix still 416s, and the offset guard alone cannot
+    // help because the file is untouched. The 416 arm must reset it.
+    #[test]
+    fn http_416_dead_end_recovers_on_the_next_attempt() {
+        let body = b"resumable engine payload".to_vec();
+        let hash = sha256_bytes(&body);
+        let (url, server) = serve_sequence(vec![
+            ("416 Range Not Satisfiable", Vec::new()),
+            ("200 OK", body.clone()),
+        ]);
+        let dir = temp_test_dir("http-416");
+        let path = dir.join("engine.zip");
+        std::fs::write(&path, b"bad prefix").unwrap();
+
+        let cancelled = AtomicBool::new(false);
+        download_resumable_asset(
+            None,
+            &test_client(),
+            &path,
+            &cancelled,
+            asset(&url, body.len() as u64, &hash),
+            1,
+            1,
+            0,
+        )
+        .unwrap();
+
+        let requests = server.join().unwrap();
+        assert_eq!(requests.len(), 2);
+        assert!(sent_range(&requests[0]).is_some(), "first attempt resumes");
+        assert_eq!(
+            sent_range(&requests[1]),
+            None,
+            "the 416 must discard the unusable prefix"
+        );
+        assert_eq!(std::fs::read(&path).unwrap(), body);
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn http_status_failure_is_not_reported_as_a_network_problem() {
+        let (url, server) = serve_sequence(vec![
+            ("404 Not Found", Vec::new()),
+            ("404 Not Found", Vec::new()),
+        ]);
+        let dir = temp_test_dir("http-404");
+        let path = dir.join("engine.zip");
+
+        let cancelled = AtomicBool::new(false);
+        let error = download_resumable_asset(
+            None,
+            &test_client(),
+            &path,
+            &cancelled,
+            asset(&url, 10, &"0".repeat(64)),
+            1,
+            1,
+            0,
+        )
+        .unwrap_err();
+        server.join().unwrap();
+
+        assert!(error.contains("HTTP 404"), "got: {error}");
+        assert!(
+            !error.to_ascii_lowercase().contains("network"),
+            "a 404 is not a network problem: {error}"
+        );
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn integrity_failure_blames_tampering_not_the_network() {
+        let served = b"tampered payload".to_vec();
+        let (url, server) =
+            serve_sequence(vec![("200 OK", served.clone()), ("200 OK", served.clone())]);
+        let dir = temp_test_dir("integrity");
+        let path = dir.join("engine.zip");
+
+        let cancelled = AtomicBool::new(false);
+        let error = download_resumable_asset(
+            None,
+            &test_client(),
+            &path,
+            &cancelled,
+            // Right length, wrong hash: the antivirus/proxy rewrite case.
+            asset(&url, served.len() as u64, &"0".repeat(64)),
+            1,
+            1,
+            0,
+        )
+        .unwrap_err();
+        server.join().unwrap();
+
+        assert!(error.contains("checksum"), "got: {error}");
+        assert!(
+            !error.to_ascii_lowercase().contains("check your network"),
+            "an integrity failure must not send users hunting a connection: {error}"
+        );
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn transport_failure_still_blames_the_network() {
+        let dir = temp_test_dir("transport");
+        let path = dir.join("engine.zip");
+        let cancelled = AtomicBool::new(false);
+        // Port 1 refuses connections.
+        let error = download_resumable_asset(
+            None,
+            &test_client(),
+            &path,
+            &cancelled,
+            asset("http://127.0.0.1:1/engine", 10, &"0".repeat(64)),
+            1,
+            1,
+            0,
+        )
+        .unwrap_err();
+
+        assert!(
+            error.to_ascii_lowercase().contains("network"),
+            "got: {error}"
+        );
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn disk_space_precheck_accounts_for_chunk_assembly() {
+        let chunked: EngineManifestEntry = serde_json::from_str(
+            r#"{"kind":"gpu","architecture":"x86_64","archive":"zip","file_name":"e.zip",
+                "entrypoint":"e.exe","sha256":"00","compressed_size":1000,"unpacked_size":2000,
+                "chunks":[{"file_name":"e.zip.part01","sha256":"00","size_bytes":600},
+                          {"file_name":"e.zip.part02","sha256":"00","size_bytes":400}]}"#,
+        )
+        .unwrap();
+        let single: EngineManifestEntry = serde_json::from_str(
+            r#"{"kind":"cpu","architecture":"x86_64","archive":"zip","file_name":"e.zip",
+                "entrypoint":"e.exe","sha256":"00","compressed_size":1000,"unpacked_size":2000}"#,
+        )
+        .unwrap();
+
+        // Chunked: parts (1000) + assembled package (1000) + unpacked (2000) + 10%.
+        assert_eq!(required_free_space(&chunked, 0), 1000 + 1000 + 2000 + 200);
+        // Single asset: one copy of the payload only.
+        assert_eq!(required_free_space(&single, 0), 1000 + 2000 + 200);
+        // Bytes already downloaded reduce the requirement.
+        assert_eq!(required_free_space(&chunked, 600), 1400 + 2000 + 200);
+    }
+
+    #[test]
+    fn retry_label_reports_the_attempt_number() {
+        let label = DownloadFailure::HttpStatus(416).retry_label(3);
+        assert!(label.contains("HTTP 416"), "got: {label}");
+        assert!(
+            label.contains(&format!("3/{DOWNLOAD_ATTEMPTS}")),
+            "got: {label}"
+        );
+    }
 }
 
-#[tauri::command]
-fn check_ollama() -> Result<OllamaStatus, String> {
-    let winget_available = Command::new("winget")
+#[cfg(test)]
+mod probe_cache_tests {
+    use super::*;
+
+    fn counting_probe(counter: &Arc<AtomicU64>) -> impl FnOnce() -> u64 + Send + 'static {
+        let counter = Arc::clone(counter);
+        move || counter.fetch_add(1, AtomicOrdering::SeqCst) + 1
+    }
+
+    #[test]
+    fn probe_cached_respects_ttl() {
+        let cell: Arc<Mutex<ProbeCell<u64>>> = Arc::new(Mutex::new(ProbeCell::default()));
+        let counter = Arc::new(AtomicU64::new(0));
+
+        tauri::async_runtime::block_on(async {
+            let first = probe_cached(
+                &cell,
+                Duration::from_secs(60),
+                false,
+                counting_probe(&counter),
+            )
+            .await
+            .unwrap();
+            let second = probe_cached(
+                &cell,
+                Duration::from_secs(60),
+                false,
+                counting_probe(&counter),
+            )
+            .await
+            .unwrap();
+            assert_eq!(first, Some(1));
+            // Served from the cache: the probe body must not run a second time.
+            assert_eq!(second, Some(1));
+            assert_eq!(counter.load(AtomicOrdering::SeqCst), 1);
+
+            // `force` is the explicit user-action bypass.
+            let forced = probe_cached(
+                &cell,
+                Duration::from_secs(60),
+                true,
+                counting_probe(&counter),
+            )
+            .await
+            .unwrap();
+            assert_eq!(forced, Some(2));
+            assert_eq!(counter.load(AtomicOrdering::SeqCst), 2);
+        });
+    }
+
+    #[test]
+    fn probe_cached_serves_cache_while_a_probe_is_in_flight() {
+        let cell: Arc<Mutex<ProbeCell<u64>>> = Arc::new(Mutex::new(ProbeCell::default()));
+        let counter = Arc::new(AtomicU64::new(0));
+
+        tauri::async_runtime::block_on(async {
+            probe_cached(
+                &cell,
+                Duration::from_secs(0),
+                false,
+                counting_probe(&counter),
+            )
+            .await
+            .unwrap();
+            // Simulate a probe that started and has not returned yet.
+            cell.lock().unwrap().in_flight_since = Some(Instant::now());
+            let during = probe_cached(
+                &cell,
+                Duration::from_secs(0),
+                false,
+                counting_probe(&counter),
+            )
+            .await
+            .unwrap();
+            // The stale value is served instead of spawning a second probe.
+            assert_eq!(during, Some(1));
+            assert_eq!(counter.load(AtomicOrdering::SeqCst), 1);
+        });
+    }
+
+    #[test]
+    fn probe_cached_recovers_from_a_stuck_probe() {
+        let cell: Arc<Mutex<ProbeCell<u64>>> = Arc::new(Mutex::new(ProbeCell::default()));
+        let counter = Arc::new(AtomicU64::new(0));
+
+        // A winget call wedged inside WindowsPackageManagerServer.exe must not
+        // poison the cell permanently.
+        cell.lock().unwrap().in_flight_since =
+            Some(Instant::now() - PROBE_STUCK_AFTER - Duration::from_secs(1));
+
+        tauri::async_runtime::block_on(async {
+            let value = probe_cached(
+                &cell,
+                Duration::from_secs(60),
+                false,
+                counting_probe(&counter),
+            )
+            .await
+            .unwrap();
+            assert_eq!(value, Some(1));
+            assert_eq!(counter.load(AtomicOrdering::SeqCst), 1);
+            assert!(cell.lock().unwrap().in_flight_since.is_none());
+        });
+    }
+
+    #[test]
+    fn invalidate_probe_forces_the_next_call_to_reprobe() {
+        let cell: Arc<Mutex<ProbeCell<u64>>> = Arc::new(Mutex::new(ProbeCell::default()));
+        let counter = Arc::new(AtomicU64::new(0));
+
+        tauri::async_runtime::block_on(async {
+            probe_cached(
+                &cell,
+                Duration::from_secs(600),
+                false,
+                counting_probe(&counter),
+            )
+            .await
+            .unwrap();
+            invalidate_probe(&cell);
+            let after = probe_cached(
+                &cell,
+                Duration::from_secs(600),
+                false,
+                counting_probe(&counter),
+            )
+            .await
+            .unwrap();
+            assert_eq!(after, Some(2));
+        });
+    }
+}
+
+// Cheap: two short localhost requests, no child processes.
+fn probe_ollama_service() -> OllamaService {
+    let response = reqwest::blocking::Client::builder()
+        .timeout(Duration::from_secs(2))
+        .build()
+        .ok()
+        .and_then(|client| client.get("http://localhost:11434/api/tags").send().ok());
+
+    let Some(response) = response.filter(|r| r.status().is_success()) else {
+        return OllamaService::default();
+    };
+    let models = response
+        .json::<serde_json::Value>()
+        .ok()
+        .and_then(|json| json.get("models").and_then(|v| v.as_array()).cloned())
+        .map(|items| {
+            items
+                .iter()
+                .filter_map(|item| item.get("name").and_then(|name| name.as_str()))
+                .map(str::to_string)
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_default();
+
+    let active_models = reqwest::blocking::Client::builder()
+        .timeout(Duration::from_secs(2))
+        .build()
+        .ok()
+        .and_then(|client| client.get("http://localhost:11434/api/ps").send().ok())
+        .and_then(|response| response.json::<serde_json::Value>().ok())
+        .and_then(|value| {
+            value
+                .get("models")
+                .and_then(|items| items.as_array())
+                .cloned()
+        })
+        .map(|items| {
+            items
+                .into_iter()
+                .filter_map(|item| {
+                    item.get("name")
+                        .and_then(|name| name.as_str())
+                        .map(str::to_string)
+                })
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_default();
+
+    OllamaService {
+        running: true,
+        models,
+        active_models,
+    }
+}
+
+// Expensive: each winget invocation starts WindowsPackageManagerServer.exe and
+// can spend tens of seconds refreshing sources. Never call this on a poll path
+// without going through `probe_cached`.
+fn probe_ollama_install() -> OllamaInstall {
+    let winget_available = quiet_command("winget")
         .arg("--version")
         .output()
         .map(|output| output.status.success())
         .unwrap_or(false);
-
     let installed = winget_available
-        && Command::new("winget")
+        && quiet_command("winget")
             .args(["list", "--id", "Ollama.Ollama", "-e"])
             .output()
             .map(|output| output.status.success())
             .unwrap_or(false);
-
-    let response = reqwest::blocking::Client::builder()
-        .timeout(std::time::Duration::from_secs(2))
-        .build()
-        .map_err(|e| e.to_string())?
-        .get("http://localhost:11434/api/tags")
-        .send();
-
-    match response {
-        Ok(resp) if resp.status().is_success() => {
-            let json = resp
-                .json::<serde_json::Value>()
-                .map_err(|e| e.to_string())?;
-            let models = json
-                .get("models")
-                .and_then(|v| v.as_array())
-                .map(|items| {
-                    items
-                        .iter()
-                        .filter_map(|item| item.get("name").and_then(|name| name.as_str()))
-                        .map(|name| name.to_string())
-                        .collect::<Vec<_>>()
-                })
-                .unwrap_or_default();
-            let active_models = reqwest::blocking::Client::builder()
-                .timeout(Duration::from_secs(2))
-                .build()
-                .ok()
-                .and_then(|client| client.get("http://localhost:11434/api/ps").send().ok())
-                .and_then(|response| response.json::<serde_json::Value>().ok())
-                .and_then(|value| {
-                    value
-                        .get("models")
-                        .and_then(|items| items.as_array())
-                        .cloned()
-                })
-                .map(|items| {
-                    items
-                        .into_iter()
-                        .filter_map(|item| {
-                            item.get("name")
-                                .and_then(|name| name.as_str())
-                                .map(str::to_string)
-                        })
-                        .collect::<Vec<_>>()
-                })
-                .unwrap_or_default();
-            Ok(OllamaStatus {
-                installed: true,
-                running: true,
-                models,
-                state: if active_models.is_empty() {
-                    "ready"
-                } else {
-                    "loading_model"
-                }
-                .to_string(),
-                message: if active_models.is_empty() {
-                    "Ollama is ready."
-                } else {
-                    "Ollama has an active model."
-                }
-                .to_string(),
-                active_models,
-            })
-        }
-        _ => Ok(OllamaStatus {
-            installed,
-            running: false,
-            models: Vec::new(),
-            active_models: Vec::new(),
-            state: "offline".to_string(),
-            message: if !winget_available {
-                "Windows Package Manager (winget) is not available. Install Ollama manually from ollama.com/download, then open Ollama and re-check.".to_string()
-            } else if installed {
-                "Ollama is installed but the local service is not running. Open the Ollama app, then re-check.".to_string()
-            } else {
-                "Ollama is not installed. You can install it automatically with winget.".to_string()
-            },
-        }),
+    OllamaInstall {
+        winget_available,
+        installed,
     }
 }
 
 #[tauri::command]
-fn install_ollama_winget(app: AppHandle) -> Result<(), String> {
-    let winget_available = Command::new("winget")
+async fn check_ollama(
+    state: State<'_, AppState>,
+    refresh: Option<bool>,
+) -> Result<OllamaStatus, String> {
+    let force = refresh.unwrap_or(false);
+    let service = probe_cached(
+        &state.ollama_service,
+        OLLAMA_SERVICE_TTL,
+        force,
+        probe_ollama_service,
+    )
+    .await?;
+
+    let Some(service) = service else {
+        return Ok(OllamaStatus {
+            installed: false,
+            running: false,
+            models: Vec::new(),
+            active_models: Vec::new(),
+            state: "checking".to_string(),
+            message: "Checking Ollama...".to_string(),
+        });
+    };
+
+    if service.running {
+        // The service answering is proof enough that it is installed; the winget
+        // probe only ever mattered for the offline branch, so skip it entirely.
+        let loading = !service.active_models.is_empty();
+        return Ok(OllamaStatus {
+            installed: true,
+            running: true,
+            models: service.models,
+            state: if loading { "loading_model" } else { "ready" }.to_string(),
+            message: if loading {
+                "Ollama has an active model."
+            } else {
+                "Ollama is ready."
+            }
+            .to_string(),
+            active_models: service.active_models,
+        });
+    }
+
+    let install = probe_cached(
+        &state.ollama_install,
+        OLLAMA_INSTALL_TTL,
+        force,
+        probe_ollama_install,
+    )
+    .await?
+    .unwrap_or_default();
+
+    Ok(OllamaStatus {
+        installed: install.installed,
+        running: false,
+        models: Vec::new(),
+        active_models: Vec::new(),
+        state: "offline".to_string(),
+        message: if !install.winget_available {
+            "Windows Package Manager (winget) is not available. Install Ollama manually from ollama.com/download, then open Ollama and re-check.".to_string()
+        } else if install.installed {
+            "Ollama is installed but the local service is not running. Open the Ollama app, then re-check.".to_string()
+        } else {
+            "Ollama is not installed. You can install it automatically with winget.".to_string()
+        },
+    })
+}
+
+#[tauri::command]
+fn install_ollama_winget(app: AppHandle, state: State<'_, AppState>) -> Result<(), String> {
+    let winget_available = quiet_command("winget")
         .arg("--version")
         .output()
         .map(|output| output.status.success())
@@ -1560,6 +2389,8 @@ fn install_ollama_winget(app: AppHandle) -> Result<(), String> {
         .map_err(|e| format!("Failed to start winget: {}", e))?;
 
     if status.success() {
+        // Without this the 10 minute TTL would keep reporting "not installed".
+        invalidate_probe(&state.ollama_install);
         app.emit(
             "ollama-install-progress",
             serde_json::json!({
@@ -3083,6 +3914,9 @@ pub fn run() {
                     "sidecar": "stopped", "audio": "pending", "whisper": "pending",
                     "ollama": "offline", "operationStartedAt": chrono::Utc::now().to_rfc3339()
                 }))),
+                ollama_service: Arc::new(Mutex::new(ProbeCell::default())),
+                ollama_install: Arc::new(Mutex::new(ProbeCell::default())),
+                gpu_caps: Arc::new(Mutex::new(ProbeCell::default())),
             });
 
             // 2. Initialize Daily Rotating Logs

@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright 2026 Igor Cassimiro Assunção
-import { createContext, useContext, useEffect, ReactNode, useRef } from "react";
+import { createContext, useCallback, useContext, useEffect, useMemo, ReactNode, useRef } from "react";
 import { listen, UnlistenFn } from "@tauri-apps/api/event";
 import { parsePythonEvent } from "@shared/lib/ipc";
 import { PythonEvent } from "@shared/types/ipc-events";
@@ -32,15 +32,17 @@ export function IpcProvider({ children }: { children: ReactNode }) {
     };
   }, []);
 
-  const subscribe = (handler: EventHandler) => {
+  const subscribe = useCallback((handler: EventHandler) => {
     handlersRef.current.add(handler);
     return () => {
       handlersRef.current.delete(handler);
     };
-  };
+  }, []);
+
+  const value = useMemo(() => ({ subscribe }), [subscribe]);
 
   return (
-    <IpcContext.Provider value={{ subscribe }}>
+    <IpcContext.Provider value={value}>
       {children}
     </IpcContext.Provider>
   );

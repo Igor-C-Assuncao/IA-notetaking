@@ -4,6 +4,7 @@ import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { beforeEach, describe, expect, test, vi } from "vitest";
 import { OnboardingWizard } from "./OnboardingWizard";
 import { registerMockInvoke } from "../../test/setup";
+import { WindowModeProvider } from "@features/window-chrome/WindowModeProvider";
 
 const updateSettings = vi.fn();
 
@@ -66,7 +67,7 @@ describe("OnboardingWizard", () => {
   });
 
   test("persists cloud key, Hugging Face token, and selected microphone", async () => {
-    render(<OnboardingWizard />);
+    render(<WindowModeProvider><OnboardingWizard /></WindowModeProvider>);
 
     fireEvent.click(screen.getByText("Provider Next"));
     fireEvent.click(screen.getByText("Cloud Next"));

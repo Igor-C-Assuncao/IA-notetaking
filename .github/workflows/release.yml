@@ -205,7 +205,7 @@ jobs:
             app=$(find src-tauri/target -type d -name '*.app' -print -quit)
             dmg=$(find src-tauri/target -type f -name '*.dmg' -print -quit)
             test -x "$app/Contents/Resources/engine/ai-notetaking-engine"
-            test -x "$app/Contents/MacOS/audio-tap-aarch64-apple-darwin"
+            test -x "$app/Contents/MacOS/audio-tap"
             file "$app/Contents/Resources/engine/ai-notetaking-engine" | grep -q arm64
             codesign --verify --deep --strict "$app"
             test -n "$dmg"

@@ -1,7 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright 2026 Igor Cassimiro Assunção
 import { useState, useEffect } from "react";
-import { invoke } from "@tauri-apps/api/core";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { useSettings } from "@app/providers/SettingsProvider";
 
@@ -10,6 +9,7 @@ import { OllamaSetup } from "./steps/OllamaSetup";
 import { CloudValidation } from "./steps/CloudValidation";
 import { HuggingFaceSetup } from "./steps/HuggingFaceSetup";
 import { ThemeAndDevice } from "./steps/ThemeAndDevice";
+import { useWindowMode } from "@features/window-chrome/hooks/useWindowMode";
 
 export interface WizardState {
   providerType: "local" | "cloud" | null;
@@ -47,9 +47,11 @@ export function OnboardingWizard() {
   const [isFinishing, setIsFinishing] = useState(false);
   const isLightTheme = wizardState.theme === "minimalist-notebook";
 
+  const { setMode } = useWindowMode();
+
   useEffect(() => {
-    invoke("set_wizard_mode").catch(console.error);
-  }, []);
+    void setMode("wizard");
+  }, [setMode]);
 
   const toggleTheme = async () => {
     const nextTheme = isLightTheme ? "liquid-glass" : "minimalist-notebook";
@@ -85,7 +87,7 @@ export function OnboardingWizard() {
         onboarding_completed: true,
       });
 
-      await invoke("set_compact_mode").catch(console.error);
+      await setMode("compact");
     } catch (error) {
       console.error("Failed to finish onboarding:", error);
       setFinishError("Could not save your setup. Please try again.");
@@ -97,7 +99,7 @@ export function OnboardingWizard() {
   const skipSetup = async () => {
     if (confirm("Skip setup? Default settings will be used. You can reconfigure later in Settings.")) {
       await updateSettings({ onboarding_completed: true });
-      await invoke("set_compact_mode").catch(console.error);
+      await setMode("compact");
     }
   };
 
