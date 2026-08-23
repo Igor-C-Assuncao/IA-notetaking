@@ -1,7 +1,8 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright 2026 Igor Cassimiro Assunção
-import { describe, test, expect, vi, beforeEach } from "vitest";
-import { render, screen, fireEvent, waitFor } from "@testing-library/react";
+import { describe, test, expect, vi, beforeEach, afterEach } from "vitest";
+import { render, screen, fireEvent, waitFor, act } from "@testing-library/react";
+import { invoke } from "@tauri-apps/api/core";
 import { PopoverWidget } from "./PopoverWidget";
 
 const mockClose = vi.fn();
@@ -161,5 +162,66 @@ describe("PopoverWidget Toggle Components", () => {
     fireEvent.blur(window);
 
     expect(mockClose).not.toHaveBeenCalled();
+  });
+});
+
+describe("PopoverWidget Activity tab", () => {
+  const invokeMock = invoke as unknown as ReturnType<typeof vi.fn>;
+
+  beforeEach(() => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    invokeMock.mockClear();
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  // Regression: the Activity tab used to poll on a fixed 2s setInterval with no
+  // in-flight guard. Because `check_ollama` spawns winget and routinely takes
+  // longer than the interval, calls stacked without bound and froze Windows.
+  test("never stacks diagnostics probes while one is still in flight", async () => {
+    invokeMock.mockImplementation(async (cmd: string) => {
+      if (cmd === "check_ollama") return new Promise(() => {}); // never settles
+      if (cmd === "get_runtime_diagnostics") return { status: {}, events: [] };
+      if (cmd === "request_audio_devices") return { devices: [] };
+      return null;
+    });
+
+    render(<PopoverWidget />);
+    fireEvent.click(screen.getByRole("button", { name: "Activity" }));
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(30_000);
+    });
+
+    const ollamaCalls = invokeMock.mock.calls.filter(([cmd]) => cmd === "check_ollama");
+    expect(ollamaCalls).toHaveLength(1);
+  });
+
+  test("stops polling once the Activity tab is left", async () => {
+    invokeMock.mockImplementation(async (cmd: string) => {
+      if (cmd === "check_ollama") return { state: "ready" };
+      if (cmd === "get_runtime_diagnostics") return { status: {}, events: [] };
+      if (cmd === "request_audio_devices") return { devices: [] };
+      return null;
+    });
+
+    render(<PopoverWidget />);
+    fireEvent.click(screen.getByRole("button", { name: "Activity" }));
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(6_000);
+    });
+
+    fireEvent.click(screen.getByRole("button", { name: "Audio" }));
+    const afterLeaving = invokeMock.mock.calls.filter(([cmd]) => cmd === "check_ollama").length;
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(30_000);
+    });
+
+    expect(
+      invokeMock.mock.calls.filter(([cmd]) => cmd === "check_ollama").length
+    ).toBe(afterLeaving);
   });
 });

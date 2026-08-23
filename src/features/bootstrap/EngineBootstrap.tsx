@@ -1,11 +1,13 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright 2026 Igor Cassimiro Assunção
-import { ReactNode, useEffect, useMemo, useState } from "react";
+import { ReactNode, useEffect, useMemo, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { useSettings } from "@app/providers/SettingsProvider";
 import { usePythonEvent } from "@app/providers/IpcProvider";
+import { useWindowMode } from "@features/window-chrome/hooks/useWindowMode";
+import { BootstrapBanner } from "./BootstrapBanner";
 
 type EngineKind = "cpu" | "gpu";
 type BootstrapPhase = "checking" | "choose" | "downloading" | "starting" | "ready" | "error";
@@ -55,10 +57,6 @@ const ENGINE_COPY: Record<EngineKind, { title: string; body: string; details: st
     details: "Use this if you have updated NVIDIA drivers. If it fails, switch back to CPU.",
   },
 };
-
-// React StrictMode mounts effects twice in dev; without this guard the boot
-// effect would invoke start_sidecar twice and spawn duplicate supervisors.
-let bootstrapEffectRan = false;
 
 export function formatBytes(bytes?: number | null) {
   if (bytes == null) return "";
@@ -136,6 +134,10 @@ export function EngineBootstrap({ children }: { children: ReactNode }) {
   const [error, setError] = useState("");
   const [startupSlow, setStartupSlow] = useState(false);
   const [capabilities, setCapabilities] = useState<EngineCapabilities | null>(null);
+  // Once the app has been usable, later failures must not tear it down.
+  const [hasBeenReady, setHasBeenReady] = useState(false);
+  const { setMode } = useWindowMode();
+  const bootstrapStartedRef = useRef(false);
 
   const progressPct = useMemo(() => {
     if (!progress?.totalBytes) return 0;
@@ -168,12 +170,13 @@ export function EngineBootstrap({ children }: { children: ReactNode }) {
     }
   });
 
+  // A preflight result says the engine is healthy — nothing about window size.
+  // This handler used to force compact mode, and because EngineBootstrap stays
+  // mounted for the whole session it fired on every later preflight (opening
+  // settings, changing provider, any sidecar restart), collapsing an expanded
+  // window with no user action. The window mode belongs to WindowModeProvider.
   usePythonEvent("PREFLIGHT_RESULT", () => {
-    if (settings.onboarding_completed) {
-      invoke("set_compact_mode").catch(console.error).finally(() => setPhase("ready"));
-    } else {
-      setPhase("ready");
-    }
+    setPhase("ready");
   });
 
   usePythonEvent("SIDECAR_FAILED", () => {
@@ -196,19 +199,25 @@ export function EngineBootstrap({ children }: { children: ReactNode }) {
   }, []);
 
   useEffect(() => {
-    if (phase !== "starting") return;
+    if (phase !== "starting" || hasBeenReady) return;
     const timer = window.setTimeout(() => {
       setStartupSlow(true);
       setError("Audio did not become ready in time. Retry the service or open diagnostics for the exit cause.");
       setPhase("error");
     }, 45_000);
     return () => window.clearTimeout(timer);
+  }, [phase, hasBeenReady]);
+
+  useEffect(() => {
+    if (phase === "ready") setHasBeenReady(true);
   }, [phase]);
 
   useEffect(() => {
-    if (bootstrapEffectRan) return;
-    bootstrapEffectRan = true;
-    invoke("set_bootstrap_mode").catch(console.error);
+    // A ref, not a module-level flag: it still suppresses React StrictMode's
+    // dev double-invoke, but a genuine remount can boot again.
+    if (bootstrapStartedRef.current) return;
+    bootstrapStartedRef.current = true;
+    void setMode("bootstrap");
     invoke<EngineCapabilities>("get_engine_capabilities").then(setCapabilities).catch(console.error);
     checkEngine(engineKind);
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -307,8 +316,22 @@ export function EngineBootstrap({ children }: { children: ReactNode }) {
     setMessage("Cancelling safely; downloaded parts will be preserved...");
   };
 
-  if (phase === "ready") {
-    return <>{children}</>;
+  // Once ready, children stay mounted for good. Tearing them down on a late
+  // sidecar failure destroyed all of MainApp's state — including the window
+  // mode it used to own — and the remount snapped the window back to the pill.
+  if (phase === "ready" || hasBeenReady) {
+    return (
+      <>
+        {children}
+        {phase === "error" && (
+          <BootstrapBanner
+            message={error}
+            onRetry={() => checkEngine(engineKind)}
+            onDismiss={() => setError("")}
+          />
+        )}
+      </>
+    );
   }
 
   return (
@@ -342,7 +365,8 @@ export function EngineBootstrap({ children }: { children: ReactNode }) {
                 <strong>{ENGINE_COPY[kind].title}</strong>
                 <span>{ENGINE_COPY[kind].body}</span>
                 <small>{ENGINE_COPY[kind].details}</small>
-                <small>{kind === "cpu" ? "About 405 MB" : "About 3.0 GB"}{capabilities?.recommended_kind === kind ? " · Recommended" : ""}</small>
+                {/* Sizes mirror engines-manifest.json for the current release. */}
+                <small>{kind === "cpu" ? "About 674 MB" : "About 3.3 GB"}{capabilities?.recommended_kind === kind ? " · Recommended" : ""}</small>
               </button>
             ))}
           </div>

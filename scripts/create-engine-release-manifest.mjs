@@ -56,7 +56,10 @@ function directorySha256(root) {
 }
 
 const unpackedRoot = path.join(pythonDist, "ai-notetaking-engine");
-const modelRoot = path.join(unpackedRoot, "models", "whisper");
+// PyInstaller >=6.0 onedir builds nest data files under _internal/ (sys._MEIPASS
+// points there at runtime; see transcription_service.py's bundled-model lookup).
+const modelRelativePath = "_internal/models/whisper";
+const modelRoot = path.join(unpackedRoot, ...modelRelativePath.split("/"));
 const unpackedSize = directorySize(unpackedRoot);
 const modelFiles = walkFiles(modelRoot);
 
@@ -65,6 +68,20 @@ if (unpackedSize === 0) {
 }
 if (modelFiles.length === 0 && process.env.ALLOW_MISSING_BUNDLED_MODEL !== "1") {
   throw new Error("Whisper base is not bundled under models/whisper. Refusing to create a release manifest that could download a model silently at runtime.");
+}
+
+// CPU and GPU sidecars are built sequentially into the same src-python/dist
+// directory, so unpackedSize above only reflects whichever build ran last.
+// Each build script drops its own <archive>.unpacked-size sidecar file with
+// its real size; prefer that per-archive when present.
+function unpackedSizeFor(fileName) {
+  const sidecarPath = path.join(binariesDir, `${fileName}.unpacked-size`);
+  if (fs.existsSync(sidecarPath)) {
+    const value = Number(fs.readFileSync(sidecarPath, "utf8").trim());
+    if (Number.isSafeInteger(value) && value > 0) return value;
+  }
+  console.warn(`[engine-manifest] No ${fileName}.unpacked-size found; falling back to the shared dist/ snapshot, which may be wrong if another sidecar built after this one.`);
+  return unpackedSize;
 }
 
 const engines = [];
@@ -84,12 +101,12 @@ for (const candidate of candidates) {
     file_name: candidate.fileName,
     entrypoint: "ai-notetaking-engine.exe",
     compressed_size: stat.size,
-    unpacked_size: unpackedSize,
+    unpacked_size: unpackedSizeFor(candidate.fileName),
     sha256: sha256(filePath),
     url: `${releaseBase}/${candidate.fileName}`,
     model: {
       name: "base",
-      relative_path: "models/whisper",
+      relative_path: modelRelativePath,
       sha256: modelFiles.length ? directorySha256(modelRoot) : null,
       size_bytes: directorySize(modelRoot),
     },

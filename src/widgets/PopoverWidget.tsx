@@ -108,18 +108,29 @@ export function PopoverWidget() {
     return () => clearTimeout(timer);
   }, [settings.provider, settings.modelName, loading]);
 
+  // Self-scheduling rather than setInterval: the next tick is only queued once
+  // the previous one settles, so a slow probe can never stack calls. A fixed
+  // interval here used to pile up `check_ollama` invocations faster than they
+  // completed, spawning winget processes without bound until Windows froze.
   useEffect(() => {
     if (activeTab !== "diagnostics") return;
     let disposed = false;
-    const refresh = () => Promise.all([
-      invoke<RuntimeDiagnostics>("get_runtime_diagnostics"),
-      invoke<{ state: string }>("check_ollama").catch(() => ({ state: "offline" })),
-    ])
-      .then(([value, ollama]) => { if (!disposed) setDiagnostics({ ...value, status: { ...value.status, ollama: ollama.state } }); })
-      .catch(console.error);
-    refresh();
-    const timer = window.setInterval(refresh, 2000);
-    return () => { disposed = true; window.clearInterval(timer); };
+    let timer: number | undefined;
+    const tick = async () => {
+      try {
+        const [value, ollama] = await Promise.all([
+          invoke<RuntimeDiagnostics>("get_runtime_diagnostics"),
+          invoke<{ state: string }>("check_ollama").catch(() => ({ state: "offline" })),
+        ]);
+        if (!disposed) setDiagnostics({ ...value, status: { ...value.status, ollama: ollama.state } });
+      } catch (err) {
+        console.error(err);
+      } finally {
+        if (!disposed) timer = window.setTimeout(tick, 5000);
+      }
+    };
+    void tick();
+    return () => { disposed = true; if (timer !== undefined) window.clearTimeout(timer); };
   }, [activeTab]);
 
   const copyDiagnostics = async () => {

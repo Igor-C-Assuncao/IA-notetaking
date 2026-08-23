@@ -2,7 +2,7 @@
 # Copyright 2026 Igor Cassimiro Assunção
 param(
     [string]$Python = "",
-    [int]$MaxSizeMiB = 4096
+    [int]$MaxSizeMiB = 5632
 )
 
 $ErrorActionPreference = "Stop"
@@ -75,4 +75,21 @@ if ($sizeMiB -gt $MaxSizeMiB) {
 if (Test-Path -LiteralPath $destination) { Remove-Item -LiteralPath $destination -Force }
 Compress-Archive -Path (Join-Path $artifact "*") -DestinationPath $destination -CompressionLevel Optimal
 $compressedMiB = [math]::Round((Get-Item -LiteralPath $destination).Length / 1MB, 1)
-Write-Host "Built GPU sidecar: $destination ($compressedMiB MiB compressed, $sizeMiB MiB unpacked, CUDA $cudaVersion)"
+
+# The runtime extractor (src-tauri) sums each zip entry's uncompressed length and
+# compares it against the manifest's declared unpacked_size. That total does not
+# always match Get-ChildItem's directory-size measurement above - e.g. the bundled
+# Whisper model uses huggingface_hub's symlink-based cache layout, and PowerShell's
+# directory walk and the zip's actual entry sizes can disagree on Windows for
+# symlinked files. Measure the real archive contents instead of the source
+# directory so the declared size always matches what gets extracted.
+Add-Type -AssemblyName System.IO.Compression.FileSystem -ErrorAction SilentlyContinue
+$zip = [System.IO.Compression.ZipFile]::OpenRead($destination)
+try {
+    $archiveUnpackedBytes = ($zip.Entries | Measure-Object -Property Length -Sum).Sum
+} finally {
+    $zip.Dispose()
+}
+Set-Content -LiteralPath "$destination.unpacked-size" -Value $archiveUnpackedBytes -NoNewline
+
+Write-Host "Built GPU sidecar: $destination ($compressedMiB MiB compressed, $sizeMiB MiB unpacked directory, $([math]::Round($archiveUnpackedBytes / 1MB, 1)) MiB unpacked archive, CUDA $cudaVersion)"
